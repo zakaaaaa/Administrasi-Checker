@@ -1,0 +1,13 @@
+# Core dependencies untuk DocxParser
+python-docx==1.2.0
+lxml==6.0.2
+
+# Akan ditambahkan di modul berikutnya:
+# pypdf (PhysicalSheetCounter)
+# pytesseract / easyocr (BiodataOCR)
+# fastapi, uvicorn, celery, redis (API & queue layer)
+# supabase (database)
+# boto3 / cloudflare-r2 (cloud storage)
+
+# Dev/testing
+pytest==8.3.0
