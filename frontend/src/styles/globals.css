@@ -1,0 +1,309 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================================
+   DESIGN TOKENS — Liquid Glass Theme
+   ============================================================================
+   Filosofi:
+   - Background hidup (gradient mesh + orbs) → sumber warna untuk glass
+   - Glass surface dengan opacity bertingkat (subtle, base, elevated)
+   - Border tipis dengan inner highlight untuk efek "kaca terangkat"
+   ============================================================================ */
+
+@layer base {
+  :root {
+    /* ---- Surface (background hierarchy) ---- */
+    --surface:           220 30% 97%;    /* off-white agak biru, base canvas */
+    --surface-elevated:  0 0% 100%;      /* pure white */
+    --surface-sunken:    220 25% 94%;    /* sedikit lebih gelap dari base */
+
+    /* ---- Foreground (text) ---- */
+    --foreground:         222 35% 12%;   /* near black agak biru */
+    --foreground-muted:   222 15% 38%;   /* abu-abu netral */
+    --foreground-subtle:  222 12% 58%;   /* abu-abu lebih terang */
+
+    /* ---- Brand: tosca / aqua family ---- */
+    --brand-50:  186 100% 96%;
+    --brand-100: 187 92% 90%;
+    --brand-200: 188 87% 79%;
+    --brand-300: 189 84% 64%;
+    --brand-400: 190 82% 52%;
+    --brand-500: 192 88% 42%;   /* primary brand color */
+    --brand-600: 194 90% 35%;
+    --brand-700: 196 86% 28%;
+    --brand-800: 198 80% 22%;
+    --brand-900: 200 75% 16%;
+
+    /* ---- Accent: ungu lavender soft (untuk gradient mesh) ---- */
+    --accent:      265 75% 65%;
+    --accent-soft: 270 90% 88%;
+
+    /* ---- Status ---- */
+    --success: 152 65% 42%;
+    --warning: 35 92% 52%;
+    --danger:  358 75% 56%;
+    --info:    220 80% 56%;
+
+    /* ---- Border ---- */
+    --border:        220 20% 88%;
+    --border-strong: 220 25% 78%;
+    --border-glass:  0 0% 100%;          /* alpha diatur via class */
+
+    /* ---- Glass: variabel khusus untuk surface kaca ---- */
+    /* Format: R G B (space separated, untuk dipakai dengan rgb(... / alpha)) */
+    --glass-rgb-white:    255 255 255;
+    --glass-bg-subtle-a:  0.45;
+    --glass-bg-a:         0.62;
+    --glass-bg-elevated-a: 0.78;
+    --glass-bg-sunken-a:  0.32;
+    --glass-border-a:     0.55;
+    --glass-border-soft-a: 0.30;
+  }
+
+  /* Future-proofing: dark mode bisa di-toggle via class .dark */
+  .dark {
+    --surface:           222 35% 8%;
+    --surface-elevated:  222 30% 12%;
+    --surface-sunken:    222 38% 5%;
+    --foreground:        220 15% 95%;
+    --foreground-muted:  220 12% 70%;
+    --foreground-subtle: 220 10% 55%;
+    --border:            220 20% 22%;
+    --border-strong:     220 25% 32%;
+    --glass-rgb-white:    255 255 255;
+    --glass-bg-subtle-a:  0.04;
+    --glass-bg-a:         0.08;
+    --glass-bg-elevated-a: 0.14;
+    --glass-bg-sunken-a:  0.20;
+    --glass-border-a:     0.12;
+    --glass-border-soft-a: 0.06;
+  }
+
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background-color: hsl(var(--surface));
+    color: hsl(var(--foreground));
+    font-family: var(--font-jakarta), ui-sans-serif, system-ui, sans-serif;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+
+  /* Scrollbar minimal */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border-strong));
+    border-radius: 999px;
+    border: 2px solid hsl(var(--surface));
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--foreground-subtle));
+  }
+
+  /* Selection */
+  ::selection {
+    background: hsl(var(--brand-200));
+    color: hsl(var(--brand-900));
+  }
+}
+
+/* ============================================================================
+   GLASS UTILITIES — class siap pakai untuk berbagai tingkat glass
+   ============================================================================ */
+
+@layer components {
+
+  /* ---- BASE GLASS SURFACE ---- */
+  .glass-surface {
+    background: rgb(var(--glass-rgb-white) / var(--glass-bg-a));
+    border: 1px solid rgb(var(--glass-rgb-white) / var(--glass-border-a));
+    backdrop-filter: blur(16px) saturate(180%);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
+    box-shadow:
+      0 12px 32px -8px rgba(15, 23, 42, 0.14),
+      0 4px 12px -4px rgba(15, 23, 42, 0.06),
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.6);
+  }
+
+  .glass-surface-subtle {
+    background: rgb(var(--glass-rgb-white) / var(--glass-bg-subtle-a));
+    border: 1px solid rgb(var(--glass-rgb-white) / var(--glass-border-soft-a));
+    backdrop-filter: blur(8px) saturate(160%);
+    -webkit-backdrop-filter: blur(8px) saturate(160%);
+    box-shadow:
+      0 4px 16px -4px rgba(15, 23, 42, 0.08),
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.45);
+  }
+
+  .glass-surface-elevated {
+    background: rgb(var(--glass-rgb-white) / var(--glass-bg-elevated-a));
+    border: 1px solid rgb(var(--glass-rgb-white) / var(--glass-border-a));
+    backdrop-filter: blur(24px) saturate(200%);
+    -webkit-backdrop-filter: blur(24px) saturate(200%);
+    box-shadow:
+      0 24px 60px -16px rgba(15, 23, 42, 0.22),
+      0 8px 24px -8px rgba(15, 23, 42, 0.08),
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.7);
+  }
+
+  /* ---- GLASS INPUT (untuk form field) ---- */
+  .glass-input {
+    background: rgba(255, 255, 255, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.55),
+      inset 0 0 0 1px rgba(15, 23, 42, 0.04);
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .glass-input:focus {
+    background: rgba(255, 255, 255, 0.78);
+    border-color: hsl(var(--brand-400));
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.65),
+      0 0 0 4px hsl(var(--brand-400) / 0.16);
+    outline: none;
+  }
+
+  /* ---- BACKGROUND CANVAS — gradient mesh dengan orbs ---- */
+  .canvas-glass {
+    position: relative;
+    background:
+      radial-gradient(ellipse 80% 60% at 20% 0%, hsl(var(--brand-100) / 0.7) 0%, transparent 50%),
+      radial-gradient(ellipse 60% 80% at 100% 50%, hsl(var(--accent-soft) / 0.45) 0%, transparent 55%),
+      radial-gradient(ellipse 50% 50% at 50% 100%, hsl(var(--brand-200) / 0.35) 0%, transparent 60%),
+      hsl(var(--surface));
+    background-attachment: fixed;
+  }
+
+  /* ---- ORB DECORATIONS (placed absolutely over canvas) ---- */
+  .orb {
+    position: absolute;
+    border-radius: 9999px;
+    filter: blur(80px);
+    pointer-events: none;
+    will-change: transform;
+  }
+  .orb-brand {
+    background: radial-gradient(circle, hsl(var(--brand-400) / 0.6) 0%, hsl(var(--brand-300) / 0.2) 60%, transparent 100%);
+  }
+  .orb-accent {
+    background: radial-gradient(circle, hsl(var(--accent) / 0.45) 0%, hsl(var(--accent-soft) / 0.15) 60%, transparent 100%);
+  }
+  .orb-warm {
+    background: radial-gradient(circle, hsl(35 95% 70% / 0.4) 0%, hsl(15 90% 75% / 0.15) 60%, transparent 100%);
+  }
+
+  /* ---- GRAIN OVERLAY untuk depth ---- */
+  .grain {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.4;
+    mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.18 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* ---- TEXT GRADIENTS ---- */
+  .text-gradient-brand {
+    background: linear-gradient(135deg, hsl(var(--brand-700)) 0%, hsl(var(--brand-500)) 50%, hsl(var(--accent)) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* ---- BUTTON: liquid pill ---- */
+  .btn-liquid {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border-radius: 9999px;
+    font-weight: 500;
+    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    isolation: isolate;
+  }
+  .btn-liquid::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(180deg, rgba(255,255,255,0.25) 0%, rgba(255,255,255,0) 50%);
+    pointer-events: none;
+  }
+  .btn-liquid-primary {
+    background: linear-gradient(180deg, hsl(var(--brand-500)) 0%, hsl(var(--brand-600)) 100%);
+    color: white;
+    box-shadow:
+      0 4px 14px -2px hsl(var(--brand-500) / 0.45),
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.25);
+  }
+  .btn-liquid-primary:hover {
+    transform: translateY(-1px);
+    box-shadow:
+      0 8px 24px -4px hsl(var(--brand-500) / 0.55),
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.3);
+  }
+  .btn-liquid-ghost {
+    background: rgba(255, 255, 255, 0.5);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    color: hsl(var(--foreground));
+    border: 1px solid rgba(255, 255, 255, 0.55);
+    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.5);
+  }
+  .btn-liquid-ghost:hover {
+    background: rgba(255, 255, 255, 0.72);
+  }
+
+  /* ---- SHIMMER (skeleton loading) ---- */
+  .shimmer {
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.4) 50%,
+      transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.6s ease-in-out infinite;
+  }
+
+  /* ---- DIVIDER ---- */
+  .divider-glass {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, hsl(var(--border-strong)) 50%, transparent);
+  }
+}
+
+/* ============================================================================
+   STAGGERED REVEAL — utility class untuk stagger animation
+   ============================================================================ */
+
+@layer utilities {
+  .stagger > * {
+    opacity: 0;
+    animation: fade-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+  .stagger > *:nth-child(1) { animation-delay: 0.05s; }
+  .stagger > *:nth-child(2) { animation-delay: 0.12s; }
+  .stagger > *:nth-child(3) { animation-delay: 0.19s; }
+  .stagger > *:nth-child(4) { animation-delay: 0.26s; }
+  .stagger > *:nth-child(5) { animation-delay: 0.33s; }
+  .stagger > *:nth-child(6) { animation-delay: 0.40s; }
+  .stagger > *:nth-child(7) { animation-delay: 0.47s; }
+  .stagger > *:nth-child(8) { animation-delay: 0.54s; }
+  .stagger > *:nth-child(9) { animation-delay: 0.61s; }
+  .stagger > *:nth-child(10){ animation-delay: 0.68s; }
+}
