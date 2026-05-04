@@ -21,7 +21,7 @@ from app.services.docx_parser import (
 )
 
 SAMPLE_DIR = Path(__file__).parent / "sample_docs"
-DUMMY_FILE = SAMPLE_DIR / "A410170082.docx"
+DUMMY_FILE = SAMPLE_DIR / "dummy_pkm_kc.docx"
 
 
 class DocxParserTestBase(unittest.TestCase):
@@ -109,15 +109,34 @@ class TestBasicProperties(DocxParserTestBase):
             self.assertIsInstance(s, SectionInfo)
 
     def test_section_margins_match_pkm_rules(self):
+        """
+        Margin di-baca langsung dari XML <w:pgMar>, jadi nilai exact.
+        Dummy generate dengan Cm(4) untuk kiri dan Cm(3) untuk lainnya.
+        Cm(4) → 4 × 567 ≈ 2268 DXA → /1440 × 2.54 = 4.0 cm ✓
+        """
         s0 = self.parser.sections[0]
-        left_cm = dxa_to_cm(s0.margin_left_dxa)
-        right_cm = dxa_to_cm(s0.margin_right_dxa)
-        top_cm = dxa_to_cm(s0.margin_top_dxa)
-        bottom_cm = dxa_to_cm(s0.margin_bottom_dxa)
-        self.assertAlmostEqual(left_cm, 4.0, delta=0.05)
-        self.assertAlmostEqual(right_cm, 3.0, delta=0.05)
-        self.assertAlmostEqual(top_cm, 3.0, delta=0.05)
-        self.assertAlmostEqual(bottom_cm, 3.0, delta=0.05)
+        self.assertEqual(dxa_to_cm(s0.margin_left_dxa), 4.0)
+        self.assertEqual(dxa_to_cm(s0.margin_right_dxa), 3.0)
+        self.assertEqual(dxa_to_cm(s0.margin_top_dxa), 3.0)
+        self.assertEqual(dxa_to_cm(s0.margin_bottom_dxa), 3.0)
+
+    def test_section_margins_not_zero(self):
+        """
+        Regression test untuk bug v1 di dokumen real: margin terbaca 0
+        karena konversi Twips→EMU→DXA via wrapper python-docx tidak konsisten.
+        Setelah fix (baca langsung dari XML), tidak ada margin yang 0
+        kecuali memang di-set 0 di dokumen.
+        """
+        for sec in self.parser.sections:
+            # Dummy kita set margin > 0 untuk semua side
+            self.assertGreater(sec.margin_left_dxa, 0,
+                f"Section #{sec.index} margin_left = 0, kemungkinan bug parsing")
+            self.assertGreater(sec.margin_right_dxa, 0,
+                f"Section #{sec.index} margin_right = 0")
+            self.assertGreater(sec.margin_top_dxa, 0,
+                f"Section #{sec.index} margin_top = 0")
+            self.assertGreater(sec.margin_bottom_dxa, 0,
+                f"Section #{sec.index} margin_bottom = 0")
 
 
 # ============================================================================

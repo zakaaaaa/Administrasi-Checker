@@ -365,8 +365,14 @@ class DocxParser:
         try:
             align = para.paragraph_format.alignment
             if align is not None:
-                # WD_ALIGN_PARAGRAPH enum → string
-                alignment_str = str(align).split(".")[-1].lower()
+                # WD_ALIGN_PARAGRAPH enum → string. Format: "CENTER (1)" → "center"
+                raw = str(align)
+                # Ambil kata sebelum spasi atau setelah titik terakhir
+                if "." in raw:
+                    raw = raw.rsplit(".", 1)[-1]
+                if " " in raw:
+                    raw = raw.split(" ", 1)[0]
+                alignment_str = raw.lower()
         except Exception:
             pass
 
@@ -496,49 +502,53 @@ class DocxParser:
         )
 
     def _extract_sections(self) -> list[SectionInfo]:
+        """
+        Extract section info dengan membaca langsung dari XML <w:sectPr>.
+
+        Pendekatan ini lebih reliable daripada lewat python-docx wrapper:
+        wrapper kadang return objek Twips/Emu yang konversi int()-nya tidak
+        konsisten antar versi python-docx — nilai bisa terbaca 0 di dokumen
+        real meski XML-nya valid. XML attributes pgMar dan pgSz langsung
+        memberi DXA sebagai string, jadi konversi tinggal int().
+        """
         result: list[SectionInfo] = []
-        # Iterate via python-docx untuk section properties dasar
         for idx, sect in enumerate(self.doc.sections):
-            info = SectionInfo(
-                index=idx,
-                page_width_dxa=self._emu_to_dxa(sect.page_width),
-                page_height_dxa=self._emu_to_dxa(sect.page_height),
-                margin_top_dxa=self._emu_to_dxa(sect.top_margin),
-                margin_bottom_dxa=self._emu_to_dxa(sect.bottom_margin),
-                margin_left_dxa=self._emu_to_dxa(sect.left_margin),
-                margin_right_dxa=self._emu_to_dxa(sect.right_margin),
-            )
-            # Lengkapi dengan parse XML <w:sectPr> untuk pgNumType + headerReference/footerReference
-            self._enrich_section_from_xml(info, sect._sectPr)
+            sect_pr = sect._sectPr
+            info = SectionInfo(index=idx)
+            self._populate_section_from_xml(info, sect_pr)
             result.append(info)
         return result
 
-    @staticmethod
-    def _emu_to_dxa(emu_value) -> Optional[int]:
-        """python-docx pakai Emu length objects; kita konversi ke DXA."""
-        if emu_value is None:
-            return None
-        try:
-            # 1 inch = 914400 EMU = 1440 DXA
-            return int(int(emu_value) / 914400 * 1440)
-        except Exception:
-            return None
-
-    def _enrich_section_from_xml(
+    def _populate_section_from_xml(
         self, info: SectionInfo, sect_pr: Optional[etree._Element]
     ) -> None:
+        """Isi SectionInfo dari elemen <w:sectPr> via parsing XML langsung."""
         if sect_pr is None:
             return
-        # Page number format
+
+        # Page size: <w:pgSz w:w="11906" w:h="16838"/>
+        pg_sz = sect_pr.find(qn("w:pgSz"))
+        if pg_sz is not None:
+            info.page_width_dxa = self._safe_int(pg_sz.get(qn("w:w")))
+            info.page_height_dxa = self._safe_int(pg_sz.get(qn("w:h")))
+
+        # Margin: <w:pgMar w:top="..." w:right="..." w:bottom="..." w:left="..."/>
+        pg_mar = sect_pr.find(qn("w:pgMar"))
+        if pg_mar is not None:
+            info.margin_top_dxa = self._safe_int(pg_mar.get(qn("w:top")))
+            info.margin_right_dxa = self._safe_int(pg_mar.get(qn("w:right")))
+            info.margin_bottom_dxa = self._safe_int(pg_mar.get(qn("w:bottom")))
+            info.margin_left_dxa = self._safe_int(pg_mar.get(qn("w:left")))
+
+        # Page number type: <w:pgNumType w:fmt="lowerRoman" w:start="1"/>
         pg_num_type = sect_pr.find(qn("w:pgNumType"))
         if pg_num_type is not None:
-            fmt = pg_num_type.get(qn("w:fmt"))
+            info.page_num_format = pg_num_type.get(qn("w:fmt"))
             start = pg_num_type.get(qn("w:start"))
-            info.page_num_format = fmt
-            if start and start.isdigit():
+            if start and start.lstrip("-").isdigit():
                 info.page_num_start = int(start)
 
-        # Header/footer references
+        # Header references: <w:headerReference w:type="default" r:id="rId4"/>
         for ref in sect_pr.findall(qn("w:headerReference")):
             ref_type = ref.get(qn("w:type")) or "default"
             ref_id = ref.get(qn("r:id"))
@@ -550,6 +560,16 @@ class DocxParser:
             ref_id = ref.get(qn("r:id"))
             if ref_id:
                 info.footer_refs[ref_type] = ref_id
+
+    @staticmethod
+    def _safe_int(val: Optional[str]) -> Optional[int]:
+        """Konversi string XML attribute ke int, atau None jika tidak valid."""
+        if val is None:
+            return None
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            return None
 
     def _read_xml_part(
         self, part_name: str, required: bool = True
