@@ -307,3 +307,19 @@
   .stagger > *:nth-child(9) { animation-delay: 0.61s; }
   .stagger > *:nth-child(10){ animation-delay: 0.68s; }
 }
+
+@media print {
+  body {
+    background: #ffffff !important;
+  }
+
+  .glass-surface,
+  .glass-surface-subtle,
+  .glass-surface-elevated {
+    background: #ffffff !important;
+    border-color: #d4d4d8 !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
