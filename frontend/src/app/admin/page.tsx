@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 
 const uploadByScheme = [
@@ -13,24 +13,111 @@ const uploadByScheme = [
 const uploadTrend = [12, 18, 16, 24, 22, 30, 34];
 const userTrend = [22, 27, 19, 25, 31, 29, 37];
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+const STORAGE_KEY = 'admin_session_v1';
+
 export default function AdminPage() {
-  const [isAuthed, setIsAuthed] = useState(false);
+  const [adminId, setAdminId] = useState<string>('');
+  const [adminUsername, setAdminUsername] = useState<string>('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [loginLoading, setLoginLoading] = useState(false);
+
   const [generatedToken, setGeneratedToken] = useState('');
+  const [tokenError, setTokenError] = useState('');
+  const [tokenLoading, setTokenLoading] = useState(false);
 
-  function handleAuth() {
-    if (!username || !password) return;
-    setIsAuthed(true);
+  // Restore session on mount
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { admin_id: string; username: string };
+        if (parsed.admin_id && parsed.username) {
+          setAdminId(parsed.admin_id);
+          setAdminUsername(parsed.username);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  async function handleAuth() {
+    setLoginError('');
+    if (!username || !password) {
+      setLoginError('Username dan password wajib diisi.');
+      return;
+    }
+    setLoginLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/api/admin/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setLoginError(typeof data?.detail === 'string' ? data.detail : 'Login gagal');
+        return;
+      }
+      setAdminId(data.admin_id);
+      setAdminUsername(data.username);
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ admin_id: data.admin_id, username: data.username }),
+      );
+      setPassword('');
+    } catch (err) {
+      setLoginError(`Tidak bisa terhubung ke server: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setLoginLoading(false);
+    }
   }
 
-  function handleGenerateToken() {
-    const token = `PKM-${new Date().getFullYear()}-${Math.random()
-      .toString(36)
-      .slice(2, 8)
-      .toUpperCase()}`;
-    setGeneratedToken(token);
+  function handleLogout() {
+    localStorage.removeItem(STORAGE_KEY);
+    setAdminId('');
+    setAdminUsername('');
+    setGeneratedToken('');
+    setTokenError('');
   }
+
+  async function handleGenerateToken() {
+    setTokenError('');
+    setGeneratedToken('');
+    if (!adminId) {
+      setTokenError('Belum login.');
+      return;
+    }
+    setTokenLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/api/admin/tokens`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ admin_id: adminId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        // Session might be invalid (admin deleted)
+        if (res.status === 401) {
+          handleLogout();
+          setTokenError('Session berakhir. Silakan login ulang.');
+          return;
+        }
+        setTokenError(typeof data?.detail === 'string' ? data.detail : 'Gagal generate token');
+        return;
+      }
+      setGeneratedToken(data.token);
+    } catch (err) {
+      setTokenError(`Tidak bisa terhubung ke server: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setTokenLoading(false);
+    }
+  }
+
+  const isAuthed = Boolean(adminId);
 
   return (
     <main className="relative mx-auto max-w-6xl px-4 pb-20 pt-10 sm:px-6">
@@ -46,18 +133,33 @@ export default function AdminPage() {
           Dashboard ini jadi ruang kontrol utama: pantau upload, perilaku user, kesehatan
           server, lalu generate token untuk user.
         </p>
+        {isAuthed && (
+          <p className="mt-3 text-xs text-foreground-subtle">
+            Login sebagai <strong>{adminUsername}</strong>{' '}
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="ml-2 underline hover:text-red-700"
+            >
+              Logout
+            </button>
+          </p>
+        )}
       </section>
 
       {!isAuthed ? (
         <section className="mt-6 glass-surface rounded-[1.75rem] p-6 sm:p-8">
           <h2 className="text-xl font-semibold text-foreground">Login Admin</h2>
-          
+
           <div className="mt-5 grid gap-3">
             <input
               value={username}
               onChange={(event) => setUsername(event.target.value)}
               placeholder="Username admin"
               className="glass-input rounded-2xl px-4 py-3 text-sm"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleAuth();
+              }}
             />
             <input
               type="password"
@@ -65,14 +167,23 @@ export default function AdminPage() {
               onChange={(event) => setPassword(event.target.value)}
               placeholder="Password"
               className="glass-input rounded-2xl px-4 py-3 text-sm"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleAuth();
+              }}
             />
             <button
               type="button"
               onClick={handleAuth}
-              className="btn-liquid btn-liquid-primary mt-2 px-5 py-3 text-sm"
+              disabled={loginLoading}
+              className="btn-liquid btn-liquid-primary mt-2 px-5 py-3 text-sm disabled:opacity-50"
             >
-              Login
+              {loginLoading ? 'Memproses...' : 'Login'}
             </button>
+            {loginError && (
+              <div className="rounded-2xl border border-red-300 bg-red-50/70 p-3 text-sm text-red-700">
+                {loginError}
+              </div>
+            )}
           </div>
         </section>
       ) : (
@@ -134,20 +245,35 @@ export default function AdminPage() {
           <div className="glass-surface rounded-[1.75rem] p-6 sm:p-8">
             <h3 className="text-lg font-semibold text-foreground">Generate Token</h3>
             <p className="mt-2 text-sm text-foreground-muted">
-              Klik tombol untuk membuat token baru bagi pengguna.
+              Klik tombol untuk membuat token sekali pakai bagi pengguna.
             </p>
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <button
                 type="button"
                 onClick={handleGenerateToken}
-                className="btn-liquid btn-liquid-primary px-5 py-2.5 text-sm"
+                disabled={tokenLoading}
+                className="btn-liquid btn-liquid-primary px-5 py-2.5 text-sm disabled:opacity-50"
               >
-                Generate Token
+                {tokenLoading ? 'Memproses...' : 'Generate Token'}
               </button>
               <code className="glass-surface-subtle rounded-xl px-3 py-2 text-xs text-foreground">
                 {generatedToken || 'Belum ada token yang dibuat'}
               </code>
+              {generatedToken && (
+                <button
+                  type="button"
+                  onClick={() => navigator.clipboard.writeText(generatedToken)}
+                  className="btn-liquid btn-liquid-ghost px-3 py-2 text-xs"
+                >
+                  Copy
+                </button>
+              )}
             </div>
+            {tokenError && (
+              <div className="mt-3 rounded-2xl border border-red-300 bg-red-50/70 p-3 text-sm text-red-700">
+                {tokenError}
+              </div>
+            )}
           </div>
         </section>
       )}
