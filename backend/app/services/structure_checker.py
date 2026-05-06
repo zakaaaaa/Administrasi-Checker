@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Optional
+import re
 
 from app.services.docx_parser import DocxParser
 from app.services.schema_rules import SchemaRules, SectionRule
@@ -181,6 +182,34 @@ def _heading_matches_rule(heading_text: str, rule: SectionRule) -> bool:
     return False
 
 
+def _looks_like_toc_line(text: str) -> bool:
+    """Heuristik sederhana untuk entri daftar isi/lampiran."""
+    t = text.strip()
+    if not t:
+        return False
+    if re.search(r"\t+\s*([ivxlcdm]+|\d+)\s*$", t, flags=re.IGNORECASE):
+        return True
+    if re.search(r"[.\s]{4,}\s*(\d+|[ivxlcdm]+)\s*$", t, flags=re.IGNORECASE):
+        return True
+    return False
+
+
+def _looks_like_heading_candidate(text: str) -> bool:
+    """
+    Kandidat judul section saat style Heading tidak konsisten.
+    """
+    t = text.strip()
+    if not t:
+        return False
+    if re.match(r"^BAB\s+[IVXLCM0-9]+(?:[.\s]|$)", t, flags=re.IGNORECASE):
+        return True
+    letters = [c for c in t if c.isalpha()]
+    if not letters:
+        return False
+    upper_ratio = sum(1 for c in letters if c.isupper()) / len(letters)
+    return upper_ratio >= 0.8
+
+
 # ============================================================================
 # StructureChecker
 # ============================================================================
@@ -244,12 +273,16 @@ class StructureChecker:
         already_matched_required: set[str] = set()
 
         for para in self.parser.paragraphs:
-            # Hanya proses heading (skip baris ToC yang mirip heading)
-            if not para.is_heading:
-                continue
             text = para.text.strip()
             if not text:
                 continue
+            # Skip baris daftar isi yang sering false-positive.
+            if _looks_like_toc_line(text):
+                continue
+            if not para.is_heading and not _looks_like_heading_candidate(text):
+                continue
+            # Dokumen real sering pakai style Normal untuk judul section.
+            # Tetap izinkan selama text cocok rule.
 
             # Cek terhadap semua rule
             for rule in self.rules.sections:
@@ -380,6 +413,24 @@ class StructureChecker:
     # ------------------------------------------------------------------------
 
     def _finalize(self, result: StructureCheckResult) -> None:
+        def loc(paragraph_index: int) -> str:
+            estimator = getattr(self.parser, "estimate_physical_page", None)
+            in_page_estimator = getattr(self.parser, "estimate_paragraph_index_in_page", None)
+            page = estimator(paragraph_index) if callable(estimator) else None
+            in_page = (
+                in_page_estimator(paragraph_index)
+                if callable(in_page_estimator)
+                else None
+            )
+            if page is None:
+                return f"(paragraf #{paragraph_index})"
+            if in_page is None or in_page <= 0:
+                return f"(halaman fisik ~{page}, paragraf #{paragraph_index})"
+            return (
+                f"(halaman fisik ~{page}, paragraf ke-{in_page} "
+                f"(global #{paragraph_index}))"
+            )
+
         # Status logic:
         # - fail jika ada forbidden ATAU ada missing required ATAU ada out_of_order
         # - pass jika semua bersih
@@ -409,7 +460,9 @@ class StructureChecker:
 
         # Forbidden findings (paling kritis)
         for f in result.forbidden_found:
-            result.messages.append(CheckMessage(level="fail", text=f.message))
+            result.messages.append(
+                CheckMessage(level="fail", text=f"{f.message} {loc(f.paragraph_index)}")
+            )
 
         # Missing required
         for m in result.missing_required:
@@ -417,4 +470,12 @@ class StructureChecker:
 
         # Out of order
         for o in result.out_of_order:
-            result.messages.append(CheckMessage(level="fail", text=o.message))
+            result.messages.append(
+                CheckMessage(
+                    level="fail",
+                    text=(
+                        f"{o.message} "
+                        f"{loc(o.actual_earlier_index)} vs {loc(o.actual_later_index)}"
+                    ),
+                )
+            )

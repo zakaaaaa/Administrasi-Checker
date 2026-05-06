@@ -549,6 +549,7 @@ class ReferenceValidator:
 
         findings: list[BalanceFinding] = []
 
+        seen_intext_findings: set[tuple[str, int]] = set()
         # 1. In-text not in DP
         for c in citations:
             key = (c.author.lower(), c.year)
@@ -562,6 +563,9 @@ class ReferenceValidator:
                 # kalau year tidak ditemukan
                 dp_years = {e.year for e in dp_authors_lower[partial] if e.year}
                 if c.year not in dp_years:
+                    if key in seen_intext_findings:
+                        continue
+                    seen_intext_findings.add(key)
                     findings.append(
                         BalanceFinding(
                             direction="in_text_not_in_references",
@@ -575,6 +579,9 @@ class ReferenceValidator:
                         )
                     )
             else:
+                if key in seen_intext_findings:
+                    continue
+                seen_intext_findings.add(key)
                 findings.append(
                     BalanceFinding(
                         direction="in_text_not_in_references",
@@ -587,6 +594,7 @@ class ReferenceValidator:
                     )
                 )
 
+        seen_dp_findings: set[tuple[str, int]] = set()
         # 2. DP not in in-text
         for e in entries:
             if not e.author_first or not e.year:
@@ -594,6 +602,9 @@ class ReferenceValidator:
             key = (e.author_first.lower(), e.year)
             if key in intext_keys:
                 continue
+            if key in seen_dp_findings:
+                continue
+            seen_dp_findings.add(key)
             # Fuzzy author match
             partial = self._fuzzy_author_match(
                 e.author_first.lower(), intext_authors_lower.keys()
@@ -683,6 +694,26 @@ class ReferenceValidator:
     # ------------------------------------------------------------------------
 
     def _finalize_status(self, result: ReferenceValidationResult) -> None:
+        def loc(paragraph_index: Optional[int]) -> str:
+            if paragraph_index is None:
+                return ""
+            estimator = getattr(self.parser, "estimate_physical_page", None)
+            in_page_estimator = getattr(self.parser, "estimate_paragraph_index_in_page", None)
+            page = estimator(paragraph_index) if callable(estimator) else None
+            in_page = (
+                in_page_estimator(paragraph_index)
+                if callable(in_page_estimator)
+                else None
+            )
+            if page is None:
+                return f" (paragraf #{paragraph_index})"
+            if in_page is None or in_page <= 0:
+                return f" (halaman fisik ~{page}, paragraf #{paragraph_index})"
+            return (
+                f" (halaman fisik ~{page}, paragraf ke-{in_page} "
+                f"(global #{paragraph_index}))"
+            )
+
         has_fail = False
         has_warning = False
 
@@ -708,7 +739,10 @@ class ReferenceValidator:
             result.messages.append(
                 CheckMessage(
                     level=fi.severity,
-                    text=f"[Entry #{fi.entry_index + 1}] {fi.issue}",
+                    text=(
+                        f"[Entry #{fi.entry_index + 1}] {fi.issue}"
+                        f"{loc(result.entries[fi.entry_index].paragraph_index) if fi.entry_index < len(result.entries) else ''}"
+                    ),
                 )
             )
 
@@ -757,7 +791,7 @@ class ReferenceValidator:
                 result.messages.append(
                     CheckMessage(
                         level="fail",
-                        text=f"  • {f.detail}",
+                        text=f"  • {f.detail}{loc(f.paragraph_index)}",
                     )
                 )
         if bodong:
@@ -775,7 +809,7 @@ class ReferenceValidator:
                 result.messages.append(
                     CheckMessage(
                         level="fail",
-                        text=f"  • {f.detail}",
+                        text=f"  • {f.detail}{loc(f.paragraph_index)}",
                     )
                 )
 

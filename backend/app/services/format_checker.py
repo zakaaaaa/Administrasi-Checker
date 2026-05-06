@@ -184,6 +184,21 @@ class FormatChecker:
         self.schema = schema  # opsional, untuk skip pengecekan tertentu nanti
         self.resolver = StyleResolver(parser)
 
+    def _format_para_location(self, paragraph_index: int) -> str:
+        estimator = getattr(self.parser, "estimate_physical_page", None)
+        in_page_estimator = getattr(self.parser, "estimate_paragraph_index_in_page", None)
+        page = estimator(paragraph_index) if callable(estimator) else None
+        in_page = (
+            in_page_estimator(paragraph_index)
+            if callable(in_page_estimator)
+            else None
+        )
+        if page is None:
+            return f"Paragraf #{paragraph_index}"
+        if in_page is None or in_page <= 0:
+            return f"Halaman fisik ~{page}, paragraf #{paragraph_index}"
+        return f"Halaman fisik ~{page}, paragraf ke-{in_page} (global #{paragraph_index})"
+
     def check(self) -> FormatCheckResult:
         result = FormatCheckResult(status="pass")
 
@@ -352,7 +367,7 @@ class FormatChecker:
                     FormatIssue(
                         check_name="font_name",
                         severity="fail",
-                        location=f"Paragraf #{para.index}",
+                        location=self._format_para_location(para.index),
                         issue=f"Font bukan {self.rules.font_name}.",
                         found=font.name,
                         expected=self.rules.font_name,
@@ -365,7 +380,7 @@ class FormatChecker:
                     FormatIssue(
                         check_name="font_size",
                         severity="fail",
-                        location=f"Paragraf #{para.index}",
+                        location=self._format_para_location(para.index),
                         issue=f"Ukuran font bukan {self.rules.font_size_pt}pt.",
                         found=f"{font.size_pt}pt",
                         expected=f"{self.rules.font_size_pt}pt",
@@ -405,7 +420,7 @@ class FormatChecker:
                     FormatIssue(
                         check_name="line_spacing",
                         severity="warning",  # warning karena banyak dokumen pakai 1.5 / 2.0
-                        location=f"Paragraf #{para.index}",
+                        location=self._format_para_location(para.index),
                         issue=f"Line spacing bukan {self.rules.line_spacing}.",
                         found=str(ls),
                         expected=str(self.rules.line_spacing),
@@ -445,25 +460,15 @@ class FormatChecker:
             # python-docx return 'left'/'right'/'center'/'justify' atau None
             # None = inherit dari style (biasanya left untuk Normal)
             if align is None:
-                # Cek dari style/default. Simpel: kita anggap None = NOT justify.
-                # Ini akan flag banyak paragraf di dokumen yang inherit Normal.
-                # Kita treat sebagai warning, bukan fail.
-                sec.issues.append(
-                    FormatIssue(
-                        check_name="alignment",
-                        severity="warning",
-                        location=f"Paragraf #{para.index}",
-                        issue="Alignment tidak ter-set explicit (inherit). Pastikan justify.",
-                        found="(inherit)",
-                        expected="justify",
-                    )
-                )
+                # Nilai None = inherit style; tanpa resolver alignment style, ini ambigu.
+                # Supaya tidak false-positive ("halu"), skip dari pelanggaran.
+                continue
             elif align != "justify":
                 sec.issues.append(
                     FormatIssue(
                         check_name="alignment",
                         severity="fail",
-                        location=f"Paragraf #{para.index}",
+                        location=self._format_para_location(para.index),
                         issue="Paragraf body bukan justify.",
                         found=align,
                         expected="justify",
@@ -526,7 +531,7 @@ class FormatChecker:
                     FormatIssue(
                         check_name="foreign_words_italic",
                         severity="warning",
-                        location=f"Paragraf #{para.index}",
+                        location=self._format_para_location(para.index),
                         issue=(
                             f"Paragraf memuat kata/frasa asing "
                             f"({', '.join(matched_words[:3])}) tapi tidak ada run italic. "

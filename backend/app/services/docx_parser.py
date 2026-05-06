@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import zipfile
 from dataclasses import dataclass, field
+import re
 from pathlib import Path
 from typing import Iterator, Optional, Union
 
@@ -184,6 +185,8 @@ class DocxParser:
         self._document_xml: Optional[etree._Element] = None
         self._styles_xml: Optional[etree._Element] = None
         self._numbering_xml: Optional[etree._Element] = None
+        self._paragraph_page_estimates: Optional[list[int]] = None
+        self._paragraph_index_in_page: Optional[list[int]] = None
 
     # ------------------------------------------------------------------------
     # Akses dokumen via python-docx (high-level)
@@ -283,6 +286,37 @@ class DocxParser:
             for run in para.runs:
                 yield para.index, run
 
+    def estimate_physical_page(self, paragraph_index: int) -> Optional[int]:
+        """
+        Estimasi nomor halaman fisik (1-based) untuk suatu paragraf.
+        Mengandalkan page break marker di OOXML:
+        - w:lastRenderedPageBreak
+        - w:br w:type="page"
+        - section break non-continuous
+
+        Catatan: ini estimasi terbaik dari metadata DOCX, bukan layout engine penuh.
+        """
+        if paragraph_index < 0:
+            return None
+        if self._paragraph_page_estimates is None:
+            self._paragraph_page_estimates = self._build_page_estimates()
+        if paragraph_index >= len(self._paragraph_page_estimates):
+            return None
+        return self._paragraph_page_estimates[paragraph_index]
+
+    def estimate_paragraph_index_in_page(self, paragraph_index: int) -> Optional[int]:
+        """
+        Estimasi urutan paragraf (1-based) di halaman fisik tempat paragraf berada.
+        Hanya menghitung paragraf yang non-kosong agar lebih relevan untuk user.
+        """
+        if paragraph_index < 0:
+            return None
+        if self._paragraph_index_in_page is None:
+            self._paragraph_index_in_page = self._build_paragraph_index_in_page()
+        if paragraph_index >= len(self._paragraph_index_in_page):
+            return None
+        return self._paragraph_index_in_page[paragraph_index]
+
     def find_section_boundaries(
         self,
         section_names: list[str],
@@ -313,6 +347,8 @@ class DocxParser:
         Yang ditemukan adalah kemunculan PERTAMA yang memenuhi kriteria.
         """
         result: dict[str, Optional[int]] = {name: None for name in section_names}
+
+        # Pass 1: perilaku normal
         for para in self.paragraphs:
             if headings_only and not para.is_heading:
                 continue
@@ -324,7 +360,64 @@ class DocxParser:
                 cmp_name = name if case_sensitive else name.upper()
                 if cmp_text.startswith(cmp_name):
                     result[name] = para.index
+
+        # Pass 2 (fallback): jika headings_only=True dan ada section belum ketemu,
+        # coba cari baris non-heading yang "mirip heading nyata" dan bukan baris ToC.
+        if headings_only and any(v is None for v in result.values()):
+            missing = {k for k, v in result.items() if v is None}
+            for para in self.paragraphs:
+                text = para.text.strip()
+                if not text:
+                    continue
+                if self._looks_like_toc_entry(text):
+                    continue
+                if not self._looks_like_heading_fallback(text):
+                    continue
+                cmp_text = text if case_sensitive else text.upper()
+                for name in list(missing):
+                    cmp_name = name if case_sensitive else name.upper()
+                    if cmp_text.startswith(cmp_name):
+                        result[name] = para.index
+                        missing.remove(name)
+                        if not missing:
+                            break
+                if not missing:
+                    break
         return result
+
+    @staticmethod
+    def _looks_like_toc_entry(text: str) -> bool:
+        """
+        Heuristik baris daftar isi/lampiran:
+        - ada tab + nomor halaman Romawi/angka di akhir
+        - atau ada dot leader + nomor halaman di akhir
+        """
+        t = text.strip()
+        if not t:
+            return False
+        if re.search(r"\t+\s*([ivxlcdm]+|\d+)\s*$", t, flags=re.IGNORECASE):
+            return True
+        if re.search(r"[.\s]{4,}\s*(\d+|[ivxlcdm]+)\s*$", t, flags=re.IGNORECASE):
+            return True
+        return False
+
+    @staticmethod
+    def _looks_like_heading_fallback(text: str) -> bool:
+        """
+        Heuristik heading saat style Heading tidak dipakai:
+        - Pola BAB N...
+        - Atau mayoritas huruf uppercase (mis. DAFTAR PUSTAKA, LAMPIRAN)
+        """
+        t = text.strip()
+        if not t:
+            return False
+        if re.match(r"^BAB\s+[IVXLCM0-9]+(?:[.\s]|$)", t, flags=re.IGNORECASE):
+            return True
+        letters = [c for c in t if c.isalpha()]
+        if not letters:
+            return False
+        upper_ratio = sum(1 for c in letters if c.isupper()) / len(letters)
+        return upper_ratio >= 0.8
 
     def read_raw_part(self, part_name: str) -> Optional[bytes]:
         """
@@ -349,6 +442,50 @@ class DocxParser:
         for idx, para in enumerate(self.doc.paragraphs):
             info = self._paragraph_to_info(idx, para)
             result.append(info)
+        return result
+
+    def _build_page_estimates(self) -> list[int]:
+        page = 1
+        estimates: list[int] = []
+        for para in self.doc.paragraphs:
+            estimates.append(page)
+            # Explicit page break di run.
+            page += len(
+                para._element.findall(
+                    ".//w:br[@w:type='page']",
+                    namespaces=NSMAP,
+                )
+            )
+            # Last rendered page break (umum pada dokumen dari Word).
+            page += len(
+                para._element.findall(
+                    ".//w:lastRenderedPageBreak",
+                    namespaces=NSMAP,
+                )
+            )
+            # Section break default = next page (kecuali continuous).
+            sect_pr = para._element.find(".//w:pPr/w:sectPr", namespaces=NSMAP)
+            if sect_pr is not None:
+                sect_type = sect_pr.find("w:type", namespaces=NSMAP)
+                val = sect_type.get(qn("w:val")) if sect_type is not None else None
+                if val is None or str(val).lower() != "continuous":
+                    page += 1
+        return estimates
+
+    def _build_paragraph_index_in_page(self) -> list[int]:
+        if self._paragraph_page_estimates is None:
+            self._paragraph_page_estimates = self._build_page_estimates()
+
+        counts_per_page: dict[int, int] = {}
+        result: list[int] = []
+        for idx, para in enumerate(self.paragraphs):
+            page = self._paragraph_page_estimates[idx]
+            if not para.text.strip():
+                # Paragraf kosong tidak menambah hitungan "ke-n" user-facing.
+                result.append(counts_per_page.get(page, 0))
+                continue
+            counts_per_page[page] = counts_per_page.get(page, 0) + 1
+            result.append(counts_per_page[page])
         return result
 
     def _paragraph_to_info(self, idx: int, para: Paragraph) -> ParagraphInfo:

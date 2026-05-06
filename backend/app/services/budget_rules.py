@@ -120,7 +120,13 @@ def get_pkm_kc_budget_rules() -> BudgetRules:
         categories=[
             BudgetCategory(
                 name="Bahan habis pakai",
-                aliases=["Bahan Habis Pakai", "Bahan habis", "Bahan Habis"],
+                aliases=[
+                    "Bahan Habis Pakai",
+                    "Bahan habis",
+                    "Bahan Habis",
+                    "Belanja Bahan",
+                    "Belanja Bahan (maks. 60%)",
+                ],
                 max_percentage=60.0,
                 must_exist_in_table=True,
             ),
@@ -129,6 +135,8 @@ def get_pkm_kc_budget_rules() -> BudgetRules:
                 aliases=[
                     "Sewa & Jasa",
                     "Sewa dan Jasa",
+                    "Belanja Sewa",
+                    "Belanja Sewa (maks. 15%)",
                     "Perlengkapan yang diperlukan",   # variasi yang ditemukan di dokumen real
                     "Perlengkapan",
                 ],
@@ -141,6 +149,8 @@ def get_pkm_kc_budget_rules() -> BudgetRules:
                     "Transport",
                     "Transportasi",
                     "Perjalanan",                     # variasi yang ditemukan di dokumen real
+                    "Belanja Perjalanan",
+                    "Perjalanan (maks. 30%)",
                 ],
                 max_percentage=30.0,
                 must_exist_in_table=True,
@@ -152,6 +162,7 @@ def get_pkm_kc_budget_rules() -> BudgetRules:
                     "Lain - lain",
                     "Lainnya",
                     "Lain Lain",
+                    "Lain-lain (maks. 15%)",
                 ],
                 max_percentage=15.0,
                 must_exist_in_table=True,

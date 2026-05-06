@@ -162,15 +162,24 @@ def is_bab4_rab_table(table: TableInfo) -> bool:
     - Header berisi kata "Jenis Pengeluaran" atau "Pengeluaran" + "Biaya" atau "Total"
     - 4-6 baris (4 kategori + optional jumlah)
     """
-    if table.cols < 3 or table.cols > 4:
+    if table.cols < 3 or table.cols > 7:
         return False
     header_blob = " ".join(h.upper() for h in table.header_texts)
     has_jenis = "JENIS" in header_blob or "URAIAN" in header_blob or "PENGELUARAN" in header_blob
-    has_biaya = "BIAYA" in header_blob or "TOTAL" in header_blob or "JUMLAH" in header_blob
-    # Reject yang terlalu besar (kemungkinan tabel jadwal atau Justifikasi)
-    if table.rows > 10:
+    has_biaya = (
+        "BIAYA" in header_blob
+        or "TOTAL" in header_blob
+        or "JUMLAH" in header_blob
+        or "DANA" in header_blob
+    )
+    has_volume = "VOLUME" in header_blob
+    # Tabel Bab 4 biasanya memuat kolom sumber dana (sebagian template),
+    # atau minimal tidak memakai kolom volume seperti Lampiran 2.
+    has_sumber_dana = "SUMBER DANA" in header_blob
+    # Tabel Bab 4 bisa memanjang karena rekap sumber dana.
+    if table.rows > 30:
         return False
-    return has_jenis and has_biaya
+    return has_jenis and has_biaya and (has_sumber_dana or not has_volume)
 
 
 def is_lampiran2_table(table: TableInfo) -> bool:
@@ -198,6 +207,23 @@ def is_lampiran2_table(table: TableInfo) -> bool:
 _SUBTOTAL_KEYWORDS = ("SUB TOTAL", "SUBTOTAL", "JUMLAH", "TOTAL")
 
 
+def _is_total_label(text: str) -> bool:
+    """
+    Deteksi label total/subtotal secara presisi.
+    Hindari false-positive pada kalimat biasa yang kebetulan mengandung kata "jumlah".
+    """
+    t = re.sub(r"\s+", " ", text.strip().upper())
+    if not t:
+        return False
+    if t == "JUMLAH":
+        return True
+    if t.startswith("SUB TOTAL") or t.startswith("SUBTOTAL"):
+        return True
+    if t.startswith("TOTAL") or t.startswith("GRAND TOTAL"):
+        return True
+    return False
+
+
 def parse_bab4_table(table: TableInfo) -> Bab4ParseResult:
     """
     Parse tabel RAB Bab 4 → kategori + total per kategori.
@@ -212,35 +238,43 @@ def parse_bab4_table(table: TableInfo) -> Bab4ParseResult:
         raw_header=list(table.header_texts),
     )
 
-    # Asumsi: kolom kedua = nama kategori, kolom terakhir = nilai
+    # Asumsi umum: kolom kedua = nama kategori, kolom terakhir = nilai.
+    # Namun tabel dengan merged cell bisa punya jumlah cell efektif < table.cols.
     name_col = 1
-    value_col = table.cols - 1
+    cat_totals: dict[str, int] = {}
 
     for r_idx in range(1, table.rows):
         row_cells = sorted(
             (c for c in table.cells if c.row == r_idx),
             key=lambda c: c.col,
         )
-        if len(row_cells) < table.cols:
+        if len(row_cells) < 2:
             continue
-        name_text = row_cells[name_col].text.strip()
-        value_text = row_cells[value_col].text.strip()
+        safe_name_col = name_col if len(row_cells) > name_col else 0
+        value_cell = row_cells[-1]
+        name_text = row_cells[safe_name_col].text.strip()
+        value_text = value_cell.text.strip()
         if not name_text:
             continue
 
         value_int = parse_indonesian_number(value_text)
-        is_grand_total = any(kw in name_text.upper() for kw in _SUBTOTAL_KEYWORDS)
+        upper_name = name_text.upper()
+        is_grand_total = _is_total_label(upper_name)
+        if "REKAP SUMBER DANA" in upper_name:
+            continue
 
         if is_grand_total:
             if value_int is not None:
                 result.grand_total_rp = value_int
         else:
-            result.categories.append(
-                BudgetCategoryTotal(
-                    category_name=name_text,
-                    total_rp=value_int,
-                )
-            )
+            if value_int is None:
+                continue
+            cat_totals[name_text] = cat_totals.get(name_text, 0) + value_int
+
+    result.categories = [
+        BudgetCategoryTotal(category_name=name, total_rp=total)
+        for name, total in cat_totals.items()
+    ]
 
     return result
 
@@ -273,9 +307,12 @@ def parse_lampiran2_table(table: TableInfo) -> Lampiran2ParseResult:
     if table.cols < 4:
         return result
 
-    name_col = 0
-    volume_col = 1 if table.cols >= 3 else None
-    price_col = 2 if table.cols >= 4 else None
+    # Banyak dokumen memakai kolom pertama "No", jadi deskripsi ada di kolom kedua.
+    first_header = (table.header_texts[0].strip().upper() if table.header_texts else "")
+    has_number_col = first_header in ("NO", "NOMOR")
+    desc_col = 1 if has_number_col and table.cols >= 2 else 0
+    volume_col = desc_col + 1 if table.cols > desc_col + 1 else None
+    price_col = desc_col + 2 if table.cols > desc_col + 2 else None
     value_col = table.cols - 1  # kolom terakhir = total
 
     current_category: Optional[str] = None
@@ -289,7 +326,8 @@ def parse_lampiran2_table(table: TableInfo) -> Lampiran2ParseResult:
         if len(row_cells) < table.cols:
             continue
 
-        first_cell_text = row_cells[name_col].text.strip()
+        number_cell_text = row_cells[0].text.strip() if row_cells else ""
+        first_cell_text = row_cells[desc_col].text.strip() if len(row_cells) > desc_col else ""
         last_cell_text = row_cells[value_col].text.strip()
 
         # 1. Cek header kategori (mis. "1. Jenis Perlengkapan")
@@ -303,12 +341,31 @@ def parse_lampiran2_table(table: TableInfo) -> Lampiran2ParseResult:
                 current_category = cat_match.group(2).strip()
                 continue
 
+        # Pola umum dokumen real:
+        # "1 | Belanja Bahan (maks. 60%) | ... | 5.160.000"
+        # treat sebagai header kategori (bukan item).
+        if (
+            has_number_col
+            and re.match(r"^\d+$", number_cell_text)
+            and first_cell_text
+        ):
+            vol_text = row_cells[volume_col].text.strip() if volume_col is not None else ""
+            price_text = row_cells[price_col].text.strip() if price_col is not None else ""
+            value_int = parse_indonesian_number(last_cell_text)
+            if value_int is not None and not vol_text and not price_text:
+                current_category = first_cell_text
+                continue
+
         # 2. Cek SUB TOTAL atau TOTAL
         first_upper = first_cell_text.upper()
-        if any(kw in first_upper for kw in _SUBTOTAL_KEYWORDS):
+        if _is_total_label(first_upper):
             value_int = parse_indonesian_number(last_cell_text)
             # Kalau "TOTAL" di akhir tabel = grand total
-            if "TOTAL 1+2+3+4" in first_upper or first_upper.startswith("TOTAL"):
+            if (
+                "TOTAL 1+2+3+4" in first_upper
+                or first_upper.startswith("TOTAL")
+                or "GRAND TOTAL" in first_upper
+            ):
                 if value_int is not None:
                     result.grand_total_rp = value_int
             else:
