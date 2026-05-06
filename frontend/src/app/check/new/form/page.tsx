@@ -7,6 +7,33 @@ type Lomba = 'PKM' | 'Lainnya';
 type Laporan = 'Proposal' | 'Laporan Kemajuan' | 'Laporan Akhir' | 'Artikel Ilmiah';
 
 const skemaPkm = ['PKM-KC', 'PKM-K', 'PKM-KI', 'PKM-PI', 'PKM-RE'];
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+
+const LAPORAN_TO_CODE: Record<Laporan, string> = {
+  'Proposal': 'PROPOSAL',
+  'Laporan Kemajuan': 'PROGRESS_REPORT',
+  'Laporan Akhir': 'FINAL_REPORT',
+  'Artikel Ilmiah': 'SCIENTIFIC_ARTICLE',
+};
+
+type ModuleResult = {
+  status?: string;
+  [key: string]: unknown;
+};
+
+type CheckResults = {
+  submission_id: string;
+  status: string;
+  overall_status: string;
+  results: {
+    structure: ModuleResult;
+    physical_sheet: ModuleResult;
+    format: ModuleResult;
+    page_numbering: ModuleResult;
+    budget: ModuleResult;
+    reference: ModuleResult;
+  };
+};
 
 export default function NewCheckFormPage() {
   const [lomba, setLomba] = useState<Lomba>('PKM');
@@ -15,10 +42,13 @@ export default function NewCheckFormPage() {
   const [token, setToken] = useState('');
   const [danaBelmawa, setDanaBelmawa] = useState('');
   const [danaPt, setDanaPt] = useState('');
-  const [fileName, setFileName] = useState('');
+  const [file, setFile] = useState<File | null>(null);
   const [logs, setLogs] = useState<string[]>([
     'Sistem siap. Silakan isi alur dari atas ke bawah.',
   ]);
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState<CheckResults | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string>('');
 
   const totalDana = useMemo(() => {
     const belmawa = Number(danaBelmawa || 0);
@@ -52,19 +82,61 @@ export default function NewCheckFormPage() {
     setLaporan(nextValue);
   }
 
-  function onSubmit(event: FormEvent<HTMLFormElement>) {
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setErrorMsg('');
+    setResult(null);
+
     if (!token.trim()) {
       addLog('Token wajib diisi sebelum submit.');
       return;
     }
-    if (!fileName) {
+    if (!file) {
       addLog('File laporan belum diunggah.');
       return;
     }
-    addLog(
-      `Proses dimulai: ${laporan} - ${skema}. Total dana Rp${totalDana.toLocaleString('id-ID')}.`,
-    );
+    if (!file.name.toLowerCase().endsWith('.docx')) {
+      addLog('File harus berformat .docx');
+      setErrorMsg('File harus berformat .docx');
+      return;
+    }
+
+    setSubmitting(true);
+    addLog(`Mengirim ${laporan} - ${skema} ke server...`);
+
+    const fd = new FormData();
+    fd.append('token', token.trim());
+    fd.append('competition', 'PKM');
+    fd.append('report_type', LAPORAN_TO_CODE[laporan]);
+    fd.append('schema_code', skema);
+    fd.append('funding_belmawa', String(Number(danaBelmawa || 0)));
+    fd.append('funding_pt', String(Number(danaPt || 0)));
+    fd.append('funding_external', '0');
+    fd.append('file', file);
+
+    try {
+      const res = await fetch(`${API_URL}/api/check`, {
+        method: 'POST',
+        body: fd,
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        const msg = data?.detail ?? `Error ${res.status}`;
+        addLog(`Gagal: ${msg}`);
+        setErrorMsg(typeof msg === 'string' ? msg : JSON.stringify(msg));
+        return;
+      }
+
+      addLog(`Selesai. Status: ${data.overall_status}`);
+      setResult(data as CheckResults);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      addLog(`Network error: ${msg}`);
+      setErrorMsg(`Tidak bisa terhubung ke server: ${msg}`);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -77,7 +149,6 @@ export default function NewCheckFormPage() {
         <h1 className="mt-3 max-w-4xl text-3xl font-light tracking-tight text-foreground sm:text-5xl">
           Form proses <span className="font-display italic text-gradient-brand">laporan PKM</span>
         </h1>
-       
       </section>
 
       <section className="mt-6 grid gap-6 lg:grid-cols-[1fr_380px]">
@@ -170,24 +241,31 @@ export default function NewCheckFormPage() {
               Total dana: Rp{totalDana.toLocaleString('id-ID')}
             </p>
 
-            <FieldLabel index="06" title="Upload laporan" />
+            <FieldLabel index="06" title="Upload laporan (.docx)" />
             <input
               type="file"
-              accept=".doc,.docx,.pdf"
+              accept=".docx"
               onChange={(event) => {
-                const file = event.target.files?.[0];
-                setFileName(file?.name ?? '');
-                if (file?.name) addLog(`File dipilih: ${file.name}`);
+                const f = event.target.files?.[0] ?? null;
+                setFile(f);
+                if (f) addLog(`File dipilih: ${f.name}`);
               }}
               className="glass-input w-full rounded-2xl px-4 py-3 text-sm file:mr-3 file:rounded-xl file:border-0 file:bg-brand-500 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white"
             />
 
             <button
               type="submit"
-              className="btn-liquid btn-liquid-primary w-full px-5 py-3 text-sm"
+              disabled={submitting}
+              className="btn-liquid btn-liquid-primary w-full px-5 py-3 text-sm disabled:opacity-50"
             >
-              Submit / Proses
+              {submitting ? 'Memproses... (1-2 menit)' : 'Submit / Proses'}
             </button>
+
+            {errorMsg && (
+              <div className="rounded-2xl border border-red-300 bg-red-50/70 p-4 text-sm text-red-700">
+                {errorMsg}
+              </div>
+            )}
           </div>
         </form>
 
@@ -199,15 +277,26 @@ export default function NewCheckFormPage() {
               <p>Laporan: {laporan}</p>
               <p>Skema: {skema}</p>
               <p>Token: {token ? 'Terisi' : 'Belum diisi'}</p>
-              <p>File: {fileName || 'Belum dipilih'}</p>
+              <p>File: {file?.name || 'Belum dipilih'}</p>
             </div>
           </div>
-          
+
+          <div className="glass-surface rounded-[1.5rem] p-6">
+            <h2 className="text-lg font-semibold text-foreground">Log Aktivitas</h2>
+            <ul className="mt-3 space-y-1 text-xs text-foreground-muted">
+              {logs.map((log, i) => (
+                <li key={i}>{log}</li>
+              ))}
+            </ul>
+          </div>
+
           <Link href="/check/new" className="btn-liquid btn-liquid-ghost inline-flex px-4 py-2 text-sm">
             Kembali ke Beranda Input
           </Link>
         </aside>
       </section>
+
+      {result && <ResultsSection result={result} />}
     </main>
   );
 }
@@ -220,5 +309,72 @@ function FieldLabel({ index, title }: { index: string; title: string }) {
       </p>
       <p className="mt-1 text-sm font-medium text-foreground">{title}</p>
     </div>
+  );
+}
+
+function ResultsSection({ result }: { result: CheckResults }) {
+  const overallColor =
+    result.overall_status === 'pass'
+      ? 'text-emerald-700'
+      : result.overall_status === 'warning'
+      ? 'text-amber-700'
+      : 'text-red-700';
+
+  const modules = [
+    { key: 'structure', label: 'Struktur Dokumen' },
+    { key: 'physical_sheet', label: 'Jumlah Lembar Fisik' },
+    { key: 'format', label: 'Format Penulisan' },
+    { key: 'page_numbering', label: 'Penomoran Halaman' },
+    { key: 'budget', label: 'Audit Anggaran' },
+    { key: 'reference', label: 'Daftar Pustaka' },
+  ] as const;
+
+  return (
+    <section className="mt-8 glass-surface rounded-[1.75rem] p-6 sm:p-8">
+      <p className="font-mono text-xs uppercase tracking-[0.2em] text-foreground-subtle">
+        Hasil Pengecekan
+      </p>
+      <div className="mt-2 flex items-baseline gap-3">
+        <h2 className="text-2xl font-light tracking-tight text-foreground">
+          Status keseluruhan:
+        </h2>
+        <span className={`text-2xl font-semibold uppercase ${overallColor}`}>
+          {result.overall_status}
+        </span>
+      </div>
+      <p className="mt-1 text-xs text-foreground-subtle">
+        Submission ID: <code>{result.submission_id}</code>
+      </p>
+
+      <div className="mt-6 grid gap-3">
+        {modules.map(({ key, label }) => {
+          const mod = result.results[key];
+          const status = (mod?.status as string) ?? 'unknown';
+          const statusColor =
+            status === 'pass'
+              ? 'text-emerald-700 bg-emerald-50/70 border-emerald-200'
+              : status === 'warning'
+              ? 'text-amber-700 bg-amber-50/70 border-amber-200'
+              : status === 'fail'
+              ? 'text-red-700 bg-red-50/70 border-red-200'
+              : 'text-gray-700 bg-gray-50/70 border-gray-200';
+          return (
+            <details key={key} className="glass-surface-subtle rounded-2xl border border-white/50">
+              <summary className="flex cursor-pointer items-center justify-between p-4 text-sm">
+                <span className="font-medium text-foreground">{label}</span>
+                <span
+                  className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase ${statusColor}`}
+                >
+                  {status}
+                </span>
+              </summary>
+              <pre className="overflow-x-auto rounded-b-2xl bg-black/5 p-4 text-[11px] leading-relaxed text-foreground">
+                {JSON.stringify(mod, null, 2)}
+              </pre>
+            </details>
+          );
+        })}
+      </div>
+    </section>
   );
 }
