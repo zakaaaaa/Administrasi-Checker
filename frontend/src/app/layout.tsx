@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next';
-import { Plus_Jakarta_Sans, Instrument_Serif, JetBrains_Mono } from 'next/font/google';
+import { Plus_Jakarta_Sans, Poppins } from 'next/font/google';
 import '@/styles/globals.css';
 
 // ----------------------------------------------------------------------------
@@ -12,19 +12,11 @@ const jakarta = Plus_Jakarta_Sans({
   weight: ['300', '400', '500', '600', '700', '800'],
 });
 
-const instrumentSerif = Instrument_Serif({
+const poppins = Poppins({
   subsets: ['latin'],
-  variable: '--font-instrument-serif',
+  variable: '--font-poppins',
   display: 'swap',
-  weight: ['400'],
-  style: ['normal', 'italic'],
-});
-
-const jetbrainsMono = JetBrains_Mono({
-  subsets: ['latin'],
-  variable: '--font-jetbrains',
-  display: 'swap',
-  weight: ['400', '500', '600'],
+  weight: ['400', '500', '600', '700', '800'],
 });
 
 // ----------------------------------------------------------------------------
@@ -52,9 +44,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html
       lang="id"
-      className={`${jakarta.variable} ${instrumentSerif.variable} ${jetbrainsMono.variable}`}
+      data-scroll-behavior="smooth"
+      className={`${jakarta.variable} ${poppins.variable}`}
     >
-      <body className="canvas-glass min-h-screen overflow-x-hidden font-sans text-foreground antialiased">
+      <body className="canvas-glass min-h-screen overflow-x-hidden font-sans text-base font-medium text-foreground antialiased">
         {/* Decorative orbs — di-render fixed, blur, behind content */}
         <div aria-hidden className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
           <div className="orb orb-brand h-[520px] w-[520px] left-[-180px] top-[-160px] animate-float-slow" />

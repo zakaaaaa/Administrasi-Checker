@@ -28,8 +28,8 @@ const config: Config = {
       },
       fontFamily: {
         sans: ['var(--font-jakarta)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-        display: ['var(--font-instrument-serif)', 'ui-serif', 'Georgia', 'serif'],
-        mono: ['var(--font-jetbrains)', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+        display: ['var(--font-poppins)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        mono: ['ui-monospace', 'SFMono-Regular', 'monospace'],
       },
       boxShadow: {
         'glass-lg': '0 16px 36px -10px rgba(15, 23, 42, 0.2), 0 6px 14px -6px rgba(15, 23, 42, 0.08)',
