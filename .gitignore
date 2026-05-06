@@ -24,3 +24,6 @@ out/
 # IDE
 .vscode/
 .idea/
+
+# User uploads (file mentah, jangan di-commit)
+backend/storage/
