@@ -16,7 +16,7 @@ from app.services.structure_checker import StructureChecker
 from app.services.physical_sheet_counter import PhysicalSheetCounter
 from app.services.format_checker import FormatChecker
 from app.services.page_numbering_checker import PageNumberingChecker
-from app.services.budget_auditor import BudgetAuditor, FundingInput
+from app.services.budget_auditor import BudgetAuditor
 from app.services.reference_validator import ReferenceValidator
 
 
@@ -30,9 +30,6 @@ class CheckRequest:
     competition: str   # "PKM"
     report_type: str   # "PROPOSAL"
     schema_code: str   # "PKM-KC"
-    funding_belmawa: int
-    funding_pt: int
-    funding_external: int
 
 
 def run_all_checks(req: CheckRequest) -> dict[str, Any]:
@@ -59,11 +56,6 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
     parser = DocxParser(str(docx_path))
     schema = get_pkm_kc_proposal_rules()
     budget_rules = get_pkm_kc_budget_rules()
-    funding = FundingInput(
-        belmawa=req.funding_belmawa,
-        university=req.funding_pt,
-        external=req.funding_external,
-    )
 
     results: dict[str, Any] = {}
     statuses: list[str] = []
@@ -106,7 +98,7 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
 
     # 5. Budget
     try:
-        r = BudgetAuditor(parser, budget_rules, funding).check()
+        r = BudgetAuditor(parser, budget_rules).check()
         results["budget"] = r.to_dict()
         statuses.append(_extract_status(results["budget"]))
     except Exception as e:

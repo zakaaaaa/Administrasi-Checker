@@ -1,44 +1,56 @@
 'use client';
 
-import { ChangeEvent, DragEvent, FormEvent, useEffect, useMemo, useState } from 'react';
+import { ChangeEvent, DragEvent, FormEvent, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import type { CheckResults } from '@/features/check/types';
 
-type Laporan = 'Proposal' | 'Laporan Kemajuan' | 'Laporan Akhir' | 'Artikel Ilmiah';
-type SkemaCode = 'PKM-KC' | 'PKM-K' | 'PKM-KI' | 'PKM-PI' | 'PKM-RE';
+type SkemaCode =
+  | 'PKM-KC' | 'PKM-K'  | 'PKM-RE' | 'PKM-RSH' | 'PKM-PM'
+  | 'PKM-PI' | 'PKM-KI' | 'PKM-VGK' | 'PKM-GFT' | 'PKM-AI';
 
-const LAPORAN_OPTIONS: { value: Laporan; label: string; desc: string }[] = [
-  { value: 'Proposal', label: 'Proposal', desc: 'Pengajuan awal kegiatan' },
-  { value: 'Laporan Kemajuan', label: 'Laporan Kemajuan', desc: 'Update progress mid-term' },
-  { value: 'Laporan Akhir', label: 'Laporan Akhir', desc: 'Hasil akhir kegiatan' },
-  { value: 'Artikel Ilmiah', label: 'Artikel Ilmiah', desc: 'Publikasi karya tulis' },
+type ReportCode = 'PROPOSAL' | 'PROGRESS_REPORT' | 'FINAL_REPORT' | 'SCIENTIFIC_ARTICLE';
+
+type ReportOption = { code: ReportCode; label: string; desc: string };
+
+const ALL_REPORTS: ReportOption[] = [
+  { code: 'PROPOSAL',          label: 'Proposal',         desc: 'Pengajuan awal kegiatan' },
+  { code: 'PROGRESS_REPORT',   label: 'Laporan Kemajuan', desc: 'Update progress mid-term' },
+  { code: 'FINAL_REPORT',      label: 'Laporan Akhir',    desc: 'Hasil akhir kegiatan' },
+  { code: 'SCIENTIFIC_ARTICLE',label: 'Artikel Ilmiah',   desc: 'Publikasi karya tulis' },
 ];
+
+const THREE_REPORTS: ReportCode[] = ['PROPOSAL', 'PROGRESS_REPORT', 'FINAL_REPORT'];
+
+const SKEMA_LAPORAN_MAP: Record<SkemaCode, ReportCode[]> = {
+  'PKM-K':   THREE_REPORTS,
+  'PKM-RE':  THREE_REPORTS,
+  'PKM-PM':  THREE_REPORTS,
+  'PKM-KC':  THREE_REPORTS,
+  'PKM-VGK': THREE_REPORTS,
+  'PKM-RSH': THREE_REPORTS,
+  'PKM-KI':  THREE_REPORTS,
+  'PKM-PI':  THREE_REPORTS,
+  'PKM-GFT': ['PROPOSAL'],
+  'PKM-AI':  ['SCIENTIFIC_ARTICLE'],
+};
 
 const SKEMA_OPTIONS: { value: SkemaCode; label: string; desc: string }[] = [
-  { value: 'PKM-KC', label: 'PKM-KC', desc: 'Karsa Cipta' },
-  { value: 'PKM-K', label: 'PKM-K', desc: 'Kewirausahaan' },
-  { value: 'PKM-KI', label: 'PKM-KI', desc: 'Karya Inovatif' },
-  { value: 'PKM-PI', label: 'PKM-PI', desc: 'Penerapan IPTEK' },
-  { value: 'PKM-RE', label: 'PKM-RE', desc: 'Riset Eksakta' },
+  { value: 'PKM-KC',  label: 'PKM-KC',  desc: 'Karsa Cipta' },
+  { value: 'PKM-K',   label: 'PKM-K',   desc: 'Kewirausahaan' },
+  { value: 'PKM-RE',  label: 'PKM-RE',  desc: 'Riset Eksakta' },
+  { value: 'PKM-RSH', label: 'PKM-RSH', desc: 'Riset Sosial Humaniora' },
+  { value: 'PKM-PM',  label: 'PKM-PM',  desc: 'Pengabdian Masyarakat' },
+  { value: 'PKM-PI',  label: 'PKM-PI',  desc: 'Penerapan IPTEK' },
+  { value: 'PKM-KI',  label: 'PKM-KI',  desc: 'Karya Inovatif' },
+  { value: 'PKM-VGK', label: 'PKM-VGK', desc: 'Video Gagasan Konstruktif' },
+  { value: 'PKM-GFT', label: 'PKM-GFT', desc: 'Gagasan Futuristik Tertulis' },
+  { value: 'PKM-AI',  label: 'PKM-AI',  desc: 'Artikel Ilmiah' },
 ];
-
-const LAPORAN_TO_CODE: Record<Laporan, string> = {
-  'Proposal': 'PROPOSAL',
-  'Laporan Kemajuan': 'PROGRESS_REPORT',
-  'Laporan Akhir': 'FINAL_REPORT',
-  'Artikel Ilmiah': 'SCIENTIFIC_ARTICLE',
-};
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
 const LAST_RESULT_STORAGE_KEY = 'last_check_result_v1';
 const MAX_FILE_MB = 25;
-
-function formatRupiah(value: string): string {
-  const digits = value.replace(/\D/g, '');
-  if (!digits) return '';
-  return Number(digits).toLocaleString('id-ID');
-}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -51,37 +63,36 @@ export default function NewCheckFormPage() {
   const searchParams = useSearchParams();
   const token = searchParams.get('token')?.trim() ?? '';
 
-  const [laporan, setLaporan] = useState<Laporan>('Proposal');
   const [skema, setSkema] = useState<SkemaCode>('PKM-KC');
-  const [danaBelmawa, setDanaBelmawa] = useState('');
-  const [danaPt, setDanaPt] = useState('');
+  const [reportCode, setReportCode] = useState<ReportCode>('PROPOSAL');
   const [file, setFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [fileError, setFileError] = useState('');
 
-  const totalDana = useMemo(() => {
-    const belmawa = Number(danaBelmawa.replace(/\D/g, '') || 0);
-    const pt = Number(danaPt.replace(/\D/g, '') || 0);
-    return belmawa + pt;
-  }, [danaBelmawa, danaPt]);
-
-  const isFormReady = Boolean(token && file && !fileError);
+  // When skema changes, reset report to first valid option
+  useEffect(() => {
+    const validCodes = SKEMA_LAPORAN_MAP[skema];
+    if (!validCodes.includes(reportCode)) {
+      setReportCode(validCodes[0]);
+    }
+  }, [skema, reportCode]);
 
   useEffect(() => {
-    if (!token) {
-      router.replace('/check/new');
-    }
+    if (!token) router.replace('/check/new');
   }, [token, router]);
+
+  const availableReports = ALL_REPORTS.filter((r) =>
+    SKEMA_LAPORAN_MAP[skema].includes(r.code),
+  );
+  const selectedReport = availableReports.find((r) => r.code === reportCode) ?? availableReports[0];
+  const isFormReady = Boolean(token && file && !fileError);
 
   function handleFile(f: File | null) {
     setFileError('');
     setErrorMsg('');
-    if (!f) {
-      setFile(null);
-      return;
-    }
+    if (!f) { setFile(null); return; }
     if (!f.name.toLowerCase().endsWith('.docx')) {
       setFileError('Format harus .docx');
       setFile(null);
@@ -96,39 +107,27 @@ export default function NewCheckFormPage() {
   }
 
   function onFileInput(event: ChangeEvent<HTMLInputElement>) {
-    const f = event.target.files?.[0] ?? null;
-    handleFile(f);
+    handleFile(event.target.files?.[0] ?? null);
   }
 
   function onDrop(event: DragEvent<HTMLLabelElement>) {
     event.preventDefault();
     setIsDragging(false);
-    const f = event.dataTransfer.files?.[0] ?? null;
-    handleFile(f);
+    handleFile(event.dataTransfer.files?.[0] ?? null);
   }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setErrorMsg('');
-    if (!token) {
-      setErrorMsg('Token wajib diisi dari halaman awal.');
-      return;
-    }
-    if (!file) {
-      setErrorMsg('File laporan belum diunggah.');
-      return;
-    }
+    if (!token) { setErrorMsg('Token wajib diisi dari halaman awal.'); return; }
+    if (!file)  { setErrorMsg('File laporan belum diunggah.'); return; }
 
     setSubmitting(true);
-
     const fd = new FormData();
     fd.append('token', token);
     fd.append('competition', 'PKM');
-    fd.append('report_type', LAPORAN_TO_CODE[laporan]);
+    fd.append('report_type', reportCode);
     fd.append('schema_code', skema);
-    fd.append('funding_belmawa', String(Number(danaBelmawa.replace(/\D/g, '') || 0)));
-    fd.append('funding_pt', String(Number(danaPt.replace(/\D/g, '') || 0)));
-    fd.append('funding_external', '0');
     fd.append('file', file);
 
     try {
@@ -139,12 +138,10 @@ export default function NewCheckFormPage() {
         setErrorMsg(typeof msg === 'string' ? msg : JSON.stringify(msg));
         return;
       }
-      const resultData = data as CheckResults;
-      sessionStorage.setItem(LAST_RESULT_STORAGE_KEY, JSON.stringify(resultData));
+      sessionStorage.setItem(LAST_RESULT_STORAGE_KEY, JSON.stringify(data as CheckResults));
       router.push('/check/new/result');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setErrorMsg(`Tidak bisa terhubung ke server: ${msg}`);
+      setErrorMsg(`Tidak bisa terhubung ke server: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setSubmitting(false);
     }
@@ -178,7 +175,8 @@ export default function NewCheckFormPage() {
               Lengkapi data <span className="text-gradient-brand">laporan PKM</span>
             </h1>
             <p className="mt-2 max-w-2xl text-sm text-foreground-muted sm:text-base">
-              Pilih jenis laporan, isi data pendanaan, dan unggah file <code className="rounded bg-brand-100/60 px-1.5 py-0.5 font-mono text-[0.85em]">.docx</code>.
+              Pilih skema dan jenis laporan, lalu unggah file{' '}
+              <code className="rounded bg-brand-100/60 px-1.5 py-0.5 font-mono text-[0.85em]">.docx</code>.
               Pengecekan otomatis berjalan setelah submit.
             </p>
           </div>
@@ -197,7 +195,6 @@ export default function NewCheckFormPage() {
           </div>
         </div>
 
-        {/* Step bar */}
         <div className="mt-6 flex items-center gap-2">
           <StepDot state="done" label="Token" />
           <StepBar state="active" />
@@ -210,24 +207,10 @@ export default function NewCheckFormPage() {
       <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
         {/* FORM COLUMN */}
         <form onSubmit={onSubmit} className="space-y-5">
-          {/* Section 1: Jenis Laporan */}
-          <Section number={1} title="Jenis laporan" description="Pilih dokumen yang sedang Anda susun.">
-            <div className="grid gap-3 sm:grid-cols-2">
-              {LAPORAN_OPTIONS.map((opt) => (
-                <SelectCard
-                  key={opt.value}
-                  active={laporan === opt.value}
-                  onClick={() => setLaporan(opt.value)}
-                  label={opt.label}
-                  description={opt.desc}
-                />
-              ))}
-            </div>
-          </Section>
 
-          {/* Section 2: Skema PKM */}
-          <Section number={2} title="Skema PKM" description="Pilih satu skema sesuai usulan.">
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {/* Section 1: Skema PKM */}
+          <Section number={1} title="Skema PKM" description="Pilih satu skema sesuai usulan Anda.">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
               {SKEMA_OPTIONS.map((opt) => (
                 <SelectCard
                   key={opt.value}
@@ -241,32 +224,36 @@ export default function NewCheckFormPage() {
             </div>
           </Section>
 
-          {/* Section 3: Pendanaan */}
-          <Section number={3} title="Pendanaan" description="Total dana yang diajukan dalam proposal.">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <RupiahInput
-                label="Dana Belmawa"
-                hint="Sumber dari Direktorat Belmawa"
-                value={danaBelmawa}
-                onChange={(v) => setDanaBelmawa(formatRupiah(v))}
-              />
-              <RupiahInput
-                label="Dana Perguruan Tinggi"
-                hint="Pendamping dari kampus"
-                value={danaPt}
-                onChange={(v) => setDanaPt(formatRupiah(v))}
-              />
+          {/* Section 2: Jenis Laporan (filtered by skema) */}
+          <Section
+            number={2}
+            title="Jenis Laporan"
+            description={
+              availableReports.length === 1
+                ? `Skema ${skema} hanya memiliki satu jenis laporan.`
+                : `Pilih dokumen yang sedang Anda susun untuk skema ${skema}.`
+            }
+          >
+            <div className={`grid gap-3 ${availableReports.length === 1 ? '' : 'sm:grid-cols-2'}`}>
+              {availableReports.map((opt) => (
+                <SelectCard
+                  key={opt.code}
+                  active={reportCode === opt.code}
+                  onClick={() => setReportCode(opt.code)}
+                  label={opt.label}
+                  description={opt.desc}
+                />
+              ))}
             </div>
-            <div className="mt-4 flex items-center justify-between rounded-2xl border border-brand-200/60 bg-brand-50/60 px-4 py-3">
-              <span className="text-sm font-medium text-foreground-muted">Total dana</span>
-              <span className="text-lg font-bold text-brand-700">
-                Rp {totalDana.toLocaleString('id-ID')}
-              </span>
-            </div>
+            {availableReports.length === 1 && (
+              <p className="mt-2 text-xs text-foreground-muted">
+                Jenis laporan dipilih otomatis sesuai skema.
+              </p>
+            )}
           </Section>
 
-          {/* Section 4: Upload */}
-          <Section number={4} title="Upload laporan" description="Hanya menerima file .docx, maksimal 25 MB.">
+          {/* Section 3: Upload */}
+          <Section number={3} title="Upload laporan" description="Hanya menerima file .docx, maksimal 25 MB.">
             {!file ? (
               <label
                 onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
@@ -318,9 +305,7 @@ export default function NewCheckFormPage() {
                 </button>
               </div>
             )}
-            {fileError && (
-              <p className="mt-2 text-xs font-semibold text-red-600">{fileError}</p>
-            )}
+            {fileError && <p className="mt-2 text-xs font-semibold text-red-600">{fileError}</p>}
           </Section>
 
           {/* Submit */}
@@ -369,27 +354,13 @@ export default function NewCheckFormPage() {
         {/* SIDEBAR */}
         <aside className="space-y-4 lg:sticky lg:top-6 lg:h-fit">
           <div className="glass-surface rounded-[1.5rem] p-5">
-            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-foreground-subtle">
-              Ringkasan
-            </p>
+            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-foreground-subtle">Ringkasan</p>
             <h2 className="mt-1 text-lg font-semibold text-foreground">Progress pengisian</h2>
-
             <ul className="mt-4 space-y-2.5">
               <ChecklistRow done label="Token diisi" value={tokenPreview} mono />
-              <ChecklistRow done label="Jenis laporan" value={laporan} />
               <ChecklistRow done label="Skema PKM" value={skema} />
-              <ChecklistRow
-                done={totalDana > 0}
-                label="Pendanaan"
-                value={totalDana > 0 ? `Rp ${totalDana.toLocaleString('id-ID')}` : 'Opsional'}
-                muted={totalDana === 0}
-              />
-              <ChecklistRow
-                done={Boolean(file)}
-                label="File laporan"
-                value={file?.name ?? 'Belum dipilih'}
-                truncate
-              />
+              <ChecklistRow done label="Jenis Laporan" value={selectedReport.label} />
+              <ChecklistRow done={Boolean(file)} label="File laporan" value={file?.name ?? 'Belum dipilih'} truncate />
             </ul>
           </div>
 
@@ -407,6 +378,7 @@ export default function NewCheckFormPage() {
             <ul className="mt-3 space-y-2 text-xs text-foreground-muted">
               <li>• File <strong>harus .docx</strong> agar parser dapat membaca struktur dokumen.</li>
               <li>• Pastikan halaman <strong>Daftar Isi</strong> sudah ter-update sebelum unggah.</li>
+              <li>• Data pendanaan dibaca otomatis dari isi dokumen.</li>
               <li>• Proses memakan ~1–2 menit, jangan tutup tab browser.</li>
             </ul>
           </div>
@@ -485,38 +457,6 @@ function SelectCard({
   );
 }
 
-function RupiahInput({
-  label,
-  hint,
-  value,
-  onChange,
-}: {
-  label: string;
-  hint: string;
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <label className="block">
-      <span className="text-sm font-semibold text-foreground">{label}</span>
-      <span className="mt-0.5 block text-xs text-foreground-muted">{hint}</span>
-      <div className="relative mt-2">
-        <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-sm font-semibold text-foreground-muted">
-          Rp
-        </span>
-        <input
-          type="text"
-          inputMode="numeric"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="0"
-          className="glass-input w-full rounded-xl pl-10 pr-3 py-2.5 text-sm font-medium tabular-nums"
-        />
-      </div>
-    </label>
-  );
-}
-
 function StepDot({ state, label }: { state: 'done' | 'active' | 'todo'; label: string }) {
   const dot =
     state === 'done'
@@ -532,9 +472,7 @@ function StepDot({ state, label }: { state: 'done' | 'active' | 'todo'; label: s
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="h-2.5 w-2.5">
             <polyline points="20 6 9 17 4 12" />
           </svg>
-        ) : (
-          ''
-        )}
+        ) : ''}
       </span>
       <span className={`text-xs font-medium ${text}`}>{label}</span>
     </div>
@@ -543,11 +481,7 @@ function StepDot({ state, label }: { state: 'done' | 'active' | 'todo'; label: s
 
 function StepBar({ state }: { state: 'active' | 'todo' }) {
   return (
-    <span
-      className={`h-0.5 flex-1 max-w-[60px] rounded-full ${
-        state === 'active' ? 'bg-brand-300' : 'bg-white/60'
-      }`}
-    />
+    <span className={`h-0.5 max-w-[60px] flex-1 rounded-full ${state === 'active' ? 'bg-brand-300' : 'bg-white/60'}`} />
   );
 }
 
@@ -568,11 +502,7 @@ function ChecklistRow({
 }) {
   return (
     <li className="flex items-start gap-2.5">
-      <span
-        className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full ${
-          done ? 'bg-brand-500 text-white' : 'border border-foreground-subtle/30 bg-transparent'
-        }`}
-      >
+      <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full ${done ? 'bg-brand-500 text-white' : 'border border-foreground-subtle/30 bg-transparent'}`}>
         {done && (
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" className="h-2.5 w-2.5">
             <polyline points="20 6 9 17 4 12" />
@@ -580,14 +510,8 @@ function ChecklistRow({
         )}
       </span>
       <div className="min-w-0 flex-1">
-        <p className="text-[11px] font-medium uppercase tracking-wide text-foreground-subtle">
-          {label}
-        </p>
-        <p
-          className={`text-sm font-semibold ${muted ? 'text-foreground-muted' : 'text-foreground'} ${
-            truncate ? 'truncate' : ''
-          } ${mono ? 'font-mono' : ''}`}
-        >
+        <p className="text-[11px] font-medium uppercase tracking-wide text-foreground-subtle">{label}</p>
+        <p className={`text-sm font-semibold ${muted ? 'text-foreground-muted' : 'text-foreground'} ${truncate ? 'truncate' : ''} ${mono ? 'font-mono' : ''}`}>
           {value}
         </p>
       </div>

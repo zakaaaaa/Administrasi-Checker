@@ -47,6 +47,7 @@ from app.services.style_resolver import StyleResolver
 class FormatRules:
     font_name: str = "Times New Roman"
     font_size_pt: float = 12.0
+    font_size_tolerance_pt: float = 0.3   # 11.7–12.3 diterima
     margin_left_cm: float = 4.0
     margin_right_cm: float = 3.0
     margin_top_cm: float = 3.0
@@ -374,27 +375,33 @@ class FormatChecker:
                     )
                 )
 
-            # Cek size
-            if font.size_pt is not None and font.size_pt != self.rules.font_size_pt:
+            # Cek size (dengan toleransi ±font_size_tolerance_pt)
+            if font.size_pt is not None and abs(font.size_pt - self.rules.font_size_pt) > self.rules.font_size_tolerance_pt:
+                tol = self.rules.font_size_tolerance_pt
+                lo = round(self.rules.font_size_pt - tol, 2)
+                hi = round(self.rules.font_size_pt + tol, 2)
                 sec.issues.append(
                     FormatIssue(
                         check_name="font_size",
                         severity="fail",
                         location=self._format_para_location(para.index),
-                        issue=f"Ukuran font bukan {self.rules.font_size_pt}pt.",
+                        issue=f"Ukuran font di luar rentang {lo}–{hi}pt.",
                         found=f"{font.size_pt}pt",
-                        expected=f"{self.rules.font_size_pt}pt",
+                        expected=f"{self.rules.font_size_pt}pt (toleransi ±{tol}pt, rentang {lo}–{hi}pt)",
                     )
                 )
 
         if sec.issues:
             sec.status = "fail"
+        tol = self.rules.font_size_tolerance_pt
         sec.detail = {
             "font_distribution": dict(sorted(font_distribution.items(), key=lambda x: -x[1])),
             "size_distribution": dict(sorted(size_distribution.items(), key=lambda x: -x[1])),
             "violations_count": len(sec.issues),
             "expected_font": self.rules.font_name,
             "expected_size_pt": self.rules.font_size_pt,
+            "font_size_tolerance_pt": tol,
+            "acceptable_size_range": f"{round(self.rules.font_size_pt - tol, 2)}–{round(self.rules.font_size_pt + tol, 2)}pt",
         }
         return sec
 

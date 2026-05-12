@@ -72,6 +72,15 @@ class GenerateTokenResponse(BaseModel):
     token: str
 
 
+class GenerateBulkTokenRequest(BaseModel):
+    admin_id: str
+    count: int
+
+
+class GenerateBulkTokenResponse(BaseModel):
+    tokens: list[str]
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -135,7 +144,6 @@ def admin_login(req: AdminLoginRequest):
 @app.post("/api/admin/tokens", response_model=GenerateTokenResponse)
 def generate_admin_token(req: GenerateTokenRequest):
     admin = _verify_admin(req.admin_id)
-    # Generate token unik (retry jika tabrakan)
     for _ in range(5):
         token = generate_token()
         try:
@@ -148,6 +156,58 @@ def generate_admin_token(req: GenerateTokenRequest):
         except Exception:
             continue
     raise HTTPException(500, "Gagal generate token unik")
+
+
+@app.post("/api/admin/tokens/bulk", response_model=GenerateBulkTokenResponse)
+def generate_bulk_tokens(req: GenerateBulkTokenRequest):
+    if req.count < 2 or req.count > 500:
+        raise HTTPException(400, "Jumlah token harus antara 2–500")
+    admin = _verify_admin(req.admin_id)
+    tokens: list[str] = []
+    for _ in range(req.count):
+        generated = False
+        for _ in range(5):
+            token = generate_token()
+            try:
+                with get_cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO tokens (token, created_by) VALUES (%s, %s)",
+                        (token, admin["id"]),
+                    )
+                tokens.append(token)
+                generated = True
+                break
+            except Exception:
+                continue
+        if not generated:
+            raise HTTPException(500, "Gagal generate token unik")
+    return GenerateBulkTokenResponse(tokens=tokens)
+
+
+@app.get("/api/admin/tokens")
+def list_tokens(admin_id: str):
+    _verify_admin(admin_id)
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT token, created_at, consumed_at
+            FROM tokens
+            ORDER BY created_at DESC
+            LIMIT 500
+            """,
+        )
+        rows = cur.fetchall()
+    return {
+        "tokens": [
+            {
+                "token": r["token"],
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                "used": r["consumed_at"] is not None,
+                "used_at": r["consumed_at"].isoformat() if r["consumed_at"] else None,
+            }
+            for r in rows
+        ]
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -171,9 +231,6 @@ def submit_check(
     competition: str = Form(...),
     report_type: str = Form(...),
     schema_code: str = Form(...),
-    funding_belmawa: int = Form(0),
-    funding_pt: int = Form(0),
-    funding_external: int = Form(0),
     file: UploadFile = File(...),
 ):
     # 1. Validate file extension
@@ -210,13 +267,11 @@ def submit_check(
             """
             INSERT INTO submissions
                 (id, token_id, competition, report_type, schema_code,
-                 original_filename, file_path, file_size_bytes,
-                 funding_belmawa, funding_pt, funding_external, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'processing')
+                 original_filename, file_path, file_size_bytes, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'processing')
             """,
             (submission_id, token_id, competition, report_type, schema_code,
-             file.filename, str(file_path), len(content),
-             funding_belmawa, funding_pt, funding_external),
+             file.filename, str(file_path), len(content)),
         )
 
         # 6. Mark token consumed
@@ -232,9 +287,6 @@ def submit_check(
             competition=competition,
             report_type=report_type,
             schema_code=schema_code,
-            funding_belmawa=funding_belmawa,
-            funding_pt=funding_pt,
-            funding_external=funding_external,
         )
         results = run_all_checks(req)
     except UnsupportedSchemaError as e:

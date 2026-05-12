@@ -8,6 +8,7 @@ const STORAGE_KEY = 'admin_session_v1';
 
 type MenuKey =
   | 'token'
+  | 'monitoring'
   | 'dashboard'
   | 'users'
   | 'uploads'
@@ -26,6 +27,12 @@ const MENU_ITEMS: MenuItem[] = [
     key: 'token',
     label: 'Generate Token',
     description: 'Buat token sekali pakai untuk user.',
+    active: true,
+  },
+  {
+    key: 'monitoring',
+    label: 'Monitoring Token',
+    description: 'Pantau status pemakaian token.',
     active: true,
   },
   {
@@ -71,10 +78,19 @@ export default function AdminPage() {
   const [activeMenu, setActiveMenu] = useState<MenuKey>('token');
   const [showPassword, setShowPassword] = useState(false);
 
+  const [tokenCount, setTokenCount] = useState(1);
   const [generatedToken, setGeneratedToken] = useState('');
+  const [bulkTokens, setBulkTokens] = useState<string[]>([]);
   const [tokenError, setTokenError] = useState('');
   const [tokenLoading, setTokenLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  const [tokenList, setTokenList] = useState<TokenRecord[]>([]);
+  const [tokenListLoading, setTokenListLoading] = useState(false);
+  const [tokenListError, setTokenListError] = useState('');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'used' | 'unused'>('all');
+  const [filterDateFrom, setFilterDateFrom] = useState('');
+  const [filterDateTo, setFilterDateTo] = useState('');
 
   useEffect(() => {
     try {
@@ -90,6 +106,13 @@ export default function AdminPage() {
       // ignore
     }
   }, []);
+
+  useEffect(() => {
+    if (activeMenu === 'monitoring' && adminId) {
+      fetchTokenList();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeMenu, adminId]);
 
   async function handleAuth() {
     setLoginError('');
@@ -128,36 +151,48 @@ export default function AdminPage() {
     setAdminId('');
     setAdminUsername('');
     setGeneratedToken('');
+    setBulkTokens([]);
     setTokenError('');
+    setTokenList([]);
     setActiveMenu('token');
   }
 
   async function handleGenerateToken() {
     setTokenError('');
     setGeneratedToken('');
+    setBulkTokens([]);
     setCopied(false);
-    if (!adminId) {
-      setTokenError('Belum login.');
-      return;
-    }
+    if (!adminId) { setTokenError('Belum login.'); return; }
     setTokenLoading(true);
     try {
-      const res = await fetch(`${API_URL}/api/admin/tokens`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ admin_id: adminId }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        if (res.status === 401) {
-          handleLogout();
-          setTokenError('Session berakhir. Silakan login ulang.');
+      if (tokenCount === 1) {
+        const res = await fetch(`${API_URL}/api/admin/tokens`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ admin_id: adminId }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          if (res.status === 401) { handleLogout(); setTokenError('Session berakhir. Silakan login ulang.'); return; }
+          setTokenError(typeof data?.detail === 'string' ? data.detail : 'Gagal generate token');
           return;
         }
-        setTokenError(typeof data?.detail === 'string' ? data.detail : 'Gagal generate token');
-        return;
+        setGeneratedToken(data.token);
+      } else {
+        const res = await fetch(`${API_URL}/api/admin/tokens/bulk`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ admin_id: adminId, count: tokenCount }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          if (res.status === 401) { handleLogout(); setTokenError('Session berakhir. Silakan login ulang.'); return; }
+          setTokenError(typeof data?.detail === 'string' ? data.detail : 'Gagal generate token');
+          return;
+        }
+        setBulkTokens(data.tokens as string[]);
       }
-      setGeneratedToken(data.token);
+      fetchTokenList();
     } catch (err) {
       setTokenError(`Tidak bisa terhubung ke server: ${err instanceof Error ? err.message : err}`);
     } finally {
@@ -171,8 +206,37 @@ export default function AdminPage() {
       await navigator.clipboard.writeText(generatedToken);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // ignore
+    } catch { /* ignore */ }
+  }
+
+  function handleExportTokens() {
+    if (!bulkTokens.length) return;
+    const content = bulkTokens.join('\n');
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `tokens_${new Date().toISOString().slice(0, 10)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function fetchTokenList() {
+    if (!adminId) return;
+    setTokenListLoading(true);
+    setTokenListError('');
+    try {
+      const res = await fetch(`${API_URL}/api/admin/tokens?admin_id=${encodeURIComponent(adminId)}`);
+      const data = await res.json();
+      if (!res.ok) {
+        setTokenListError(typeof data?.detail === 'string' ? data.detail : 'Gagal memuat daftar token');
+        return;
+      }
+      setTokenList(data.tokens);
+    } catch (err) {
+      setTokenListError(`Tidak bisa terhubung ke server: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setTokenListLoading(false);
     }
   }
 
@@ -473,9 +537,19 @@ export default function AdminPage() {
               />
               <KpiCard
                 icon="key"
-                label="Token Terakhir"
-                value={generatedToken ? 'Aktif' : '—'}
-                hint={generatedToken ? 'Baru di-generate' : 'Belum ada'}
+                label="Token Di-generate"
+                value={
+                  bulkTokens.length
+                    ? `${bulkTokens.length} token`
+                    : generatedToken
+                    ? '1 token'
+                    : '—'
+                }
+                hint={
+                  bulkTokens.length || generatedToken
+                    ? 'Baru di-generate'
+                    : 'Belum ada'
+                }
               />
               <KpiCard
                 icon="pulse"
@@ -487,49 +561,106 @@ export default function AdminPage() {
 
             {activeMenu === 'token' ? (
               <div className="glass-surface rounded-[1.5rem] p-6 sm:p-8">
-                <div className="flex items-center gap-2">
-                  <MenuIcon name="key" className="h-4 w-4 text-brand-600" />
-                  <h2 className="text-lg font-semibold text-foreground">
-                    Buat Token Sekali Pakai
-                  </h2>
-                </div>
-                <p className="mt-1.5 text-sm text-foreground-muted">
-                  Klik tombol di bawah untuk men-generate token baru. Token akan langsung
-                  tampil dan bisa disalin untuk diberikan ke user.
-                </p>
+                  <div className="flex items-center gap-2">
+                    <MenuIcon name="key" className="h-4 w-4 text-brand-600" />
+                    <h2 className="text-lg font-semibold text-foreground">Buat Token Sekali Pakai</h2>
+                  </div>
+                  <p className="mt-1.5 text-sm text-foreground-muted">
+                    Masukkan jumlah token lalu klik Generate. Token 1 bisa langsung disalin; token banyak bisa diekspor sebagai file.
+                  </p>
 
-                <div className="mt-5 space-y-4">
-                  <button
-                    type="button"
-                    onClick={handleGenerateToken}
-                    disabled={tokenLoading}
-                    className="btn-liquid btn-liquid-primary w-full px-5 py-3 text-base font-semibold disabled:opacity-50 sm:w-auto"
-                  >
-                    {tokenLoading ? 'Memproses...' : 'Generate Token'}
-                  </button>
-
-                  <div className="glass-surface-subtle flex flex-wrap items-center gap-3 rounded-2xl px-4 py-3">
-                    <code className="flex-1 break-all font-mono text-sm text-foreground">
-                      {generatedToken || 'Belum ada token yang dibuat'}
-                    </code>
-                    {generatedToken && (
+                  <div className="mt-5 space-y-4">
+                    {/* Count input + button */}
+                    <div className="flex flex-wrap items-end gap-3">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-semibold uppercase tracking-wide text-foreground-subtle">
+                          Jumlah Token
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={500}
+                          value={tokenCount}
+                          onChange={(e) => {
+                            const v = parseInt(e.target.value, 10);
+                            if (!isNaN(v)) setTokenCount(Math.max(1, Math.min(500, v)));
+                          }}
+                          className="glass-input w-28 rounded-2xl px-4 py-2.5 text-center text-sm font-semibold"
+                        />
+                      </div>
                       <button
                         type="button"
-                        onClick={handleCopyToken}
-                        className="btn-liquid btn-liquid-ghost px-3 py-1.5 text-xs font-semibold"
+                        onClick={handleGenerateToken}
+                        disabled={tokenLoading}
+                        className="btn-liquid btn-liquid-primary px-6 py-2.5 text-sm font-semibold disabled:opacity-50"
                       >
-                        {copied ? 'Tersalin!' : 'Copy'}
+                        {tokenLoading ? 'Memproses...' : `Generate ${tokenCount === 1 ? 'Token' : `${tokenCount} Token`}`}
                       </button>
+                    </div>
+
+                    {/* Single token result */}
+                    {tokenCount === 1 && (
+                      <div className="glass-surface-subtle flex flex-wrap items-center gap-3 rounded-2xl px-4 py-3">
+                        <code className="flex-1 break-all font-mono text-sm text-foreground">
+                          {generatedToken || 'Belum ada token yang dibuat'}
+                        </code>
+                        {generatedToken && (
+                          <button
+                            type="button"
+                            onClick={handleCopyToken}
+                            className="btn-liquid btn-liquid-ghost px-3 py-1.5 text-xs font-semibold"
+                          >
+                            {copied ? 'Tersalin!' : 'Copy'}
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Bulk token result */}
+                    {tokenCount > 1 && bulkTokens.length > 0 && (
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <p className="text-sm font-semibold text-foreground">
+                            {bulkTokens.length} token berhasil di-generate
+                          </p>
+                          <button
+                            type="button"
+                            onClick={handleExportTokens}
+                            className="btn-liquid btn-liquid-primary px-4 py-2 text-xs font-semibold"
+                          >
+                            Ekspor (.txt)
+                          </button>
+                        </div>
+                        <div className="glass-surface-subtle max-h-48 overflow-y-auto rounded-2xl px-4 py-3">
+                          {bulkTokens.map((t) => (
+                            <code key={t} className="block break-all font-mono text-xs text-foreground-muted py-0.5">
+                              {t}
+                            </code>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {tokenError && (
+                      <div className="rounded-2xl border border-red-300 bg-red-50/70 p-4 text-sm font-semibold text-red-700">
+                        {tokenError}
+                      </div>
                     )}
                   </div>
-
-                  {tokenError && (
-                    <div className="rounded-2xl border border-red-300 bg-red-50/70 p-4 text-sm font-semibold text-red-700">
-                      {tokenError}
-                    </div>
-                  )}
-                </div>
               </div>
+            ) : activeMenu === 'monitoring' ? (
+              <MonitoringPage
+                tokenList={tokenList}
+                tokenListLoading={tokenListLoading}
+                tokenListError={tokenListError}
+                filterStatus={filterStatus}
+                setFilterStatus={setFilterStatus}
+                filterDateFrom={filterDateFrom}
+                setFilterDateFrom={setFilterDateFrom}
+                filterDateTo={filterDateTo}
+                setFilterDateTo={setFilterDateTo}
+                onRefresh={fetchTokenList}
+              />
             ) : (
               <div className="glass-surface rounded-[1.5rem] p-6 sm:p-8">
                 <div className="rounded-2xl border border-dashed border-white/60 bg-white/40 p-10 text-center">
@@ -559,6 +690,206 @@ export default function AdminPage() {
           </main>
         </div>
       </div>
+    </div>
+  );
+}
+
+type TokenRecord = { token: string; created_at: string | null; used: boolean; used_at: string | null };
+
+function MonitoringPage({
+  tokenList,
+  tokenListLoading,
+  tokenListError,
+  filterStatus,
+  setFilterStatus,
+  filterDateFrom,
+  setFilterDateFrom,
+  filterDateTo,
+  setFilterDateTo,
+  onRefresh,
+}: {
+  tokenList: TokenRecord[];
+  tokenListLoading: boolean;
+  tokenListError: string;
+  filterStatus: 'all' | 'used' | 'unused';
+  setFilterStatus: (v: 'all' | 'used' | 'unused') => void;
+  filterDateFrom: string;
+  setFilterDateFrom: (v: string) => void;
+  filterDateTo: string;
+  setFilterDateTo: (v: string) => void;
+  onRefresh: () => void;
+}) {
+  const filtered = tokenList.filter((t) => {
+    if (filterStatus === 'used' && !t.used) return false;
+    if (filterStatus === 'unused' && t.used) return false;
+    if (filterDateFrom && t.created_at) {
+      if (new Date(t.created_at) < new Date(filterDateFrom)) return false;
+    }
+    if (filterDateTo && t.created_at) {
+      const to = new Date(filterDateTo);
+      to.setHours(23, 59, 59, 999);
+      if (new Date(t.created_at) > to) return false;
+    }
+    return true;
+  });
+  const usedCount = tokenList.filter((t) => t.used).length;
+  const unusedCount = tokenList.length - usedCount;
+
+  return (
+    <div className="glass-surface rounded-[1.5rem] p-6 sm:p-8">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <MenuIcon name="monitoring" className="h-4 w-4 text-brand-600" />
+          <h2 className="text-lg font-semibold text-foreground">Monitoring Token</h2>
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={tokenListLoading}
+          className="btn-liquid btn-liquid-ghost px-4 py-1.5 text-xs font-semibold disabled:opacity-50"
+        >
+          {tokenListLoading ? 'Memuat...' : 'Refresh'}
+        </button>
+      </div>
+
+      {tokenList.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          <span className="rounded-full bg-white/50 px-3 py-1 text-xs font-semibold text-foreground-muted">
+            Total: {tokenList.length}
+          </span>
+          <span className="rounded-full bg-green-100/80 px-3 py-1 text-xs font-semibold text-green-700">
+            Belum dipakai: {unusedCount}
+          </span>
+          <span className="rounded-full bg-red-100/80 px-3 py-1 text-xs font-semibold text-red-700">
+            Terpakai: {usedCount}
+          </span>
+        </div>
+      )}
+
+      <div className="mt-4 flex flex-wrap items-end gap-3">
+        <div className="flex flex-col gap-1">
+          <label className="text-[10px] font-semibold uppercase tracking-wide text-foreground-subtle">
+            Dari Tanggal
+          </label>
+          <input
+            type="date"
+            value={filterDateFrom}
+            onChange={(e) => setFilterDateFrom(e.target.value)}
+            className="glass-input rounded-xl px-3 py-2 text-xs font-medium"
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-[10px] font-semibold uppercase tracking-wide text-foreground-subtle">
+            Sampai Tanggal
+          </label>
+          <input
+            type="date"
+            value={filterDateTo}
+            onChange={(e) => setFilterDateTo(e.target.value)}
+            className="glass-input rounded-xl px-3 py-2 text-xs font-medium"
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-[10px] font-semibold uppercase tracking-wide text-foreground-subtle">
+            Status
+          </label>
+          <div className="flex overflow-hidden rounded-xl border border-white/40 bg-white/30">
+            {(['all', 'unused', 'used'] as const).map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setFilterStatus(s)}
+                className={`px-3 py-2 text-xs font-semibold transition ${
+                  filterStatus === s
+                    ? 'bg-brand-500 text-white'
+                    : 'text-foreground-muted hover:bg-white/50'
+                }`}
+              >
+                {s === 'all' ? 'Semua' : s === 'unused' ? 'Belum dipakai' : 'Terpakai'}
+              </button>
+            ))}
+          </div>
+        </div>
+        {(filterDateFrom || filterDateTo || filterStatus !== 'all') && (
+          <button
+            type="button"
+            onClick={() => { setFilterDateFrom(''); setFilterDateTo(''); setFilterStatus('all'); }}
+            className="rounded-xl px-3 py-2 text-xs font-semibold text-foreground-muted transition hover:bg-white/40"
+          >
+            Reset filter
+          </button>
+        )}
+      </div>
+
+      {tokenListError && (
+        <div className="mt-4 rounded-2xl border border-red-300 bg-red-50/70 p-3 text-sm font-semibold text-red-700">
+          {tokenListError}
+        </div>
+      )}
+
+      {tokenListLoading && (
+        <div className="mt-6 py-8 text-center text-sm text-foreground-muted">Memuat data token...</div>
+      )}
+
+      {!tokenListLoading && !tokenListError && tokenList.length === 0 && (
+        <div className="mt-6 rounded-2xl border border-dashed border-white/60 bg-white/30 py-8 text-center">
+          <p className="text-sm text-foreground-muted">Belum ada token. Generate token untuk melihat daftar.</p>
+        </div>
+      )}
+
+      {!tokenListLoading && tokenList.length > 0 && filtered.length === 0 && (
+        <div className="mt-6 rounded-2xl border border-dashed border-white/60 bg-white/30 py-8 text-center">
+          <p className="text-sm text-foreground-muted">Tidak ada token yang cocok dengan filter.</p>
+        </div>
+      )}
+
+      {!tokenListLoading && filtered.length > 0 && (
+        <div className="mt-4 overflow-x-auto rounded-2xl">
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-white/30">
+                <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-foreground-subtle">Token</th>
+                <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-foreground-subtle">Dibuat</th>
+                <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-foreground-subtle">Status</th>
+                <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-foreground-subtle">Dipakai Pada</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((t) => (
+                <tr key={t.token} className="border-b border-white/10 transition hover:bg-white/20">
+                  <td className="px-3 py-2.5">
+                    <code className="break-all font-mono text-xs text-foreground">{t.token}</code>
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2.5 text-xs text-foreground-muted">
+                    {t.created_at
+                      ? new Date(t.created_at).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' })
+                      : '—'}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2.5">
+                    {t.used ? (
+                      <span className="inline-flex items-center rounded-full bg-red-100/80 px-2.5 py-0.5 text-xs font-semibold text-red-700">
+                        Terpakai
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center rounded-full bg-green-100/80 px-2.5 py-0.5 text-xs font-semibold text-green-700">
+                        Belum dipakai
+                      </span>
+                    )}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2.5 text-xs text-foreground-muted">
+                    {t.used_at
+                      ? new Date(t.used_at).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' })
+                      : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="mt-2 px-3 text-[11px] text-foreground-subtle">
+            Menampilkan {filtered.length} dari {tokenList.length} token
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -637,6 +968,12 @@ function MenuIcon({ name, className }: { name: IconName; className?: string }) {
     className: cls,
   };
   switch (name) {
+    case 'monitoring':
+      return (
+        <svg {...common}>
+          <path d="M2 12h4l3-9 4 18 3-9h4" />
+        </svg>
+      );
     case 'token':
     case 'key':
       return (

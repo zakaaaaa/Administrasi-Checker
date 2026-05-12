@@ -205,28 +205,19 @@ class BudgetAuditor:
     Usage:
         parser = DocxParser('proposal.docx')
         rules = get_pkm_kc_budget_rules()
-        funding = FundingInput(belmawa=8_000_000, university=1_000_000, external=0)
-        result = BudgetAuditor(parser, rules, funding).check()
+        result = BudgetAuditor(parser, rules).check()
     """
 
     def __init__(
         self,
         parser: DocxParser,
         rules: BudgetRules,
-        funding: FundingInput,
     ):
         self.parser = parser
         self.rules = rules
-        self.funding = funding
 
     def check(self) -> BudgetAuditResult:
-        result = BudgetAuditResult(
-            status="pass",
-            total_input_funding_rp=self.funding.total,
-        )
-
-        # Lapis 1: Validasi sumber dana
-        self._validate_funding_sources(result)
+        result = BudgetAuditResult(status="pass")
 
         # Parse tabel RAB Bab 4 dan Lampiran 2
         bab4 = self._find_and_parse_bab4()
