@@ -42,9 +42,17 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
 
       <div className="mt-6 grid gap-3">
         {modules.map(({ key, label }) => {
-          const mod = result.results[key] as { status?: string; messages?: Message[] };
+          const mod = result.results[key] as {
+            status?: string;
+            messages?: Message[];
+            message?: string;
+          };
           const status = mod?.status ?? 'unknown';
-          const messages = Array.isArray(mod?.messages) ? mod.messages : [];
+          const messages = Array.isArray(mod?.messages)
+            ? mod.messages
+            : typeof mod?.message === 'string' && mod.message.trim()
+              ? [{ level: 'error' as const, text: mod.message }]
+              : [];
           return <ModuleCard key={key} label={label} status={status} messages={messages} />;
         })}
       </div>

@@ -308,6 +308,82 @@
   .stagger > *:nth-child(10){ animation-delay: 0.68s; }
 }
 
+/* ============================================================================
+   CHECK NEW LANDING — reveal-on-scroll + decorative layers
+   (dipakai NewCheckLanding; observer di hook)
+   ============================================================================ */
+
+[data-reveal] {
+  opacity: 0;
+  transform: translateY(24px);
+  transition:
+    opacity 0.8s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+}
+[data-reveal].reveal-in {
+  opacity: 1;
+  transform: translateY(0);
+}
+[data-reveal-delay='1'] { transition-delay: 0.08s; }
+[data-reveal-delay='2'] { transition-delay: 0.16s; }
+[data-reveal-delay='3'] { transition-delay: 0.24s; }
+[data-reveal-delay='4'] { transition-delay: 0.32s; }
+
+.check-landing-dot-pattern {
+  background-image: radial-gradient(
+    circle,
+    rgba(249, 115, 22, 0.18) 1px,
+    transparent 1px
+  );
+  background-size: 22px 22px;
+  mask-image: radial-gradient(ellipse at center, black 40%, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse at center, black 40%, transparent 75%);
+}
+
+@keyframes check-landing-float-y {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+.check-landing-float-soft {
+  animation: check-landing-float-y 5s ease-in-out infinite;
+}
+.check-landing-float-soft.delay-1 {
+  animation-delay: 0.8s;
+}
+.check-landing-float-soft.delay-2 {
+  animation-delay: 1.6s;
+}
+
+.check-landing-glass-card {
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.8) inset,
+    0 20px 50px -20px rgba(249, 115, 22, 0.15),
+    0 8px 24px -12px rgba(15, 23, 42, 0.08);
+}
+.check-landing-glass-badge {
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  box-shadow: 0 8px 24px -10px rgba(15, 23, 42, 0.12);
+}
+.check-landing-blob {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(60px);
+  opacity: 0.55;
+  pointer-events: none;
+}
+
 @media print {
   body {
     background: #ffffff !important;

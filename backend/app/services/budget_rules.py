@@ -48,7 +48,12 @@ class CrossCheckRule:
 
 @dataclass
 class RelocationAdvisory:
-    """Saran relokasi item tunggal yang besar (warning, bukan error)."""
+    """
+    Saran relokasi/pecah pos anggaran (warning, bukan error).
+    Patokan `threshold_rp` berlaku untuk **harga satuan** per baris Lampiran 2,
+    bukan untuk total nilai (volume × satuan). Total boleh besar selama satuan
+    tidak melewati patokan.
+    """
     threshold_rp: int = 1_000_000
     enabled: bool = True
 

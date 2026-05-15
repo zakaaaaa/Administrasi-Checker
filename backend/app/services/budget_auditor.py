@@ -6,7 +6,9 @@ Lapis pengecekan:
 2. Integritas tabel RAB (semua kolom kategori wajib ada)
 3. Validasi alokasi per kategori (% maksimum dari total)
 4. Cross-check Bab 4 ↔ Lampiran 2 (toleransi Rp0)
-5. Rekomendasi relokasi item tunggal > Rp1jt (warning, bukan fail)
+5. Rekomendasi relokasi / pecah justifikasi bila harga satuan per item
+   melebihi patokan (default Rp1jt) — warning, bukan fail; total baris boleh besar
+   selama volume × harga satuan masuk akal dan satuan ≤ patokan.
 6. Item terlarang & restriksi khusus
 
 Input:
@@ -76,9 +78,13 @@ class CrossCheckDiscrepancy:
 
 @dataclass
 class RelocationItem:
+    """Item yang harga satuannya melewati patokan (bukan total baris)."""
     description: str
     category: Optional[str]
-    amount_rp: int
+    amount_rp: int  # harga satuan yang memicu saran
+    total_rp: Optional[int] = None
+    volume: Optional[str] = None
+    approx_page: Optional[int] = None
 
 
 @dataclass
@@ -87,6 +93,7 @@ class ProhibitedItemFinding:
     matched_keyword: str
     amount_rp: Optional[int] = None
     category: Optional[str] = None
+    approx_page: Optional[int] = None
 
 
 @dataclass
@@ -163,7 +170,10 @@ class BudgetAuditResult:
                     {
                         "description": r.description,
                         "category": r.category,
-                        "amount_rp": r.amount_rp,
+                        "unit_price_rp": r.amount_rp,
+                        "total_line_rp": r.total_rp,
+                        "volume": r.volume,
+                        "approx_page": r.approx_page,
                     }
                     for r in self.relocation_items
                 ],
@@ -174,6 +184,7 @@ class BudgetAuditResult:
                     "matched_keyword": p.matched_keyword,
                     "amount_rp": p.amount_rp,
                     "category": p.category,
+                    "approx_page": p.approx_page,
                 }
                 for p in self.prohibited_items
             ],
@@ -206,18 +217,26 @@ class BudgetAuditor:
         parser = DocxParser('proposal.docx')
         rules = get_pkm_kc_budget_rules()
         result = BudgetAuditor(parser, rules).check()
+        # dengan validasi input pendanaan dari form:
+        result = BudgetAuditor(parser, rules, FundingInput(...)).check()
     """
 
     def __init__(
         self,
         parser: DocxParser,
         rules: BudgetRules,
+        funding: Optional[FundingInput] = None,
     ):
         self.parser = parser
         self.rules = rules
+        self.funding = funding
 
     def check(self) -> BudgetAuditResult:
         result = BudgetAuditResult(status="pass")
+
+        if self.funding is not None:
+            result.total_input_funding_rp = self.funding.total
+            self._validate_funding_sources(result)
 
         # Parse tabel RAB Bab 4 dan Lampiran 2
         bab4 = self._find_and_parse_bab4()
@@ -555,16 +574,30 @@ class BudgetAuditor:
     def _scan_relocation(
         self, result: BudgetAuditResult, lamp2: Lampiran2ParseResult
     ) -> None:
+        """
+        Patokan Rp1jt (atau dari rules) pada **harga satuan**, bukan total nilai baris.
+        Baris tanpa harga satuan terbaca → tidak diberi saran relokasi berbasis patokan ini.
+        """
         threshold = self.rules.relocation_advisory.threshold_rp
         for item in lamp2.items:
-            if item.total_rp is not None and item.total_rp > threshold:
-                result.relocation_items.append(
-                    RelocationItem(
-                        description=item.description,
-                        category=item.category,
-                        amount_rp=item.total_rp,
-                    )
+            unit = item.unit_price
+            if unit is None or unit <= threshold:
+                continue
+            page: Optional[int] = None
+            if item.table_index >= 0 and item.row_index >= 0:
+                page = self.parser.estimate_page_for_table_cell(
+                    item.table_index, item.row_index, 0
                 )
+            result.relocation_items.append(
+                RelocationItem(
+                    description=item.description,
+                    category=item.category,
+                    amount_rp=unit,
+                    total_rp=item.total_rp,
+                    volume=item.volume,
+                    approx_page=page,
+                )
+            )
 
     # ------------------------------------------------------------------------
     # Lapis 6: Item terlarang
@@ -578,12 +611,18 @@ class BudgetAuditor:
             desc_lower = item.description.lower()
             for original, lower in prohibited_lower:
                 if lower in desc_lower:
+                    page: Optional[int] = None
+                    if item.table_index >= 0 and item.row_index >= 0:
+                        page = self.parser.estimate_page_for_table_cell(
+                            item.table_index, item.row_index, 0
+                        )
                     result.prohibited_items.append(
                         ProhibitedItemFinding(
                             description=item.description,
                             matched_keyword=original,
                             amount_rp=item.total_rp,
                             category=item.category,
+                            approx_page=page,
                         )
                     )
                     break  # Satu match per item cukup
@@ -647,14 +686,28 @@ class BudgetAuditor:
         # Relocation advisory
         if result.relocation_items:
             has_warning = True
+            thr = self.rules.relocation_advisory.threshold_rp
             for r in result.relocation_items:
+                loc = (
+                    f"[Halaman ~{r.approx_page}] "
+                    if r.approx_page is not None
+                    else ""
+                )
+                vol_txt = f"Volume: {r.volume}. " if r.volume else ""
+                total_txt = (
+                    f"Nilai baris: Rp{r.total_rp:,}. "
+                    if r.total_rp is not None
+                    else ""
+                )
                 result.messages.append(
                     CheckMessage(
                         level="warning",
                         text=(
-                            f"Saran relokasi: '{r.description}' Rp{r.amount_rp:,} "
-                            f"melebihi Rp{self.rules.relocation_advisory.threshold_rp:,}. "
-                            f"Pertimbangkan dipecah menjadi beberapa item. (saran, bukan error)"
+                            f"{loc}Saran relokasi / pecah justifikasi: '{r.description}' — "
+                            f"harga satuan Rp{r.amount_rp:,} melebihi patokan Rp{thr:,} per satuan. "
+                            f"{vol_txt}{total_txt}"
+                            f"Pertimbangkan memecah menjadi beberapa item pos atau menyesuaikan volume dan harga satuan "
+                            f"agar justifikasi jenis pengeluaran sesuai aturan (saran, bukan error)."
                         ),
                     )
                 )
@@ -663,11 +716,16 @@ class BudgetAuditor:
         if result.prohibited_items:
             has_fail = True
             for p in result.prohibited_items:
+                loc = (
+                    f"[Halaman ~{p.approx_page}] "
+                    if p.approx_page is not None
+                    else ""
+                )
                 result.messages.append(
                     CheckMessage(
                         level="fail",
                         text=(
-                            f"Item TERLARANG: '{p.description}' "
+                            f"{loc}Item TERLARANG: '{p.description}' "
                             f"({'Rp' + format(p.amount_rp, ',') if p.amount_rp else 'nilai tidak terbaca'}) "
                             f"— mengandung kata kunci '{p.matched_keyword}' yang dilarang "
                             f"di {self.rules.competition_code}-{self.rules.schema_code}."

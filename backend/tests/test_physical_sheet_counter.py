@@ -33,9 +33,11 @@ REAL_FILE = SAMPLE_DIR / "A410170082.docx"
 
 
 def _libreoffice_available() -> bool:
-    return any(
-        shutil.which(c) for c in ["soffice", "libreoffice"]
-    ) or Path("/Applications/LibreOffice.app/Contents/MacOS/soffice").exists()
+    try:
+        PdfConverter()
+        return True
+    except PdfConversionError:
+        return False
 
 
 # ============================================================================

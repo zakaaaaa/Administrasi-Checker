@@ -119,7 +119,8 @@ class BudgetItem:
     volume: Optional[str] = None
     unit_price: Optional[int] = None
     total_rp: Optional[int] = None
-    row_index: int = -1
+    row_index: int = -1       # indeks baris dalam tabel (0-based), untuk estimasi halaman
+    table_index: int = -1     # indeks tabel di DocxParser.tables (0-based)
 
 
 @dataclass
@@ -415,6 +416,7 @@ def parse_lampiran2_table(table: TableInfo) -> Lampiran2ParseResult:
                 unit_price=unit_price,
                 total_rp=total,
                 row_index=r_idx,
+                table_index=table.index,
             )
         )
 

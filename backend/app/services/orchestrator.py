@@ -24,6 +24,16 @@ class UnsupportedSchemaError(ValueError):
     pass
 
 
+def _module_error_payload(exc: BaseException) -> dict[str, Any]:
+    """Payload konsisten untuk UI: status error + messages (bukan hanya `message`)."""
+    msg = str(exc)
+    return {
+        "status": "error",
+        "message": msg,
+        "messages": [{"level": "error", "text": msg}],
+    }
+
+
 @dataclass
 class CheckRequest:
     docx_path: str
@@ -66,7 +76,7 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
         results["structure"] = r.to_dict()
         statuses.append(_extract_status(results["structure"]))
     except Exception as e:
-        results["structure"] = {"status": "error", "message": str(e)}
+        results["structure"] = _module_error_payload(e)
         statuses.append("error")
 
     # 2. Physical Sheet
@@ -75,7 +85,7 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
         results["physical_sheet"] = r.to_dict()
         statuses.append(_extract_status(results["physical_sheet"]))
     except Exception as e:
-        results["physical_sheet"] = {"status": "error", "message": str(e)}
+        results["physical_sheet"] = _module_error_payload(e)
         statuses.append("error")
 
     # 3. Format
@@ -84,7 +94,7 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
         results["format"] = r.to_dict()
         statuses.append(_extract_status(results["format"]))
     except Exception as e:
-        results["format"] = {"status": "error", "message": str(e)}
+        results["format"] = _module_error_payload(e)
         statuses.append("error")
 
     # 4. Page Numbering
@@ -93,7 +103,7 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
         results["page_numbering"] = r.to_dict()
         statuses.append(_extract_status(results["page_numbering"]))
     except Exception as e:
-        results["page_numbering"] = {"status": "error", "message": str(e)}
+        results["page_numbering"] = _module_error_payload(e)
         statuses.append("error")
 
     # 5. Budget
@@ -102,7 +112,7 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
         results["budget"] = r.to_dict()
         statuses.append(_extract_status(results["budget"]))
     except Exception as e:
-        results["budget"] = {"status": "error", "message": str(e)}
+        results["budget"] = _module_error_payload(e)
         statuses.append("error")
 
     # 6. Reference
@@ -111,7 +121,7 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
         results["reference"] = r.to_dict()
         statuses.append(_extract_status(results["reference"]))
     except Exception as e:
-        results["reference"] = {"status": "error", "message": str(e)}
+        results["reference"] = _module_error_payload(e)
         statuses.append("error")
 
     results["overall_status"] = _aggregate_status(statuses)

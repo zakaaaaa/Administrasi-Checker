@@ -317,6 +317,74 @@ class DocxParser:
             return None
         return self._paragraph_index_in_page[paragraph_index]
 
+    def _delta_pages_after_paragraph_element(self, p_el: etree._Element) -> int:
+        """
+        Tambahan nomor halaman setelah me-render satu elemen <w:p>
+        (sama dengan logika _build_page_estimates untuk body paragraf).
+        """
+        delta = 0
+        delta += len(
+            p_el.findall(".//w:br[@w:type='page']", namespaces=NSMAP)
+        )
+        delta += len(
+            p_el.findall(".//w:lastRenderedPageBreak", namespaces=NSMAP)
+        )
+        sect_pr = p_el.find(".//w:pPr/w:sectPr", namespaces=NSMAP)
+        if sect_pr is not None:
+            sect_type = sect_pr.find("w:type", namespaces=NSMAP)
+            val = sect_type.get(qn("w:val")) if sect_type is not None else None
+            if val is None or str(val).lower() != "continuous":
+                delta += 1
+        return delta
+
+    def estimate_page_for_table_cell(
+        self, table_index: int, row: int, col: int = 0
+    ) -> Optional[int]:
+        """
+        Estimasi nomor halaman (1-based) untuk sel tabel (baris `row`, kolom `col`).
+        Memakai urutan isi dokumen + page break di OOXML (sama filosofi dengan
+        estimate_physical_page untuk paragraf body).
+
+        Catatan: isi tabel tidak masuk `self.paragraphs`; harus traverse w:tbl.
+        """
+        if table_index < 0 or table_index >= len(self.doc.tables):
+            return None
+        tbl = self.doc.tables[table_index]
+        if row < 0 or row >= len(tbl.rows):
+            return None
+        r = tbl.rows[row]
+        if col < 0 or col >= len(r.cells):
+            return None
+        cell = r.cells[col]
+        target_p: Optional[etree._Element] = None
+        for para in cell.paragraphs:
+            target_p = para._element
+            break
+        if target_p is None:
+            return None
+
+        target_tbl = tbl._element
+        page = 1
+
+        for child in self.doc.element.body:
+            if child.tag == qn("w:p"):
+                if child is target_p:
+                    return page
+                page += self._delta_pages_after_paragraph_element(child)
+            elif child.tag == qn("w:tbl"):
+                if child is target_tbl:
+                    for tr in child.findall(qn("w:tr")):
+                        for tc in tr.findall(qn("w:tc")):
+                            for p_el in tc.findall(qn("w:p")):
+                                if p_el is target_p:
+                                    return page
+                                page += self._delta_pages_after_paragraph_element(p_el)
+                else:
+                    for p_el in child.findall(".//w:p", namespaces=NSMAP):
+                        page += self._delta_pages_after_paragraph_element(p_el)
+
+        return None
+
     def find_section_boundaries(
         self,
         section_names: list[str],

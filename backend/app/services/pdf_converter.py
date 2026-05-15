@@ -10,10 +10,12 @@ Kenapa pakai LibreOffice (bukan docx2pdf, mammoth, dst)?
 - Cross-platform (Linux server production, macOS dev)
 - Open source, tidak butuh MS Word
 
-System requirement: LibreOffice harus terinstal di system PATH.
-- Linux: apt install libreoffice / pacman -S libreoffice
-- macOS: brew install --cask libreoffice (atau download .dmg)
-- Windows: download installer dari libreoffice.org
+System requirement: LibreOffice harus terinstal.
+- Linux: apt install libreoffice — pastikan `soffice` di PATH
+- macOS: brew install --cask libreoffice
+- Windows: installer dari libreoffice.org — binary biasanya di
+  `C:\\Program Files\\LibreOffice\\program\\soffice.exe` (otomatis dicoba).
+  Atau set env `SOFFICE_PATH` / `LIBREOFFICE_PROGRAM` ke path lengkap .exe.
 
 Cara install LibreOffice di macOS (untuk dev local):
     brew install --cask libreoffice
@@ -24,6 +26,7 @@ Verifikasi:
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -51,12 +54,18 @@ class PdfConverter:
         Cloud Storage (lihat blueprint §9.3) bukan filesystem lokal.
     """
 
-    # Binary candidate yang dicoba (pertama yang ketemu menang)
+    # Binary candidate yang dicoba setelah env SOFFICE_PATH / LIBREOFFICE_PROGRAM
     SOFFICE_CANDIDATES = [
         "soffice",
         "libreoffice",
         # macOS default install path
         "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+    ]
+
+    # Windows: installer tidak selalu menambahkan ke PATH
+    _WINDOW_SOFFICE_PATHS = [
+        r"C:\Program Files\LibreOffice\program\soffice.exe",
+        r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
     ]
 
     def __init__(self, soffice_path: Optional[str] = None, timeout_seconds: int = 120):
@@ -70,17 +79,35 @@ class PdfConverter:
 
     @classmethod
     def _find_soffice(cls) -> str:
-        """Cari binary LibreOffice di PATH atau lokasi umum macOS."""
+        """Cari binary LibreOffice: env → PATH → lokasi umum macOS/Windows."""
+        for key in ("SOFFICE_PATH", "LIBREOFFICE_PROGRAM"):
+            raw = (os.environ.get(key) or "").strip().strip('"')
+            if not raw:
+                continue
+            p = Path(raw)
+            if p.is_file():
+                return str(p)
+            resolved = shutil.which(raw)
+            if resolved:
+                return resolved
+
         for cand in cls.SOFFICE_CANDIDATES:
-            # shutil.which return path lengkap kalau ditemukan
             path = shutil.which(cand) or (cand if Path(cand).exists() else None)
             if path:
                 return path
+
+        for winpath in cls._WINDOW_SOFFICE_PATHS:
+            wp = Path(winpath)
+            if wp.is_file():
+                return str(wp)
+
         raise PdfConversionError(
-            "LibreOffice tidak ditemukan. Install dulu:\n"
+            "LibreOffice tidak ditemukan. Install lalu:\n"
+            "  - Windows: set env SOFFICE_PATH ke soffice.exe, atau tambahkan "
+            r"'C:\Program Files\LibreOffice\program' ke PATH, atau\n"
             "  - macOS: brew install --cask libreoffice\n"
             "  - Linux: sudo apt install libreoffice\n"
-            "Lalu pastikan 'soffice' atau 'libreoffice' tersedia di PATH."
+            "Verifikasi: jalankan `soffice --version` di terminal."
         )
 
     def convert(

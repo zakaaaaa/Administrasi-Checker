@@ -6,7 +6,8 @@ Yang dicek:
 2. Margin: kiri 4cm, kanan/atas/bawah 3cm (toleransi ±0.05cm)
 3. Paper size: A4 (21.0 × 29.7 cm)
 4. Line spacing: 1.15
-5. Alignment: justify untuk paragraf body
+5. Alignment: justify untuk paragraf body (kecuali heading, paragraf pendek,
+   dan caption Gambar/Tabel yang umumnya rata tengah)
 6. (tambahan) Deteksi bahasa asing umum yang tidak italic
 
 Catatan:
@@ -92,6 +93,30 @@ FOREIGN_WORDS = {
     "marketing", "branding", "startup", "stakeholder",
     "feedback", "endorsement", "ads", "online", "offline",
 }
+
+# Caption gambar/tabel (sering center / bukan justify). Hanya pola awal baris
+# + batas panjang supaya paragraf body yang kebetulan diawali "Tabel 1 ..."
+# tidak terkecualikan seluruhnya.
+_MAX_CAPTION_PARAGRAPH_CHARS = 280
+_CAPTION_HEAD_RE = re.compile(
+    r"^\s*(?:"
+    r"Gambar|Gbr\.?"
+    r"|Figure|Fig\.?"
+    r"|Tabel|Table"
+    r"|Diagram|Foto|Chart|Grafik"
+    r")\s*"
+    r"(?:\d{1,3}[a-z]?|[IVXLCDM]{1,8})\b"
+    r"\s*[.:)\-–—]?\s*",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _is_figure_table_caption_paragraph(text: str) -> bool:
+    """True jika paragraf tampak seperti satu baris caption gambar/tabel."""
+    stripped = text.strip()
+    if not stripped or len(stripped) > _MAX_CAPTION_PARAGRAPH_CHARS:
+        return False
+    return bool(_CAPTION_HEAD_RE.match(stripped))
 
 
 # ============================================================================
@@ -188,12 +213,16 @@ class FormatChecker:
     def _format_para_location(self, paragraph_index: int) -> str:
         estimator = getattr(self.parser, "estimate_physical_page", None)
         in_page_estimator = getattr(self.parser, "estimate_paragraph_index_in_page", None)
-        page = estimator(paragraph_index) if callable(estimator) else None
-        in_page = (
-            in_page_estimator(paragraph_index)
-            if callable(in_page_estimator)
-            else None
-        )
+        page: Optional[int] = None
+        if callable(estimator):
+            raw = estimator(paragraph_index)
+            if isinstance(raw, int):
+                page = raw
+        in_page: Optional[int] = None
+        if callable(in_page_estimator):
+            raw_in = in_page_estimator(paragraph_index)
+            if isinstance(raw_in, int):
+                in_page = raw_in
         if page is None:
             return f"Paragraf #{paragraph_index}"
         if in_page is None or in_page <= 0:
@@ -454,7 +483,7 @@ class FormatChecker:
         Body teks PKM wajib justify. Skip:
         - Heading (biasanya center)
         - Paragraf pendek <30 char (judul tabel/gambar, dll)
-        - Paragraf di dalam tabel
+        - Satu baris caption Gambar/Figure/Tabel/… (umumnya center, bukan justify)
         """
         sec = FormatCheckSection(name="alignment", status="pass")
         for para in self.parser.paragraphs:
@@ -462,6 +491,8 @@ class FormatChecker:
             if len(text) < 30:
                 continue
             if para.is_heading:
+                continue
+            if _is_figure_table_caption_paragraph(text):
                 continue
             align = para.alignment
             # python-docx return 'left'/'right'/'center'/'justify' atau None

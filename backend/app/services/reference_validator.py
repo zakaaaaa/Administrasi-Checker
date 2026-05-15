@@ -6,13 +6,15 @@ A. Format strict Harvard (pengecekan dasar — bukan parser Harvard penuh):
    - Ada tahun di entry
    - Tidak terlalu pendek (entry minimal punya nama + tahun + judul)
 
-B. LARANGAN STRICT:
-   - Tidak boleh "et al." di Daftar Pustaka
-   - Tidak boleh "dkk." di Daftar Pustaka
+B. LARANGAN STRICT (Daftar Pustaka + sitasi in-text):
+   - Tidak boleh "et al." / "dkk." di Daftar Pustaka
+   - Tidak boleh "et al." / "dkk." di bagian penulis sitasi in-text (…, tahun)
 
 C. Pengecekan keseimbangan sitasi (anti-referensi-bodong):
    1. In-text → DP: tiap sitasi (Author, Year) di body teks WAJIB ada di DP
    2. DP → In-text: tiap entry DP WAJIB pernah dirujuk di body teks
+   - Jika tidak cocok persis tapi ada penulis DP + tahun sama dengan ejaan mirip
+     (jarak Levenshtein kecil), beri petunjuk "diduga typo".
 
 D. Urutan alfabetis: entry DP berdasarkan nama belakang author pertama
 
@@ -22,9 +24,14 @@ E. Rekomendasi kualitas: jumlah referensi mutakhir (< 10 tahun)
 Catatan desain:
 - Format Harvard strict yang penuh (penulis dengan inisial, italic untuk judul,
   format jurnal vs buku) sangat rapuh untuk regex. Kita HANYA validasi yang
-  jelas: ada tahun, tidak ada et al./dkk., balance check.
+  jelas: ada tahun, tidak ada et al./dkk. (DP & in-text), balance check.
 - Pencocokan sitasi pakai nama pertama (last name) dari entry DP. Variasi
-  penulisan (typo, ejaan) → akan ke-flag sebagai mismatch.
+  penulisan (typo kecil) → dicoba deteksi dengan jarak edit; typo besar tetap
+  mismatch fail.
+- Bibliografi dari plugin (Zotero/Mendeley) sering disisipkan sebagai blok
+  w:sdt (kontrol konten) di antara heading «DAFTAR PUSTAKA» dan «LAMPIRAN».
+  Teks itu tidak selalu muncul di python-docx Document.paragraphs; karena itu
+  ekstraksi DP juga menjelajahi sibling OOXML (termasuk w:sdt / w:sdtContent).
 """
 
 from __future__ import annotations
@@ -33,7 +40,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from app.services.docx_parser import DocxParser
+from docx.oxml.ns import qn
+from lxml import etree
+
+from app.services.docx_parser import DocxParser, NSMAP
 from app.services.schema_rules import SchemaRules
 
 
@@ -59,8 +69,9 @@ _INTEXT_CITATION_RE = re.compile(
 #   "Astuti, 2012, Judul..."           ← varian
 _DP_YEAR_RE = re.compile(r"\b(\d{4}[a-z]?)\b")
 
-# Larangan strict
-_FORBIDDEN_INDICATORS = ["et al.", "et al", "dkk.", "dkk"]
+# Larangan strict — pakai batas kata agar tidak salah positif (mis. "metal")
+_ET_AL_RE = re.compile(r"\bet\s+al\.?\b", re.IGNORECASE)
+_DKK_RE = re.compile(r"\bdkk\.?\b", re.IGNORECASE)
 
 # Pattern nama pertama dari entry DP. Strategi: kata-kata di awal sampai
 # titik atau koma atau "(" pertama.
@@ -72,7 +83,36 @@ _FORBIDDEN_INDICATORS = ["et al.", "et al", "dkk.", "dkk"]
 _DP_AUTHOR_RE = re.compile(r"^\s*([^.,(\d]+?)(?:[.,(]|\s+\d{4})", re.UNICODE)
 
 
-# ============================================================================
+def _levenshtein(a: str, b: str) -> int:
+    """Jarak edit antara dua string (case-sensitive; caller normalisasi)."""
+    la, lb = len(a), len(b)
+    if la == 0:
+        return lb
+    if lb == 0:
+        return la
+    row = list(range(lb + 1))
+    for i in range(1, la + 1):
+        prev = row[0]
+        row[0] = i
+        for j in range(1, lb + 1):
+            cur = row[j]
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            row[j] = min(row[j] + 1, row[j - 1] + 1, prev + cost)
+            prev = cur
+    return row[-1]
+
+
+def _dp_has_et_al(text: str) -> bool:
+    return bool(_ET_AL_RE.search(text))
+
+
+def _dp_has_dkk(text: str) -> bool:
+    return bool(_DKK_RE.search(text))
+
+
+def _intext_forbidden_in_author_part(author_part: str) -> tuple[bool, bool]:
+    """True jika bagian penulis sitasi mengandung et al. / dkk. (batas kata)."""
+    return _dp_has_et_al(author_part), _dp_has_dkk(author_part)
 # Data class
 # ============================================================================
 
@@ -96,16 +136,18 @@ class InTextCitation:
     """Satu sitasi di body teks."""
     paragraph_index: int
     raw_text: str               # mis. "(Astuti, 2012)"
-    author: str                 # mis. "Astuti"
+    author: str                 # mis. "Astuti" (penulis pertama setelah normalisasi)
     year: int                   # 2012
+    author_raw: str = ""        # substring penulis persis dari dokumen (sebelum koma+tahun)
 
 
 @dataclass
 class FormatIssue:
-    entry_index: int            # index dalam list entries (0-based, bukan paragraph_index)
+    entry_index: int            # >=0: index entry DP; -1 = pelanggaran sitasi in-text
     text_preview: str
     severity: str               # 'fail' | 'warning'
     issue: str
+    paragraph_index: Optional[int] = None  # lokasi (DP atau in-text)
 
 
 @dataclass
@@ -138,6 +180,9 @@ class ReferenceValidationResult:
     minimum_recommended: int = 8
     quality_message: str = ""
     messages: list[CheckMessage] = field(default_factory=list)
+    # Lokasi heading (None = tidak ketemu). Untuk pesan error "judul ada tapi kosong".
+    dp_heading_paragraph_index: Optional[int] = None
+    lampiran_heading_paragraph_index: Optional[int] = None
 
     def to_dict(self) -> dict:
         return {
@@ -163,6 +208,7 @@ class ReferenceValidationResult:
                     "paragraph_index": c.paragraph_index,
                     "raw_text": c.raw_text,
                     "author": c.author,
+                    "author_raw": c.author_raw,
                     "year": c.year,
                 }
                 for c in self.in_text_citations
@@ -173,6 +219,7 @@ class ReferenceValidationResult:
                     "text_preview": fi.text_preview,
                     "severity": fi.severity,
                     "issue": fi.issue,
+                    "paragraph_index": fi.paragraph_index,
                 }
                 for fi in self.format_issues
             ],
@@ -208,6 +255,10 @@ class ReferenceValidationResult:
                 "recent_threshold_years": self.recent_threshold_years,
                 "minimum_recommended": self.minimum_recommended,
                 "message": self.quality_message,
+            },
+            "section_detection": {
+                "daftar_pustaka_heading_paragraph_index": self.dp_heading_paragraph_index,
+                "lampiran_heading_paragraph_index": self.lampiran_heading_paragraph_index,
             },
             "messages": [{"level": m.level, "text": m.text} for m in self.messages],
         }
@@ -256,7 +307,10 @@ class ReferenceValidator:
         )
 
         # Step 1: ekstrak entries dari Daftar Pustaka
-        result.entries = self._extract_dp_entries()
+        entries, dp_idx, lamp_idx = self._extract_dp_entries()
+        result.entries = entries
+        result.dp_heading_paragraph_index = dp_idx
+        result.lampiran_heading_paragraph_index = lamp_idx
         result.total_entries = len(result.entries)
 
         # Step 2: validasi format per entry (et al./dkk., year, length)
@@ -269,6 +323,10 @@ class ReferenceValidator:
 
         # Step 3: ekstrak sitasi in-text
         result.in_text_citations = self._extract_in_text_citations()
+
+        # Step 3b: larangan et al./dkk. di sitasi in-text
+        intext_fmt = self._intext_forbidden_issues(result.in_text_citations)
+        result.format_issues = result.format_issues + intext_fmt
 
         # Step 4: balance check (in-text ↔ DP)
         result.balance_findings = self._balance_check(
@@ -293,10 +351,14 @@ class ReferenceValidator:
     # Step 1: ekstrak entries
     # ------------------------------------------------------------------------
 
-    def _extract_dp_entries(self) -> list[ReferenceEntry]:
+    def _extract_dp_entries(
+        self,
+    ) -> tuple[list[ReferenceEntry], Optional[int], Optional[int]]:
         """
         Locate section "DAFTAR PUSTAKA" (heading_only), ambil paragraf
         sampai section selanjutnya (LAMPIRAN). Entry = paragraf non-empty.
+
+        Return (entries, indeks paragraf judul DP atau None, indeks judul LAMPIRAN atau None).
         """
         boundaries = self.parser.find_section_boundaries(
             ["DAFTAR PUSTAKA", "LAMPIRAN"], headings_only=True
@@ -305,28 +367,100 @@ class ReferenceValidator:
         dp_end = boundaries["LAMPIRAN"]
 
         if dp_start is None:
-            return []
+            return [], None, dp_end
 
         # Kalau LAMPIRAN tidak ada, ambil sampai akhir
         if dp_end is None:
             dp_end = len(self.parser.paragraphs)
 
+        blocks = self._walk_dp_body_siblings_ooxml(dp_start, dp_end)
         entries: list[ReferenceEntry] = []
-        for i in range(dp_start + 1, dp_end):
-            para = self.parser.paragraphs[i]
-            text = para.text.strip()
-            if not text:
-                continue
-            # Skip kalau ini heading sub-section (jarang, tapi safe)
-            if para.is_heading:
-                continue
+        if blocks:
+            for para_idx, text_normalized in blocks:
+                entry = self._parse_entry(para_idx, text_normalized)
+                entries.append(entry)
+        else:
+            for i in range(dp_start + 1, dp_end):
+                para = self.parser.paragraphs[i]
+                text = para.text.strip()
+                if not text:
+                    continue
+                if para.is_heading:
+                    continue
+                text_normalized = re.sub(r"\s+", " ", text)
+                entry = self._parse_entry(i, text_normalized)
+                entries.append(entry)
+        return entries, dp_start, dp_end
 
-            # Normalize whitespace (banyak entry ada \t)
-            text_normalized = re.sub(r"\s+", " ", text)
+    def _walk_dp_body_siblings_ooxml(
+        self, dp_start: int, dp_end: int
+    ) -> list[tuple[int, str]]:
+        """
+        Kumpulkan teks entry DP dari sibling OOXML antara paragraf judul DP
+        dan paragraf judul LAMPIRAN.
 
-            entry = self._parse_entry(i, text_normalized)
-            entries.append(entry)
-        return entries
+        Menangkap isi w:sdt (bibliografi Zotero/Mendeley/Word) yang tidak
+        termasuk di Document.paragraphs.
+        """
+        doc = self.parser.doc
+        paras = doc.paragraphs
+        if dp_start < 0 or dp_start >= len(paras):
+            return []
+        try:
+            start_el = paras[dp_start]._element
+            if dp_end is None or dp_end >= len(paras):
+                end_el: Optional[etree._Element] = None
+            else:
+                end_el = paras[dp_end]._element
+        except (AttributeError, IndexError, TypeError):
+            return []
+
+        out: list[tuple[int, str]] = []
+        default_idx = dp_start + 1
+
+        def norm(s: str) -> str:
+            return re.sub(r"\s+", " ", (s or "").strip())
+
+        def text_from_p(p_el: etree._Element) -> str:
+            return "".join(
+                t.text or "" for t in p_el.findall(".//w:t", namespaces=NSMAP)
+            )
+
+        cur: Optional[etree._Element] = start_el.getnext()
+        try:
+            while cur is not None:
+                if end_el is not None and cur is end_el:
+                    break
+                tag = etree.QName(cur).localname
+                if tag == "sectPr":
+                    break
+                if tag == "p":
+                    text = norm(text_from_p(cur))
+                    if text:
+                        idx = default_idx
+                        skip_para = False
+                        for pi, p in enumerate(paras):
+                            if p._element is cur:
+                                idx = pi
+                                if (
+                                    pi < len(self.parser.paragraphs)
+                                    and self.parser.paragraphs[pi].is_heading
+                                ):
+                                    skip_para = True
+                                break
+                        if not skip_para:
+                            out.append((idx, text))
+                elif tag == "sdt":
+                    content = cur.find(qn("w:sdtContent"))
+                    if content is not None:
+                        for inner in content.findall(qn("w:p")):
+                            text = norm(text_from_p(inner))
+                            if text:
+                                out.append((default_idx, text))
+                cur = cur.getnext()
+        except (AttributeError, TypeError):
+            return []
+        return out
 
     def _parse_entry(self, para_idx: int, text: str) -> ReferenceEntry:
         entry = ReferenceEntry(
@@ -335,11 +469,10 @@ class ReferenceValidator:
             is_too_short=len(text) < self.MIN_ENTRY_LENGTH,
         )
 
-        # Cek et al./dkk.
-        text_lower = text.lower()
-        if "et al" in text_lower:
+        # Cek et al./dkk. (batas kata)
+        if _dp_has_et_al(text):
             entry.has_etal_violation = True
-        if "dkk" in text_lower:
+        if _dp_has_dkk(text):
             entry.has_dkk_violation = True
 
         # Cari tahun
@@ -391,6 +524,7 @@ class ReferenceValidator:
         issues: list[FormatIssue] = []
         for i, e in enumerate(entries):
             preview = e.raw_text[: self.PREVIEW_CHARS]
+            para_idx = e.paragraph_index
             if e.has_etal_violation:
                 issues.append(
                     FormatIssue(
@@ -401,6 +535,7 @@ class ReferenceValidator:
                             "Mengandung 'et al.' — Harvard strict melarang. "
                             "Tulis semua nama penulis lengkap."
                         ),
+                        paragraph_index=para_idx,
                     )
                 )
             if e.has_dkk_violation:
@@ -413,6 +548,7 @@ class ReferenceValidator:
                             "Mengandung 'dkk.' — Harvard strict melarang. "
                             "Tulis semua nama penulis lengkap."
                         ),
+                        paragraph_index=para_idx,
                     )
                 )
             if not e.has_year:
@@ -425,6 +561,7 @@ class ReferenceValidator:
                             "Tahun publikasi tidak ditemukan di entry. "
                             "Setiap referensi wajib mencantumkan tahun."
                         ),
+                        paragraph_index=para_idx,
                     )
                 )
             if e.is_too_short:
@@ -437,6 +574,7 @@ class ReferenceValidator:
                             f"Entry terlalu pendek ({len(e.raw_text)} char) "
                             f"— kemungkinan tidak lengkap."
                         ),
+                        paragraph_index=para_idx,
                     )
                 )
         return issues
@@ -487,10 +625,53 @@ class ReferenceValidator:
                         raw_text=m.group(0),
                         author=first_author,
                         year=year,
+                        author_raw=author_part,
                     )
                 )
         return citations
 
+    def _intext_forbidden_issues(
+        self, citations: list[InTextCitation]
+    ) -> list[FormatIssue]:
+        """FormatIssue untuk sitasi in-text yang melanggar larangan et al./dkk."""
+        issues: list[FormatIssue] = []
+        seen: set[tuple[int, str, str]] = set()
+        for c in citations:
+            has_etal, has_dkk = _intext_forbidden_in_author_part(c.author_raw)
+            key_base = (c.paragraph_index, c.raw_text)
+            if has_etal:
+                k = (*key_base, "etal")
+                if k not in seen:
+                    seen.add(k)
+                    issues.append(
+                        FormatIssue(
+                            entry_index=-1,
+                            text_preview=c.raw_text[: self.PREVIEW_CHARS],
+                            severity="fail",
+                            issue=(
+                                "Sitasi in-text mengandung 'et al.' — Harvard strict "
+                                "melarang. Tulis nama penulis lengkap sebelum tahun."
+                            ),
+                            paragraph_index=c.paragraph_index,
+                        )
+                    )
+            if has_dkk:
+                k = (*key_base, "dkk")
+                if k not in seen:
+                    seen.add(k)
+                    issues.append(
+                        FormatIssue(
+                            entry_index=-1,
+                            text_preview=c.raw_text[: self.PREVIEW_CHARS],
+                            severity="fail",
+                            issue=(
+                                "Sitasi in-text mengandung 'dkk.' — Harvard strict "
+                                "melarang. Tulis nama penulis lengkap sebelum tahun."
+                            ),
+                            paragraph_index=c.paragraph_index,
+                        )
+                    )
+        return issues
     @staticmethod
     def _extract_first_author_from_citation(author_text: str) -> Optional[str]:
         """
@@ -508,9 +689,9 @@ class ReferenceValidator:
         if not tokens:
             return None
         first = tokens[0].strip()
-        # Buang trailing "et al" / "dkk"
-        first = re.sub(r"\s+et\s+al\.?$", "", first, flags=re.IGNORECASE)
-        first = re.sub(r"\s+dkk\.?$", "", first, flags=re.IGNORECASE)
+        # Buang trailing "et al" / "dkk" (batas kata)
+        first = _ET_AL_RE.sub("", first).strip()
+        first = _DKK_RE.sub("", first).strip()
         first = first.strip(". ").strip()
         if not first or len(first) < 2:
             return None
@@ -559,8 +740,6 @@ class ReferenceValidator:
             # PREFIX-cocok (mis. "Smith" vs "Smithson")
             partial = self._fuzzy_author_match(c.author.lower(), dp_authors_lower.keys())
             if partial:
-                # Year bisa beda — tapi kalau author match, kita tetap flag
-                # kalau year tidak ditemukan
                 dp_years = {e.year for e in dp_authors_lower[partial] if e.year}
                 if c.year not in dp_years:
                     if key in seen_intext_findings:
@@ -578,18 +757,46 @@ class ReferenceValidator:
                             paragraph_index=c.paragraph_index,
                         )
                     )
+                elif c.author.lower() != partial.lower():
+                    # Prefix mirip tapi ejaan beda — jangan anggap sudah valid.
+                    if key in seen_intext_findings:
+                        continue
+                    seen_intext_findings.add(key)
+                    findings.append(
+                        BalanceFinding(
+                            direction="in_text_not_in_references",
+                            citation_or_entry=c.raw_text,
+                            detail=(
+                                f"Sitasi '({c.author}, {c.year})' tidak cocok persis "
+                                f"dengan nama di DP ('{partial}'). Periksa ejaan penulis."
+                            ),
+                            paragraph_index=c.paragraph_index,
+                        )
+                    )
+                continue
             else:
                 if key in seen_intext_findings:
                     continue
                 seen_intext_findings.add(key)
+                detail = (
+                    f"Sitasi '({c.author}, {c.year})' di teks tapi tidak "
+                    f"ada author '{c.author}' di Daftar Pustaka."
+                )
+                closest = self._closest_dp_author_same_year(c.author, c.year, entries)
+                if closest is not None:
+                    dp_name, dist = closest
+                    th = self._typo_distance_threshold(len(c.author))
+                    if 0 < dist <= th:
+                        detail = (
+                            f"Sitasi '({c.author}, {c.year})' tidak cocok persis "
+                            f"dengan Daftar Pustaka. Diduga typo: di DP ada "
+                            f"'{dp_name}' ({c.year}) (jarak ejaan {dist})."
+                        )
                 findings.append(
                     BalanceFinding(
                         direction="in_text_not_in_references",
                         citation_or_entry=c.raw_text,
-                        detail=(
-                            f"Sitasi '({c.author}, {c.year})' di teks tapi tidak "
-                            f"ada author '{c.author}' di Daftar Pustaka."
-                        ),
+                        detail=detail,
                         paragraph_index=c.paragraph_index,
                     )
                 )
@@ -629,10 +836,36 @@ class ReferenceValidator:
         return findings
 
     @staticmethod
+    def _typo_distance_threshold(author_len: int) -> int:
+        if author_len <= 3:
+            return 1
+        if author_len <= 6:
+            return 2
+        return 3
+
+    def _closest_dp_author_same_year(
+        self,
+        cite_author: str,
+        year: int,
+        entries: list[ReferenceEntry],
+    ) -> Optional[tuple[str, int]]:
+        """Return (author_first dari DP, jarak Levenshtein) untuk entry tahun sama; None jika tidak ada."""
+        a = cite_author.strip().lower()
+        if not a:
+            return None
+        best: Optional[tuple[str, int]] = None
+        for e in entries:
+            if e.year != year or not e.author_first:
+                continue
+            d = _levenshtein(a, e.author_first.lower())
+            if best is None or d < best[1]:
+                best = (e.author_first, d)
+        return best
+
+    @staticmethod
     def _fuzzy_author_match(target: str, candidates) -> Optional[str]:
         """
-        Cari candidate yang mirip target (prefix match minimal 4 karakter
-        atau Levenshtein distance ≤ 2 untuk nama panjang).
+        Cari candidate yang mirip target (exact atau prefix 4+ karakter).
         Return: candidate yang match, atau None.
         """
         if not target:
@@ -642,7 +875,6 @@ class ReferenceValidator:
             c = cand.lower()
             if c == t:
                 return cand
-            # Prefix match: kalau salah satu mengandung yang lain (4+ char)
             if len(t) >= 4 and len(c) >= 4:
                 if c.startswith(t[:4]) or t.startswith(c[:4]):
                     return cand
@@ -699,12 +931,16 @@ class ReferenceValidator:
                 return ""
             estimator = getattr(self.parser, "estimate_physical_page", None)
             in_page_estimator = getattr(self.parser, "estimate_paragraph_index_in_page", None)
-            page = estimator(paragraph_index) if callable(estimator) else None
-            in_page = (
-                in_page_estimator(paragraph_index)
-                if callable(in_page_estimator)
-                else None
-            )
+            page = None
+            if callable(estimator):
+                raw = estimator(paragraph_index)
+                if isinstance(raw, int):
+                    page = raw
+            in_page = None
+            if callable(in_page_estimator):
+                raw_in = in_page_estimator(paragraph_index)
+                if isinstance(raw_in, int):
+                    in_page = raw_in
             if page is None:
                 return f" (paragraf #{paragraph_index})"
             if in_page is None or in_page <= 0:
@@ -719,15 +955,32 @@ class ReferenceValidator:
 
         if result.total_entries == 0:
             result.status = "fail"
-            result.messages.append(
-                CheckMessage(
-                    level="fail",
-                    text=(
-                        "Daftar Pustaka tidak ditemukan / kosong. Section ini "
-                        "wajib ada untuk PKM."
-                    ),
+            if result.dp_heading_paragraph_index is not None:
+                hint = loc(result.dp_heading_paragraph_index)
+                result.messages.append(
+                    CheckMessage(
+                        level="fail",
+                        text=(
+                            'Judul "DAFTAR PUSTAKA" terdeteksi'
+                            f"{hint}, tetapi tidak ada satupun paragraf referensi "
+                            'di antara judul itu dan heading "LAMPIRAN" (hanya baris '
+                            "kosong atau teks yang tidak dianggap sebagai paragraf "
+                            "body). Tulis setiap sumber sebagai paragraf biasa tepat "
+                            "di bawah judul. Referensi di dalam tabel/gambar/kotak "
+                            "teks tidak ikut terbaca oleh pemeriksa ini."
+                        ),
+                    )
                 )
-            )
+            else:
+                result.messages.append(
+                    CheckMessage(
+                        level="fail",
+                        text=(
+                            "Daftar Pustaka tidak ditemukan / kosong. Section ini "
+                            "wajib ada untuk PKM."
+                        ),
+                    )
+                )
             return
 
         # Format issues
@@ -736,13 +989,20 @@ class ReferenceValidator:
                 has_fail = True
             else:
                 has_warning = True
+            para = fi.paragraph_index
+            if para is None and fi.entry_index >= 0 and fi.entry_index < len(
+                result.entries
+            ):
+                para = result.entries[fi.entry_index].paragraph_index
+            prefix = (
+                "[Sitasi in-text]"
+                if fi.entry_index == -1
+                else f"[Entry #{fi.entry_index + 1}]"
+            )
             result.messages.append(
                 CheckMessage(
                     level=fi.severity,
-                    text=(
-                        f"[Entry #{fi.entry_index + 1}] {fi.issue}"
-                        f"{loc(result.entries[fi.entry_index].paragraph_index) if fi.entry_index < len(result.entries) else ''}"
-                    ),
+                    text=f"{prefix} {fi.issue}{loc(para)}",
                 )
             )
 

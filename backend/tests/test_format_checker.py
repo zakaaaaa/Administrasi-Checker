@@ -7,12 +7,14 @@ Cara jalankan:
 
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-from app.services.docx_parser import DocxParser
+from app.services.docx_parser import DocxParser, ParagraphInfo
 from app.services.format_checker import (
     FormatChecker,
     FormatRules,
     FOREIGN_WORDS,
+    _is_figure_table_caption_paragraph,
     get_pkm_format_rules,
 )
 from app.services.style_resolver import StyleResolver, ResolvedFont
@@ -225,6 +227,78 @@ class TestForeignWordsDetection(unittest.TestCase):
     def test_foreign_words_dictionary_not_empty(self):
         self.assertGreater(len(FOREIGN_WORDS), 10)
         self.assertIn("internet of things", FOREIGN_WORDS)
+
+
+class TestCaptionParagraphDetection(unittest.TestCase):
+    """Caption gambar/tabel dikecualikan dari wajib justify."""
+
+    def test_figure_caption_indonesian(self):
+        self.assertTrue(
+            _is_figure_table_caption_paragraph(
+                "Gambar 2. Logo Protextify untuk sistem keamanan data."
+            )
+        )
+
+    def test_table_caption(self):
+        self.assertTrue(
+            _is_figure_table_caption_paragraph("Tabel 1 — Ringkasan hasil uji")
+        )
+
+    def test_not_caption_body_text(self):
+        self.assertFalse(
+            _is_figure_table_caption_paragraph(
+                "Pada gambar 2 terlihat bahwa hasil penelitian menunjukkan "
+                "tren positif yang berkelanjutan."
+            )
+        )
+
+    def test_long_line_not_treated_as_caption(self):
+        long_tail = "x" * 300
+        self.assertFalse(
+            _is_figure_table_caption_paragraph("Gambar 2. " + long_tail)
+        )
+
+
+class TestAlignmentSkipsFigureCaptions(unittest.TestCase):
+    """Alignment: center pada caption panjang tidak boleh false positive."""
+
+    def test_center_caption_no_alignment_issue(self):
+        from app.services import format_checker as fc
+
+        paras = [
+            ParagraphInfo(
+                index=0,
+                text="Gambar 2. Logo Protextify untuk sistem keamanan data.",
+                is_heading=False,
+                alignment="center",
+            ),
+        ]
+        parser = MagicMock()
+        parser.paragraphs = paras
+        with patch.object(fc, "StyleResolver", return_value=MagicMock()):
+            checker = FormatChecker(parser)
+            sec = checker._check_alignment()
+        self.assertEqual(sec.status, "pass")
+        self.assertEqual(len(sec.issues), 0)
+
+    def test_center_body_paragraph_still_fails(self):
+        from app.services import format_checker as fc
+
+        paras = [
+            ParagraphInfo(
+                index=0,
+                text="Ini adalah paragraf body biasa yang cukup panjang.",
+                is_heading=False,
+                alignment="center",
+            ),
+        ]
+        parser = MagicMock()
+        parser.paragraphs = paras
+        with patch.object(fc, "StyleResolver", return_value=MagicMock()):
+            checker = FormatChecker(parser)
+            sec = checker._check_alignment()
+        self.assertEqual(sec.status, "fail")
+        self.assertGreaterEqual(len(sec.issues), 1)
 
 
 # ============================================================================

@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from app.services.budget_auditor import (
+    BudgetAuditResult,
     BudgetAuditor,
     FundingInput,
 )
@@ -19,6 +20,8 @@ from app.services.budget_rules import (
     get_pkm_kc_budget_rules,
 )
 from app.services.budget_table_parser import (
+    BudgetItem,
+    Lampiran2ParseResult,
     parse_indonesian_number,
     is_bab4_rab_table,
     is_lampiran2_table,
@@ -268,14 +271,7 @@ class TestBudgetAuditorRealDoc(unittest.TestCase):
             raise unittest.SkipTest(f"{REAL_FILE.name} tidak ada")
         cls.parser = DocxParser(REAL_FILE)
         cls.rules = get_pkm_kc_budget_rules()
-        # Asumsikan user input pendanaan compliant dengan rules — 
-        # supaya kita test logic dokumen, bukan kesalahan input
-        cls.funding = FundingInput(
-            belmawa=7_000_000,
-            university=1_000_000,
-            external=0,
-        )
-        cls.result = BudgetAuditor(cls.parser, cls.rules, cls.funding).check()
+        cls.result = BudgetAuditor(cls.parser, cls.rules).check()
 
     def test_overall_status_fail(self):
         self.assertEqual(self.result.status, "fail")
@@ -306,11 +302,11 @@ class TestBudgetAuditorRealDoc(unittest.TestCase):
             f"Hard Disk not found in: {descs}"
         )
 
-    def test_finds_relocation_warnings(self):
-        """Item > Rp1jt harus muncul di relocation_items (warning)."""
-        # Item: Sewa Komputer Grafis (1.2jt), Pen Tool (1.3jt), Souvenir YUK MABAR (1jt)
-        # Biaya Publikasi Artikel (1.5jt), Biaya Seminar (1.35jt)
+    def test_finds_relocation_warnings_when_unit_price_high(self):
+        """Saran relokasi memakai patokan harga satuan > Rp1jt (bukan total baris)."""
         self.assertGreater(len(self.result.relocation_items), 0)
+        for ri in self.result.relocation_items:
+            self.assertGreater(ri.amount_rp, 1_000_000)
 
     def test_perlengkapan_category_over_limit(self):
         """Kategori 'Sewa dan jasa' (alias 'Perlengkapan') = 4.4jt / 11.32jt = 38.9% > 15%."""
@@ -321,6 +317,83 @@ class TestBudgetAuditorRealDoc(unittest.TestCase):
         self.assertEqual(len(sewa_results), 1)
         self.assertEqual(sewa_results[0].status, "fail")
         self.assertGreater(sewa_results[0].actual_pct or 0, 15.0)
+
+
+# ============================================================================
+# Test: relokasi = patokan harga satuan
+# ============================================================================
+
+
+class TestRelocationUnitPriceThreshold(unittest.TestCase):
+    """_scan_relocation: bandingkan unit_price, bukan total_rp."""
+
+    def test_only_high_unit_price_flagged(self):
+        class _P:
+            def estimate_page_for_table_cell(self, *a, **k):
+                return 12
+
+        auditor = BudgetAuditor.__new__(BudgetAuditor)
+        auditor.rules = get_pkm_kc_budget_rules()
+        auditor.parser = _P()
+        result = BudgetAuditResult(status="pass")
+        lamp2 = Lampiran2ParseResult(
+            found=True,
+            table_index=0,
+            items=[
+                BudgetItem(
+                    description="Vol besar OK",
+                    unit_price=200_000,
+                    total_rp=10_000_000,
+                    volume="50",
+                    row_index=1,
+                    table_index=0,
+                ),
+                BudgetItem(
+                    description="Satuan mahal",
+                    unit_price=1_200_000,
+                    total_rp=1_200_000,
+                    volume="1",
+                    row_index=2,
+                    table_index=0,
+                ),
+                BudgetItem(
+                    description="Tanpa satuan",
+                    unit_price=None,
+                    total_rp=5_000_000,
+                    row_index=3,
+                    table_index=0,
+                ),
+            ],
+        )
+        BudgetAuditor._scan_relocation(auditor, result, lamp2)
+        self.assertEqual(len(result.relocation_items), 1)
+        self.assertEqual(result.relocation_items[0].description, "Satuan mahal")
+        self.assertEqual(result.relocation_items[0].approx_page, 12)
+
+    def test_no_unit_price_no_relocation_flag(self):
+        class _P:
+            def estimate_page_for_table_cell(self, *a, **k):
+                return None
+
+        auditor = BudgetAuditor.__new__(BudgetAuditor)
+        auditor.rules = get_pkm_kc_budget_rules()
+        auditor.parser = _P()
+        result = BudgetAuditResult(status="pass")
+        lamp2 = Lampiran2ParseResult(
+            found=True,
+            table_index=0,
+            items=[
+                BudgetItem(
+                    description="Hanya total",
+                    unit_price=None,
+                    total_rp=5_000_000,
+                    row_index=1,
+                    table_index=0,
+                ),
+            ],
+        )
+        BudgetAuditor._scan_relocation(auditor, result, lamp2)
+        self.assertEqual(len(result.relocation_items), 0)
 
 
 # ============================================================================
@@ -336,9 +409,6 @@ class TestNoTablesEdgeCase(unittest.TestCase):
         result = BudgetAuditor(
             parser=_StubParser(),
             rules=get_pkm_kc_budget_rules(),
-            funding=FundingInput(
-                belmawa=7_000_000, university=1_000_000, external=0
-            ),
         ).check()
         self.assertEqual(result.table_integrity_status, "fail")
         # Semua kategori PKM-KC harus dilaporkan missing

@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import { Plus_Jakarta_Sans, Poppins } from 'next/font/google';
+import { RootShellOrbs } from '@/components/layout/RootShellOrbs';
 import '@/styles/globals.css';
 
 // ----------------------------------------------------------------------------
@@ -48,13 +49,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       className={`${jakarta.variable} ${poppins.variable}`}
     >
       <body className="canvas-glass min-h-screen overflow-x-hidden font-sans text-base font-medium text-foreground antialiased">
-        {/* Decorative orbs — di-render fixed, blur, behind content */}
-        <div aria-hidden className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
-          <div className="orb orb-brand h-[520px] w-[520px] left-[-180px] top-[-160px] animate-float-slow" />
-          <div className="orb orb-accent h-[440px] w-[440px] right-[-140px] top-[20%] animate-float-slower" />
-          <div className="orb orb-warm h-[380px] w-[380px] left-[30%] bottom-[-120px] animate-float-slow" />
-          <div className="grain" />
-        </div>
+        <RootShellOrbs />
 
         {children}
       </body>
