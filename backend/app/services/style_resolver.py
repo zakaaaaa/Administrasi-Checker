@@ -132,6 +132,81 @@ class StyleResolver:
 
         return result
 
+    def resolve_paragraph_alignment(
+        self, paragraph_index: int
+    ) -> Optional[str]:
+        """
+        Alignment efektif paragraf, ikut hierarki Word:
+        pPr/jc langsung → rantai style (basedOn) → docDefaults → default 'left'.
+
+        Return 'left' | 'center' | 'right' | 'justify'.
+        None hanya kalau XML paragraf tidak terbaca sama sekali.
+        """
+        para_xml = self._get_paragraph_xml(paragraph_index)
+        if para_xml is None:
+            return None
+
+        # 1. Langsung di paragraf
+        val = self._jc_val(para_xml.find(_q("pPr")))
+        if val is not None:
+            return self._map_jc(val)
+
+        # 2. Rantai style (pStyle → basedOn → ...)
+        style_id = self._get_paragraph_style_id(para_xml)
+        if style_id:
+            styles_index = self._get_styles_index()
+            visited: set[str] = set()
+            current: Optional[str] = style_id
+            while current and current not in visited:
+                visited.add(current)
+                style = styles_index.get(current)
+                if style is None:
+                    break
+                v = self._jc_val(style.find(_q("pPr")))
+                if v is not None:
+                    return self._map_jc(v)
+                based_on = style.find(_q("basedOn"))
+                if based_on is None:
+                    break
+                current = based_on.get(_q("val"))
+
+        # 3. docDefaults > pPrDefault > pPr > jc
+        styles_xml = self.parser.styles_xml
+        if styles_xml is not None:
+            doc_defaults = styles_xml.find(_q("docDefaults"))
+            if doc_defaults is not None:
+                ppr_default = doc_defaults.find(_q("pPrDefault"))
+                if ppr_default is not None:
+                    v = self._jc_val(ppr_default.find(_q("pPr")))
+                    if v is not None:
+                        return self._map_jc(v)
+
+        # 4. Default Word
+        return "left"
+
+    @staticmethod
+    def _jc_val(ppr: Optional[etree._Element]) -> Optional[str]:
+        """Ambil nilai w:jc/@w:val dari sebuah pPr. None kalau tidak ada."""
+        if ppr is None:
+            return None
+        jc = ppr.find(_q("jc"))
+        if jc is None:
+            return None
+        return jc.get(_q("val"))
+
+    @staticmethod
+    def _map_jc(val: str) -> str:
+        """Map nilai OOXML w:jc ke 'left'|'center'|'right'|'justify'."""
+        v = (val or "").lower()
+        if v == "center":
+            return "center"
+        if v in ("right", "end"):
+            return "right"
+        if v in ("both", "distribute", "thaidistribute"):
+            return "justify"
+        # left, start, atau nilai tak dikenal → perlakukan sebagai left
+        return "left"
+
     # ------------------------------------------------------------------------
     # Internal: index styles
     # ------------------------------------------------------------------------

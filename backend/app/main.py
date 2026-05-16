@@ -220,8 +220,9 @@ def list_tokens(admin_id: str):
 import json
 import uuid
 from pathlib import Path
-from fastapi import UploadFile, File, Form
+from fastapi import UploadFile, File, Form, Depends
 from app.services.orchestrator import CheckRequest, run_all_checks, UnsupportedSchemaError
+from app.supabase_auth import require_supabase_user
 
 UPLOAD_DIR = Path(__file__).parent.parent / "storage" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -307,22 +308,31 @@ def submit_check(
             )
         raise HTTPException(500, f"Gagal memproses dokumen: {e}")
 
-    # 8. Save results — modul yang tidak dijalankan disimpan NULL di DB,
-    # dan tidak dimasukkan ke payload response.
-    module_to_column = {
-        "structure": "structure_result",
-        "physical_sheet": "physical_sheet_result",
-        "format": "format_result",
-        "page_numbering": "page_numbering_result",
-        "budget": "budget_result",
-        "reference": "reference_result",
-        "ai_content": "ai_content_result",
-        "ai_format": "ai_format_result",
-    }
+    return _persist_and_respond(submission_id, results)
 
-    def _module_payload(key: str):
-        payload = results.get(key)
-        return json.dumps(payload) if payload is not None else None
+
+# ---------------------------------------------------------------------------
+# Reviewer submission endpoint (Supabase Auth, tanpa token)
+# ---------------------------------------------------------------------------
+
+# Mapping module → kolom DB (dipakai oleh kedua endpoint check).
+_MODULE_TO_COLUMN = {
+    "structure": "structure_result",
+    "physical_sheet": "physical_sheet_result",
+    "format": "format_result",
+    "page_numbering": "page_numbering_result",
+    "budget": "budget_result",
+    "reference": "reference_result",
+    "ai_content": "ai_content_result",
+    "ai_format": "ai_format_result",
+}
+
+
+def _persist_and_respond(submission_id: str, results: dict) -> dict:
+    """INSERT hasil per modul + UPDATE submissions ke completed, return payload response."""
+    def _payload(key: str):
+        v = results.get(key)
+        return json.dumps(v) if v is not None else None
 
     with get_cursor() as cur:
         cur.execute(
@@ -335,14 +345,14 @@ def submit_check(
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (submission_id,
-             _module_payload("structure"),
-             _module_payload("physical_sheet"),
-             _module_payload("format"),
-             _module_payload("page_numbering"),
-             _module_payload("budget"),
-             _module_payload("reference"),
-             _module_payload("ai_content"),
-             _module_payload("ai_format"),
+             _payload("structure"),
+             _payload("physical_sheet"),
+             _payload("format"),
+             _payload("page_numbering"),
+             _payload("budget"),
+             _payload("reference"),
+             _payload("ai_content"),
+             _payload("ai_format"),
              results["overall_status"]),
         )
         cur.execute(
@@ -351,14 +361,78 @@ def submit_check(
         )
 
     response_results = {
-        key: results[key]
-        for key in module_to_column
-        if key in results
+        key: results[key] for key in _MODULE_TO_COLUMN if key in results
     }
-
     return {
         "submission_id": submission_id,
         "status": "completed",
         "overall_status": results["overall_status"],
         "results": response_results,
     }
+
+
+@app.post("/api/reviewer/check")
+def submit_reviewer_check(
+    competition: str = Form(...),
+    report_type: str = Form(...),
+    schema_code: str = Form(...),
+    file: UploadFile = File(...),
+    user: dict = Depends(require_supabase_user),
+):
+    """
+    Endpoint untuk reviewer (Supabase Auth). Tidak butuh token.
+    Authorization: Bearer <supabase_access_token>
+    """
+    # 1. Validate file
+    if not file.filename or not file.filename.lower().endswith(".docx"):
+        raise HTTPException(400, "File harus berformat .docx")
+    content = file.file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(400, f"File terlalu besar (max {MAX_FILE_SIZE // 1024 // 1024} MB)")
+    if len(content) == 0:
+        raise HTTPException(400, "File kosong")
+
+    # 2. Save file + insert submission (no token)
+    submission_id = str(uuid.uuid4())
+    file_path = UPLOAD_DIR / f"{submission_id}.docx"
+    file_path.write_bytes(content)
+
+    reviewer_id = user.get("id")
+
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO submissions
+                (id, token_id, reviewer_user_id, competition, report_type,
+                 schema_code, original_filename, file_path, file_size_bytes, status)
+            VALUES (%s, NULL, %s, %s, %s, %s, %s, %s, %s, 'processing')
+            """,
+            (submission_id, reviewer_id, competition, report_type, schema_code,
+             file.filename, str(file_path), len(content)),
+        )
+
+    # 3. Run checks
+    try:
+        req = CheckRequest(
+            docx_path=str(file_path),
+            competition=competition,
+            report_type=report_type,
+            schema_code=schema_code,
+        )
+        results = run_all_checks(req)
+    except UnsupportedSchemaError as e:
+        with get_cursor() as cur:
+            cur.execute(
+                "UPDATE submissions SET status='failed', error_message=%s WHERE id=%s",
+                (str(e), submission_id),
+            )
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        with get_cursor() as cur:
+            cur.execute(
+                "UPDATE submissions SET status='failed', error_message=%s WHERE id=%s",
+                (str(e), submission_id),
+            )
+        raise HTTPException(500, f"Gagal memproses dokumen: {e}")
+
+    return _persist_and_respond(submission_id, results)

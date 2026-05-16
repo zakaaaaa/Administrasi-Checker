@@ -43,6 +43,7 @@ from app.services.docx_parser import (
     SectionInfo,
     half_points_to_pt,
 )
+from app.services.message_format import format_finding
 from app.services.schema_rules import SchemaRules
 from app.services.style_resolver import StyleResolver
 
@@ -785,9 +786,8 @@ class PageNumberingChecker:
                     found=analysis.actual_numeral_type,
                     section_index=si,
                     message=(
-                        f"Section #{si} ({rule.name}): jenis numeral "
-                        f"'{analysis.actual_numeral_type}', seharusnya "
-                        f"'{rule.numeral_type}'."
+                        f"Nomor halaman zona '{rule.name}' pakai jenis numeral "
+                        f"'{analysis.actual_numeral_type}'"
                     ),
                 )
             )
@@ -806,8 +806,8 @@ class PageNumberingChecker:
                     found=analysis.actual_position,
                     section_index=si,
                     message=(
-                        f"Section #{si} ({rule.name}): posisi nomor halaman di "
-                        f"'{analysis.actual_position}', seharusnya '{rule.position}'."
+                        f"Nomor halaman zona '{rule.name}' berada di posisi "
+                        f"'{analysis.actual_position}'"
                     ),
                 )
             )
@@ -826,8 +826,8 @@ class PageNumberingChecker:
                     found=analysis.actual_alignment,
                     section_index=si,
                     message=(
-                        f"Section #{si} ({rule.name}): alignment nomor halaman "
-                        f"'{analysis.actual_alignment}', seharusnya '{rule.alignment}'."
+                        f"Nomor halaman zona '{rule.name}' alignment "
+                        f"'{analysis.actual_alignment}'"
                     ),
                 )
             )
@@ -846,8 +846,8 @@ class PageNumberingChecker:
                     found=analysis.actual_font_name,
                     section_index=si,
                     message=(
-                        f"Section #{si} ({rule.name}): font nomor halaman "
-                        f"'{analysis.actual_font_name}', seharusnya '{rule.font_name}'."
+                        f"Nomor halaman zona '{rule.name}' pakai font "
+                        f"'{analysis.actual_font_name}'"
                     ),
                 )
             )
@@ -866,8 +866,8 @@ class PageNumberingChecker:
                     found=f"{analysis.actual_font_size_pt}pt",
                     section_index=si,
                     message=(
-                        f"Section #{si} ({rule.name}): ukuran font nomor halaman "
-                        f"{analysis.actual_font_size_pt}pt, seharusnya {rule.font_size_pt}pt."
+                        f"Nomor halaman zona '{rule.name}' ukuran font "
+                        f"{analysis.actual_font_size_pt}pt"
                     ),
                 )
             )
@@ -908,6 +908,14 @@ class PageNumberingChecker:
             result.messages.append(CheckMessage(level="pass", text=text))
             return
 
-        # Fail/warning — list semua finding sebagai message
+        # Fail/warning — list semua finding sebagai message.
+        # Penomoran halaman bersifat per-section (bukan per-paragraf), jadi
+        # tidak ada nomor halaman fisik spesifik → "Halaman -".
         for f in result.findings:
-            result.messages.append(CheckMessage(level=f.severity, text=f.message))
+            perbaikan = f.expected or "perbaiki sesuai aturan"
+            result.messages.append(
+                CheckMessage(
+                    level=f.severity,
+                    text=format_finding(None, f.message, perbaikan),
+                )
+            )

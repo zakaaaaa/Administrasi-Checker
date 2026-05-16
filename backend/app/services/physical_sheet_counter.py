@@ -41,6 +41,7 @@ from typing import Optional
 from pypdf import PdfReader
 
 from app.services.docx_parser import DocxParser
+from app.services.message_format import format_finding
 from app.services.pdf_converter import PdfConverter
 from app.services.schema_rules import SchemaRules
 
@@ -542,9 +543,10 @@ class PhysicalSheetCounter:
                         type="missing",
                         severity="warning",  # tidak fail mati — bisa jadi lembar gambar
                         detail={"sheet_index": p.sheet_index},
-                        message=(
-                            f"Lembar fisik #{p.sheet_index} tidak terdeteksi nomor halaman. "
-                            f"Mungkin lembar gambar atau format nomor non-standar."
+                        message=format_finding(
+                            p.sheet_index,
+                            "tidak terdeteksi nomor halaman (mungkin lembar gambar/format non-standar)",
+                            "tambahkan nomor halaman di sudut kanan atas",
                         ),
                     )
                 )
@@ -563,9 +565,13 @@ class PhysicalSheetCounter:
                         type="duplicate",
                         severity="fail",
                         detail={"number": str(num), "found_on_sheets": sheets},
-                        message=(
-                            f"Nomor halaman '{num}' duplikat — muncul di lembar fisik: "
-                            f"{', '.join(str(s) for s in sheets)}"
+                        message=format_finding(
+                            sheets[0],
+                            (
+                                f"nomor halaman '{num}' duplikat — muncul di "
+                                f"{len(sheets)} lembar ({', '.join(str(s) for s in sheets)})"
+                            ),
+                            "pastikan tiap halaman bernomor unik berurutan",
                         ),
                     )
                 )
@@ -586,10 +592,13 @@ class PhysicalSheetCounter:
                             "previous_sheet": prev.sheet_index,
                             "current_sheet": curr.sheet_index,
                         },
-                        message=(
-                            f"Nomor halaman mundur: dari '{prev.page_num_value}' "
-                            f"(lembar #{prev.sheet_index}) ke '{curr.page_num_value}' "
-                            f"(lembar #{curr.sheet_index})."
+                        message=format_finding(
+                            curr.sheet_index,
+                            (
+                                f"nomor halaman mundur: '{prev.page_num_value}' → "
+                                f"'{curr.page_num_value}'"
+                            ),
+                            f"urutkan ulang penomoran (seharusnya {prev.page_num_value + 1})",
                         ),
                     )
                 )
@@ -610,9 +619,13 @@ class PhysicalSheetCounter:
                             "after_sheet": prev.sheet_index,
                             "next_sheet": curr.sheet_index,
                         },
-                        message=(
-                            f"Nomor halaman meloncat: dari '{prev.page_num_value}' langsung ke "
-                            f"'{curr.page_num_value}' (gap {diff - 1} nomor)."
+                        message=format_finding(
+                            curr.sheet_index,
+                            (
+                                f"nomor halaman meloncat: '{prev.page_num_value}' → "
+                                f"'{curr.page_num_value}' (gap {diff - 1} nomor)"
+                            ),
+                            f"isi nomor yang hilang ({prev.page_num_value + 1}–{curr.page_num_value - 1})",
                         ),
                     )
                 )
@@ -633,31 +646,26 @@ class PhysicalSheetCounter:
         if result.core_first_sheet is None:
             mode = getattr(self.rules, "core_start_mode", "bab1")
             if mode == "first_page":
-                reason = (
-                    "PDF kosong atau gagal di-extract — tidak ada lembar "
-                    "yang bisa dianalisa."
-                )
+                kesalahan = "PDF kosong atau gagal di-extract"
+                perbaikan = "pastikan dokumen ter-render dengan benar (bukan scan)"
             else:
-                reason = (
-                    "'BAB 1' tidak ditemukan di teks PDF. Mungkin dokumen "
-                    "scan / OCR diperlukan."
-                )
+                kesalahan = "bagian inti tidak teridentifikasi ('BAB 1' tidak ditemukan)"
+                perbaikan = "pastikan heading 'BAB 1' ada dan bukan dokumen scan"
             msgs.append(
-                CheckMessage(
-                    level="fail",
-                    text=f"Bagian inti dokumen tidak teridentifikasi: {reason}",
-                )
+                CheckMessage(level="fail", text=format_finding(None, kesalahan, perbaikan))
             )
             return msgs
 
         count = result.core_physical_sheets
+        scheme = f"{self.rules.competition_code}-{self.rules.schema_code}"
         if count > max_sheets:
             msgs.append(
                 CheckMessage(
                     level="fail",
-                    text=(
-                        f"Bagian inti {count} lembar fisik — melebihi batas {max_sheets} "
-                        f"lembar untuk {self.rules.competition_code}-{self.rules.schema_code}."
+                    text=format_finding(
+                        None,
+                        f"bagian inti {count} lembar — melebihi batas {max_sheets} lembar untuk {scheme}",
+                        f"kurangi panjang dokumen menjadi ≤ {max_sheets} lembar",
                     ),
                 )
             )
@@ -665,10 +673,10 @@ class PhysicalSheetCounter:
             msgs.append(
                 CheckMessage(
                     level="fail",
-                    text=(
-                        f"Bagian inti {count} lembar fisik — kurang dari batas minimum "
-                        f"{min_sheets} lembar untuk {self.rules.competition_code}-"
-                        f"{self.rules.schema_code}."
+                    text=format_finding(
+                        None,
+                        f"bagian inti {count} lembar — kurang dari minimum {min_sheets} lembar untuk {scheme}",
+                        f"tambahkan konten sampai minimal {min_sheets} lembar",
                     ),
                 )
             )

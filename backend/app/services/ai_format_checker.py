@@ -20,7 +20,9 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from app.services.docx_parser import DocxParser, ParagraphInfo, RunInfo
+from app.services.message_format import format_finding
 from app.services.schema_rules import SchemaRules
+from app.services.style_resolver import StyleResolver
 
 
 # ============================================================================
@@ -33,6 +35,13 @@ ABSTRACT_FONT_SIZE = 11.0
 AUTHOR_FONT_SIZE = 10.0
 CAPTION_FONT_SIZE = 11.0
 TITLE_FONT_SIZE = 12.0
+
+# Alignment wajib per-zona (PKM-AI)
+TITLE_ALIGN = "center"
+AUTHOR_ALIGN = "center"
+ABSTRACT_ALIGN = "justify"
+CAPTION_ALIGN = "center"
+ABSTRACT_LINE_SPACING = 1.0
 
 # Toleransi numerik (font size & line spacing)
 SIZE_TOL = 0.5
@@ -47,7 +56,31 @@ _PENDAHULUAN_RE = re.compile(
     r"^\s*(?:1\s*\.?\s*)?pendahuluan\s*$|^\s*bab\s+(?:1|i)\.?\s+pendahuluan",
     re.IGNORECASE,
 )
-_CAPTION_RE = re.compile(r"^\s*(?:Gambar|Tabel)\s+\d+\s*[.:]", re.IGNORECASE)
+_CAPTION_RE = re.compile(r"^\s*(Gambar|Tabel)\s+(\d+)\s*[.:]", re.IGNORECASE)
+
+
+def _parse_caption_label(text: str) -> Optional[str]:
+    """Ambil label rapi dari caption: 'Gambar 3' / 'Tabel 1'. None kalau bukan caption."""
+    m = _CAPTION_RE.match((text or "").strip())
+    if not m:
+        return None
+    kind = m.group(1).capitalize()  # 'Gambar' / 'Tabel'
+    num = m.group(2)
+    return f"{kind} {num}"
+
+
+def _page_of(parser: DocxParser, paragraph_index: Optional[int]) -> Optional[int]:
+    """Estimasi halaman fisik (1-based) dari paragraph index. None kalau tak bisa."""
+    if paragraph_index is None:
+        return None
+    estimator = getattr(parser, "estimate_physical_page", None)
+    if not callable(estimator):
+        return None
+    try:
+        raw = estimator(paragraph_index)
+    except Exception:
+        return None
+    return raw if isinstance(raw, int) else None
 
 
 # ============================================================================
@@ -167,6 +200,7 @@ class AiFormatChecker:
     def __init__(self, parser: DocxParser, schema: SchemaRules):
         self.parser = parser
         self.schema = schema
+        self.resolver = StyleResolver(parser)
 
     def check(self) -> AiFormatResult:
         result = AiFormatResult()
@@ -279,14 +313,14 @@ class AiFormatChecker:
                 zone="title", aspect="font_name", severity="fail",
                 expected=FONT_NAME, found=name,
                 paragraph_index=para.index,
-                message=f"Judul pakai font '{name}', seharusnya {FONT_NAME}.",
+                message=f"Judul pakai font '{name}'",
             ))
         if size is not None and not _size_matches(size, TITLE_FONT_SIZE):
             result.findings.append(ZoneFinding(
                 zone="title", aspect="font_size", severity="fail",
                 expected=f"{TITLE_FONT_SIZE}pt", found=f"{size}pt",
                 paragraph_index=para.index,
-                message=f"Judul pakai ukuran {size}pt, seharusnya {TITLE_FONT_SIZE}pt.",
+                message=f"Judul pakai ukuran {size}pt",
             ))
         # Bold: minimal sebagian besar run bold
         total_chars = sum(len((r.text or "")) for r in para.runs)
@@ -301,9 +335,17 @@ class AiFormatChecker:
                 found=f"{int(bold_ratio * 100)}% bold",
                 paragraph_index=para.index,
                 message=(
-                    f"Judul artikel seharusnya dicetak TEBAL. Terdeteksi hanya "
-                    f"{int(bold_ratio * 100)}% bold."
+                    f"Judul artikel hanya {int(bold_ratio * 100)}% dicetak tebal"
                 ),
+            ))
+        # Alignment: judul harus rata tengah
+        align = self.resolver.resolve_paragraph_alignment(para.index)
+        if align is not None and align != TITLE_ALIGN:
+            result.findings.append(ZoneFinding(
+                zone="title", aspect="alignment", severity="fail",
+                expected="rata tengah (center)", found=align,
+                paragraph_index=para.index,
+                message=f"Judul ditulis rata '{align}', bukan rata tengah",
             ))
 
     def _validate_title_page_spacing(
@@ -341,8 +383,7 @@ class AiFormatChecker:
                 paragraph_index=sample.index,
                 message=(
                     f"Halaman judul ({len(mismatches)}/{len(non_spec_paras)} "
-                    f"paragraf) pakai jarak baris {sample.line_spacing}, "
-                    f"seharusnya {TITLE_PAGE_LINE_SPACING} (1,0 spasi)."
+                    f"paragraf) pakai jarak baris {sample.line_spacing}"
                 ),
             ))
 
@@ -387,8 +428,25 @@ class AiFormatChecker:
                 paragraph_index=p.index,
                 message=(
                     f"Block nama penulis & institusi ({len(mismatches)}/"
-                    f"{len(sized_paras)} paragraf) pakai ukuran {s}pt, "
-                    f"seharusnya {AUTHOR_FONT_SIZE}pt."
+                    f"{len(sized_paras)} paragraf) pakai ukuran {s}pt"
+                ),
+            ))
+
+        # Alignment: block penulis harus rata tengah
+        align_mismatch = [
+            (p, a) for p in block
+            for a in [self.resolver.resolve_paragraph_alignment(p.index)]
+            if a is not None and a != AUTHOR_ALIGN
+        ]
+        if len(align_mismatch) >= max(1, len(block) // 2):
+            p, a = align_mismatch[0]
+            result.findings.append(ZoneFinding(
+                zone="author", aspect="alignment", severity="fail",
+                expected="rata tengah (center)", found=a,
+                paragraph_index=p.index,
+                message=(
+                    f"Block nama penulis & institusi ({len(align_mismatch)}/"
+                    f"{len(block)} paragraf) ditulis rata '{a}', bukan rata tengah"
                 ),
             ))
 
@@ -429,54 +487,100 @@ class AiFormatChecker:
                 paragraph_index=p.index,
                 message=(
                     f"Isi {zone} ({len(mismatches)}/{len(sized_paras)} paragraf) "
-                    f"pakai ukuran {s}pt, seharusnya {ABSTRACT_FONT_SIZE}pt."
+                    f"pakai ukuran {s}pt"
+                ),
+            ))
+
+        # Alignment: isi abstrak harus justify
+        align_mismatch = [
+            (p, a) for p in block
+            for a in [self.resolver.resolve_paragraph_alignment(p.index)]
+            if a is not None and a != ABSTRACT_ALIGN
+        ]
+        if len(align_mismatch) >= max(1, len(block) // 2):
+            p, a = align_mismatch[0]
+            result.findings.append(ZoneFinding(
+                zone=zone, aspect="alignment", severity="fail",
+                expected="rata kiri-kanan (justify)", found=a,
+                paragraph_index=p.index,
+                message=(
+                    f"Isi {zone} ({len(align_mismatch)}/{len(block)} paragraf) "
+                    f"ditulis rata '{a}', bukan justify"
+                ),
+            ))
+
+        # Line spacing: isi abstrak harus 1.0
+        spaced = [p for p in block if p.line_spacing is not None]
+        spacing_mismatch = [
+            p for p in spaced
+            if not _spacing_matches(p.line_spacing, ABSTRACT_LINE_SPACING)
+        ]
+        if spaced and len(spacing_mismatch) >= max(1, len(spaced) // 2):
+            p = spacing_mismatch[0]
+            result.findings.append(ZoneFinding(
+                zone=zone, aspect="line_spacing", severity="fail",
+                expected=f"{ABSTRACT_LINE_SPACING} (1,0 spasi)",
+                found=f"{p.line_spacing}",
+                paragraph_index=p.index,
+                message=(
+                    f"Isi {zone} ({len(spacing_mismatch)}/{len(spaced)} paragraf) "
+                    f"pakai jarak baris {p.line_spacing}"
                 ),
             ))
 
     def _validate_captions(
         self, paragraphs: list[ParagraphInfo], result: AiFormatResult
     ) -> None:
-        """Caption 'Gambar N.' atau 'Tabel N.' → TNR 11, 1 spasi."""
-        captions = [
-            p for p in paragraphs
-            if not _is_blank(p) and _CAPTION_RE.match((p.text or "").strip())
-        ]
+        """
+        Caption 'Gambar N.' atau 'Tabel N.' → TNR 11, 1 spasi, rata tengah.
+
+        Emit 1 finding per caption bermasalah dengan label spesifik
+        (mis. "Gambar 3", "Tabel 1") + estimasi halaman fisik, supaya
+        user bisa langsung temukan di Word.
+        """
+        captions: list[tuple[ParagraphInfo, str]] = []
+        for p in paragraphs:
+            if _is_blank(p):
+                continue
+            label = _parse_caption_label(p.text)
+            if label:
+                captions.append((p, label))
         if not captions:
             return
 
-        size_mismatch = []
-        spacing_mismatch = []
-        for p in captions:
+        result.zones_detected["captions_count"] = len(captions)
+        result.zones_detected["captions"] = [
+            {"label": label, "paragraph_index": p.index}
+            for (p, label) in captions
+        ]
+
+        for p, label in captions:
             _, size, _ = _aggregate_font(p)
             if size is not None and not _size_matches(size, CAPTION_FONT_SIZE):
-                size_mismatch.append((p, size))
+                result.findings.append(ZoneFinding(
+                    zone="caption", aspect="font_size", severity="warning",
+                    expected=f"{CAPTION_FONT_SIZE}pt",
+                    found=f"{size}pt",
+                    paragraph_index=p.index,
+                    message=f"Caption {label} pakai ukuran {size}pt",
+                ))
             if p.line_spacing is not None and not _spacing_matches(p.line_spacing, 1.0):
-                spacing_mismatch.append((p, p.line_spacing))
-
-        if size_mismatch:
-            p, s = size_mismatch[0]
-            result.findings.append(ZoneFinding(
-                zone="caption", aspect="font_size", severity="warning",
-                expected=f"{CAPTION_FONT_SIZE}pt",
-                found=f"{s}pt",
-                paragraph_index=p.index,
-                message=(
-                    f"Caption Gambar/Tabel ({len(size_mismatch)}/{len(captions)}) "
-                    f"pakai ukuran {s}pt, seharusnya {CAPTION_FONT_SIZE}pt."
-                ),
-            ))
-        if spacing_mismatch:
-            p, sp = spacing_mismatch[0]
-            result.findings.append(ZoneFinding(
-                zone="caption", aspect="line_spacing", severity="warning",
-                expected="1.0 (1 spasi)",
-                found=f"{sp}",
-                paragraph_index=p.index,
-                message=(
-                    f"Caption Gambar/Tabel ({len(spacing_mismatch)}/{len(captions)}) "
-                    f"pakai jarak baris {sp}, seharusnya 1.0 (1 spasi)."
-                ),
-            ))
+                result.findings.append(ZoneFinding(
+                    zone="caption", aspect="line_spacing", severity="warning",
+                    expected="1.0 (1 spasi)",
+                    found=f"{p.line_spacing}",
+                    paragraph_index=p.index,
+                    message=f"Caption {label} pakai jarak baris {p.line_spacing}",
+                ))
+            align = self.resolver.resolve_paragraph_alignment(p.index)
+            if align is not None and align != CAPTION_ALIGN:
+                result.findings.append(ZoneFinding(
+                    zone="caption", aspect="alignment", severity="warning",
+                    expected="rata tengah (center)",
+                    found=align,
+                    paragraph_index=p.index,
+                    message=f"Caption {label} ditulis rata '{align}', bukan rata tengah",
+                ))
 
     # ------------------------------------------------------------------------
     # Finalize
@@ -487,16 +591,27 @@ class AiFormatChecker:
             result.messages.append(CheckMessage(
                 level="pass",
                 text=(
-                    "Format khusus PKM-AI sesuai panduan: halaman judul "
-                    "1,0 spasi, abstrak/abstract TNR 11, penulis TNR 10, "
-                    "caption TNR 11."
+                    "Format khusus PKM-AI sesuai panduan: judul TNR 12 bold "
+                    "rata tengah, penulis TNR 10 rata tengah, "
+                    "abstrak/abstract TNR 11 justify, semua 1,0 spasi, "
+                    "caption TNR 11 rata tengah."
                 ),
             ))
             result.status = "pass"
             return
 
         for f in result.findings:
-            result.messages.append(CheckMessage(level=f.severity, text=f.message))
+            perbaikan = f.expected or "perbaiki sesuai aturan"
+            result.messages.append(
+                CheckMessage(
+                    level=f.severity,
+                    text=format_finding(
+                        _page_of(self.parser, f.paragraph_index),
+                        f.message,
+                        perbaikan,
+                    ),
+                )
+            )
 
         has_fail = any(f.severity == "fail" for f in result.findings)
         has_warn = any(f.severity == "warning" for f in result.findings)

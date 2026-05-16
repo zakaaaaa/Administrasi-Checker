@@ -30,6 +30,7 @@ from typing import Optional
 import re
 
 from app.services.docx_parser import DocxParser
+from app.services.message_format import format_finding
 from app.services.schema_rules import SchemaRules, SectionRule
 
 
@@ -433,9 +434,8 @@ class StructureChecker:
                             actual_earlier_index=a.paragraph_index,
                             actual_later_index=b.paragraph_index,
                             message=(
-                                f"Urutan salah: '{a.rule_name}' (paragraf #{a.paragraph_index}) "
-                                f"muncul sebelum '{b.rule_name}' (paragraf #{b.paragraph_index}), "
-                                f"seharusnya '{b.rule_name}' duluan."
+                                f"Urutan section salah: '{a.rule_name}' muncul "
+                                f"sebelum '{b.rule_name}'"
                             ),
                         )
                     )
@@ -446,29 +446,18 @@ class StructureChecker:
     # ------------------------------------------------------------------------
 
     def _finalize(self, result: StructureCheckResult) -> None:
-        def loc(paragraph_index: int) -> str:
+        def page_of(paragraph_index: int) -> Optional[int]:
             estimator = getattr(self.parser, "estimate_physical_page", None)
-            in_page_estimator = getattr(self.parser, "estimate_paragraph_index_in_page", None)
-            page = estimator(paragraph_index) if callable(estimator) else None
-            in_page = (
-                in_page_estimator(paragraph_index)
-                if callable(in_page_estimator)
-                else None
-            )
-            if page is None:
-                return f"(paragraf #{paragraph_index})"
-            if in_page is None or in_page <= 0:
-                return f"(halaman fisik ~{page}, paragraf #{paragraph_index})"
-            return (
-                f"(halaman fisik ~{page}, paragraf ke-{in_page} "
-                f"(global #{paragraph_index}))"
-            )
+            if not callable(estimator):
+                return None
+            try:
+                return estimator(paragraph_index)
+            except Exception:
+                return None
 
         # Status logic:
         # - fail jika ada forbidden ATAU ada missing required ATAU ada out_of_order
         # - pass jika semua bersih
-        # (warning belum dipakai — di skema struktur, semuanya jelas pass/fail)
-
         has_fail = bool(
             result.forbidden_found
             or result.missing_required
@@ -493,22 +482,37 @@ class StructureChecker:
 
         # Forbidden findings (paling kritis)
         for f in result.forbidden_found:
+            kesalahan = (
+                f"Dokumen memuat section '{f.rule_name}' yang DILARANG di "
+                f"{self.rules.competition_code}-{self.rules.schema_code} "
+                f"{self.rules.report_type_code}"
+            )
+            perbaikan = f"hapus section '{f.rule_name}' dari dokumen"
             result.messages.append(
-                CheckMessage(level="fail", text=f"{f.message} {loc(f.paragraph_index)}")
+                CheckMessage(
+                    level="fail",
+                    text=format_finding(page_of(f.paragraph_index), kesalahan, perbaikan),
+                )
             )
 
         # Missing required
         for m in result.missing_required:
-            result.messages.append(CheckMessage(level="fail", text=m.message))
+            kesalahan = f"Section wajib '{m.rule_name}' tidak ditemukan di dokumen"
+            perbaikan = f"tambahkan section '{m.rule_name}'"
+            result.messages.append(
+                CheckMessage(level="fail", text=format_finding(None, kesalahan, perbaikan))
+            )
 
         # Out of order
         for o in result.out_of_order:
+            kesalahan = (
+                f"Urutan section salah: '{o.later_should_be}' muncul sebelum "
+                f"'{o.earlier_should_be}'"
+            )
+            perbaikan = f"pindahkan '{o.earlier_should_be}' lebih dulu"
             result.messages.append(
                 CheckMessage(
                     level="fail",
-                    text=(
-                        f"{o.message} "
-                        f"{loc(o.actual_earlier_index)} vs {loc(o.actual_later_index)}"
-                    ),
+                    text=format_finding(page_of(o.actual_later_index), kesalahan, perbaikan),
                 )
             )

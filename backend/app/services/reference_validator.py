@@ -44,6 +44,7 @@ from docx.oxml.ns import qn
 from lxml import etree
 
 from app.services.docx_parser import DocxParser, NSMAP
+from app.services.message_format import format_finding
 from app.services.schema_rules import SchemaRules
 
 
@@ -926,29 +927,17 @@ class ReferenceValidator:
     # ------------------------------------------------------------------------
 
     def _finalize_status(self, result: ReferenceValidationResult) -> None:
-        def loc(paragraph_index: Optional[int]) -> str:
+        def page_of(paragraph_index: Optional[int]) -> Optional[int]:
             if paragraph_index is None:
-                return ""
+                return None
             estimator = getattr(self.parser, "estimate_physical_page", None)
-            in_page_estimator = getattr(self.parser, "estimate_paragraph_index_in_page", None)
-            page = None
-            if callable(estimator):
+            if not callable(estimator):
+                return None
+            try:
                 raw = estimator(paragraph_index)
-                if isinstance(raw, int):
-                    page = raw
-            in_page = None
-            if callable(in_page_estimator):
-                raw_in = in_page_estimator(paragraph_index)
-                if isinstance(raw_in, int):
-                    in_page = raw_in
-            if page is None:
-                return f" (paragraf #{paragraph_index})"
-            if in_page is None or in_page <= 0:
-                return f" (halaman fisik ~{page}, paragraf #{paragraph_index})"
-            return (
-                f" (halaman fisik ~{page}, paragraf ke-{in_page} "
-                f"(global #{paragraph_index}))"
-            )
+            except Exception:
+                return None
+            return raw if isinstance(raw, int) else None
 
         has_fail = False
         has_warning = False
@@ -956,18 +945,16 @@ class ReferenceValidator:
         if result.total_entries == 0:
             result.status = "fail"
             if result.dp_heading_paragraph_index is not None:
-                hint = loc(result.dp_heading_paragraph_index)
                 result.messages.append(
                     CheckMessage(
                         level="fail",
-                        text=(
-                            'Judul "DAFTAR PUSTAKA" terdeteksi'
-                            f"{hint}, tetapi tidak ada satupun paragraf referensi "
-                            'di antara judul itu dan heading "LAMPIRAN" (hanya baris '
-                            "kosong atau teks yang tidak dianggap sebagai paragraf "
-                            "body). Tulis setiap sumber sebagai paragraf biasa tepat "
-                            "di bawah judul. Referensi di dalam tabel/gambar/kotak "
-                            "teks tidak ikut terbaca oleh pemeriksa ini."
+                        text=format_finding(
+                            page_of(result.dp_heading_paragraph_index),
+                            'judul "DAFTAR PUSTAKA" terdeteksi tapi tidak ada '
+                            'satupun paragraf referensi sampai heading "LAMPIRAN"',
+                            "tulis tiap sumber sebagai paragraf biasa di bawah "
+                            "judul (referensi dalam tabel/gambar/kotak teks tidak "
+                            "terbaca)",
                         ),
                     )
                 )
@@ -975,9 +962,10 @@ class ReferenceValidator:
                 result.messages.append(
                     CheckMessage(
                         level="fail",
-                        text=(
-                            "Daftar Pustaka tidak ditemukan / kosong. Section ini "
-                            "wajib ada untuk PKM."
+                        text=format_finding(
+                            None,
+                            "Daftar Pustaka tidak ditemukan / kosong",
+                            "tambahkan section Daftar Pustaka (wajib untuk PKM)",
                         ),
                     )
                 )
@@ -995,14 +983,18 @@ class ReferenceValidator:
             ):
                 para = result.entries[fi.entry_index].paragraph_index
             prefix = (
-                "[Sitasi in-text]"
+                "Sitasi in-text"
                 if fi.entry_index == -1
-                else f"[Entry #{fi.entry_index + 1}]"
+                else f"Entry ke-{fi.entry_index + 1} Daftar Pustaka"
             )
             result.messages.append(
                 CheckMessage(
                     level=fi.severity,
-                    text=f"{prefix} {fi.issue}{loc(para)}",
+                    text=format_finding(
+                        page_of(para),
+                        f"{prefix}: {fi.issue}",
+                        "perbaiki penulisan referensi sesuai gaya PKM",
+                    ),
                 )
             )
 
@@ -1012,10 +1004,11 @@ class ReferenceValidator:
             result.messages.append(
                 CheckMessage(
                     level="fail",
-                    text=(
-                        f"Urutan alfabetis Daftar Pustaka tidak sesuai. "
-                        f"{len(result.out_of_order_pairs)} pasangan entry "
-                        f"tidak terurut."
+                    text=format_finding(
+                        None,
+                        f"urutan alfabetis Daftar Pustaka tidak sesuai "
+                        f"({len(result.out_of_order_pairs)} pasangan entry tidak terurut)",
+                        "urutkan seluruh entry secara alfabetis",
                     ),
                 )
             )
@@ -1023,7 +1016,11 @@ class ReferenceValidator:
                 result.messages.append(
                     CheckMessage(
                         level="fail",
-                        text=f"  • '{cur}' muncul setelah '{prev}' (seharusnya sebelum).",
+                        text=format_finding(
+                            None,
+                            f"'{cur}' muncul setelah '{prev}'",
+                            f"letakkan '{cur}' sebelum '{prev}'",
+                        ),
                     )
                 )
 
@@ -1041,9 +1038,11 @@ class ReferenceValidator:
             result.messages.append(
                 CheckMessage(
                     level="fail",
-                    text=(
+                    text=format_finding(
+                        None,
                         f"{len(in_text_missing)} sitasi di teks tidak ditemukan "
-                        f"di Daftar Pustaka."
+                        f"di Daftar Pustaka",
+                        "tambahkan entry yang hilang ke Daftar Pustaka",
                     ),
                 )
             )
@@ -1051,7 +1050,11 @@ class ReferenceValidator:
                 result.messages.append(
                     CheckMessage(
                         level="fail",
-                        text=f"  • {f.detail}{loc(f.paragraph_index)}",
+                        text=format_finding(
+                            page_of(f.paragraph_index),
+                            f.detail,
+                            "tambahkan ke Daftar Pustaka atau perbaiki sitasinya",
+                        ),
                     )
                 )
         if bodong:
@@ -1059,9 +1062,11 @@ class ReferenceValidator:
             result.messages.append(
                 CheckMessage(
                     level="fail",
-                    text=(
+                    text=format_finding(
+                        None,
                         f"{len(bodong)} entry Daftar Pustaka tidak pernah "
-                        f"disitasi di body teks (referensi bodong)."
+                        f"disitasi di body teks (referensi bodong)",
+                        "sitasi entry tsb di body teks atau hapus dari Daftar Pustaka",
                     ),
                 )
             )
@@ -1069,7 +1074,11 @@ class ReferenceValidator:
                 result.messages.append(
                     CheckMessage(
                         level="fail",
-                        text=f"  • {f.detail}{loc(f.paragraph_index)}",
+                        text=format_finding(
+                            page_of(f.paragraph_index),
+                            f.detail,
+                            "sitasi di body teks atau hapus dari Daftar Pustaka",
+                        ),
                     )
                 )
 

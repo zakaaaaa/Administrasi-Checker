@@ -32,8 +32,18 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from app.services.docx_parser import DocxParser, dxa_to_cm
+from app.services.message_format import format_finding
 from app.services.schema_rules import SchemaRules
 from app.services.style_resolver import StyleResolver
+
+
+# Heading PENDAHULUAN — penanda awal body untuk PKM-AI. Zona sebelum ini
+# (judul/penulis/abstrak/kata kunci) punya aturan format sendiri yang sudah
+# divalidasi AiFormatChecker, jadi tidak ikut format generik.
+_PKM_AI_PENDAHULUAN_RE = re.compile(
+    r"^\s*(?:1\s*\.?\s*)?pendahuluan\s*$|^\s*bab\s+(?:1|i)\.?\s+pendahuluan",
+    re.IGNORECASE,
+)
 
 
 # ============================================================================
@@ -129,10 +139,11 @@ class FormatIssue:
     """Satu pelanggaran format."""
     check_name: str   # 'font' | 'margin' | 'paper_size' | 'line_spacing' | ...
     severity: str     # 'fail' | 'warning'
-    location: str     # mis. "Section #0", "Paragraf #42 run #2"
+    location: str     # legacy: dipertahankan di payload untuk back-compat
     issue: str
     found: Optional[str] = None
     expected: Optional[str] = None
+    page: Optional[int] = None     # halaman fisik (1-based) untuk format pesan baru
 
 
 @dataclass
@@ -209,25 +220,52 @@ class FormatChecker:
         self.rules = rules or get_pkm_format_rules()
         self.schema = schema  # opsional, untuk skip pengecekan tertentu nanti
         self.resolver = StyleResolver(parser)
+        self._body_start_cache: Optional[int] = None
+
+    def _body_start_index(self) -> int:
+        """
+        Indeks paragraf awal 'body' untuk format generik.
+
+        Untuk PKM-AI, zona judul/penulis/abstrak/kata kunci punya aturan
+        format sendiri (TNR 12 bold center / TNR 10 center / TNR 11 justify,
+        semua 1,0 spasi) yang sudah divalidasi AiFormatChecker. Aturan
+        generik (TNR 12, 1.15, justify) baru berlaku mulai PENDAHULUAN —
+        jadi semua paragraf sebelum PENDAHULUAN di-skip agar tidak
+        double-check / false-positive.
+
+        Skema lain (atau PENDAHULUAN tak ketemu): 0 → cek seluruh dokumen.
+        """
+        if self._body_start_cache is not None:
+            return self._body_start_cache
+        start = 0
+        sch = self.schema
+        if (
+            sch is not None
+            and sch.competition_code == "PKM"
+            and sch.schema_code == "AI"
+        ):
+            for para in self.parser.paragraphs:
+                if _PKM_AI_PENDAHULUAN_RE.match((para.text or "").strip()):
+                    start = para.index
+                    break
+        self._body_start_cache = start
+        return start
+
+    def _page_of(self, paragraph_index: int) -> Optional[int]:
+        """Estimasi halaman fisik (1-based) dari paragraph index. None kalau tak bisa."""
+        estimator = getattr(self.parser, "estimate_physical_page", None)
+        if not callable(estimator):
+            return None
+        try:
+            raw = estimator(paragraph_index)
+        except Exception:
+            return None
+        return raw if isinstance(raw, int) else None
 
     def _format_para_location(self, paragraph_index: int) -> str:
-        estimator = getattr(self.parser, "estimate_physical_page", None)
-        in_page_estimator = getattr(self.parser, "estimate_paragraph_index_in_page", None)
-        page: Optional[int] = None
-        if callable(estimator):
-            raw = estimator(paragraph_index)
-            if isinstance(raw, int):
-                page = raw
-        in_page: Optional[int] = None
-        if callable(in_page_estimator):
-            raw_in = in_page_estimator(paragraph_index)
-            if isinstance(raw_in, int):
-                in_page = raw_in
-        if page is None:
-            return f"Paragraf #{paragraph_index}"
-        if in_page is None or in_page <= 0:
-            return f"Halaman fisik ~{page}, paragraf #{paragraph_index}"
-        return f"Halaman fisik ~{page}, paragraf ke-{in_page} (global #{paragraph_index})"
+        """Legacy string location — dipakai di FormatIssue.location untuk back-compat payload."""
+        page = self._page_of(paragraph_index)
+        return f"Halaman {page}" if page is not None else "Halaman -"
 
     def check(self) -> FormatCheckResult:
         result = FormatCheckResult(status="pass")
@@ -257,21 +295,28 @@ class FormatChecker:
                     CheckMessage(level="pass", text=f"{name}: OK")
                 )
             else:
-                # Append summary, lalu detail issue (limit)
-                count = len(sec.issues)
+                # Detail per issue dalam format 3-bagian.
+                # Summary count tidak ditambahkan agar pesan tidak duplikatif
+                # — frontend bisa hitung sendiri dari jumlah message.
                 shown = sec.issues[: self.MAX_ISSUES_PER_CATEGORY]
-                more = count - len(shown)
-                summary = f"{name}: {count} pelanggaran terdeteksi"
-                if more > 0:
-                    summary += f" (menampilkan {len(shown)} dari {count})"
-                result.messages.append(
-                    CheckMessage(level=sec.status, text=summary)
-                )
+                more = len(sec.issues) - len(shown)
                 for issue in shown:
+                    perbaikan = issue.expected or "perbaiki sesuai aturan"
                     result.messages.append(
                         CheckMessage(
                             level=issue.severity,
-                            text=f"  • [{issue.location}] {issue.issue}",
+                            text=format_finding(issue.page, issue.issue, perbaikan),
+                        )
+                    )
+                if more > 0:
+                    result.messages.append(
+                        CheckMessage(
+                            level=sec.status,
+                            text=format_finding(
+                                None,
+                                f"{name}: masih ada {more} pelanggaran serupa yang tidak ditampilkan",
+                                f"perbaiki semua pelanggaran {name} agar lulus",
+                            ),
                         )
                     )
 
@@ -298,13 +343,11 @@ class FormatChecker:
                     FormatIssue(
                         check_name="paper_size",
                         severity="fail",
-                        location=f"Section #{s.index}",
-                        issue=(
-                            f"Ukuran kertas bukan A4. "
-                            f"Diharapkan {self.rules.paper_width_cm}×{self.rules.paper_height_cm} cm."
-                        ),
+                        location="Halaman -",
+                        issue=f"ukuran kertas {w_cm}×{h_cm} cm, bukan A4",
                         found=f"{w_cm}×{h_cm} cm",
-                        expected=f"{self.rules.paper_width_cm}×{self.rules.paper_height_cm} cm",
+                        expected=f"ubah ukuran kertas ke A4 ({self.rules.paper_width_cm}×{self.rules.paper_height_cm} cm)",
+                        page=None,
                     )
                 )
         if sec.issues:
@@ -346,10 +389,11 @@ class FormatChecker:
                         FormatIssue(
                             check_name="margin",
                             severity="fail",
-                            location=f"Section #{s.index}",
-                            issue=f"Margin {side} tidak sesuai aturan PKM.",
+                            location="Halaman -",
+                            issue=f"margin {side} {act} cm, tidak sesuai aturan PKM",
                             found=f"{act} cm",
-                            expected=f"{exp} cm (toleransi ±{tol} cm)",
+                            expected=f"ubah margin {side} ke {exp} cm (toleransi ±{tol} cm)",
+                            page=None,
                         )
                     )
         if sec.issues:
@@ -376,10 +420,17 @@ class FormatChecker:
         font_distribution: dict[str, int] = {}
         size_distribution: dict[float, int] = {}
 
+        body_start = self._body_start_index()
         for para in self.parser.paragraphs:
+            if para.index < body_start:
+                continue
             if not para.text.strip():
                 continue
             if para.is_heading:
+                continue
+            # Caption Gambar/Tabel punya aturan font sendiri (PKM-AI: TNR 11)
+            # — divalidasi AiFormatChecker, jangan double-check di sini.
+            if _is_figure_table_caption_paragraph(para.text.strip()):
                 continue
 
             # Resolve font level paragraf
@@ -398,6 +449,7 @@ class FormatChecker:
                         check_name="font_name",
                         severity="fail",
                         location=self._format_para_location(para.index),
+                        page=self._page_of(para.index),
                         issue=f"Font bukan {self.rules.font_name}.",
                         found=font.name,
                         expected=self.rules.font_name,
@@ -414,6 +466,7 @@ class FormatChecker:
                         check_name="font_size",
                         severity="fail",
                         location=self._format_para_location(para.index),
+                        page=self._page_of(para.index),
                         issue=f"Ukuran font di luar rentang {lo}–{hi}pt.",
                         found=f"{font.size_pt}pt",
                         expected=f"{self.rules.font_size_pt}pt (toleransi ±{tol}pt, rentang {lo}–{hi}pt)",
@@ -442,10 +495,16 @@ class FormatChecker:
         sec = FormatCheckSection(name="line_spacing", status="pass")
         tol = self.rules.line_spacing_tolerance
         spacing_distribution: dict[float, int] = {}
+        body_start = self._body_start_index()
         for para in self.parser.paragraphs:
+            if para.index < body_start:
+                continue
             if not para.text.strip():
                 continue
             if para.is_heading:
+                continue
+            # Caption Gambar/Tabel: spasi sendiri (PKM-AI: 1.0), skip double-check.
+            if _is_figure_table_caption_paragraph(para.text.strip()):
                 continue
             ls = para.line_spacing
             if ls is None:
@@ -457,6 +516,7 @@ class FormatChecker:
                         check_name="line_spacing",
                         severity="warning",  # warning karena banyak dokumen pakai 1.5 / 2.0
                         location=self._format_para_location(para.index),
+                        page=self._page_of(para.index),
                         issue=f"Line spacing bukan {self.rules.line_spacing}.",
                         found=str(ls),
                         expected=str(self.rules.line_spacing),
@@ -486,7 +546,10 @@ class FormatChecker:
         - Satu baris caption Gambar/Figure/Tabel/… (umumnya center, bukan justify)
         """
         sec = FormatCheckSection(name="alignment", status="pass")
+        body_start = self._body_start_index()
         for para in self.parser.paragraphs:
+            if para.index < body_start:
+                continue
             text = para.text.strip()
             if len(text) < 30:
                 continue
@@ -507,6 +570,7 @@ class FormatChecker:
                         check_name="alignment",
                         severity="fail",
                         location=self._format_para_location(para.index),
+                        page=self._page_of(para.index),
                         issue="Paragraf body bukan justify.",
                         found=align,
                         expected="justify",
@@ -545,7 +609,10 @@ class FormatChecker:
             for word in FOREIGN_WORDS
         ]
 
+        body_start = self._body_start_index()
         for para in self.parser.paragraphs:
+            if para.index < body_start:
+                continue
             text = para.text
             if not text.strip():
                 continue
@@ -570,6 +637,7 @@ class FormatChecker:
                         check_name="foreign_words_italic",
                         severity="warning",
                         location=self._format_para_location(para.index),
+                        page=self._page_of(para.index),
                         issue=(
                             f"Paragraf memuat kata/frasa asing "
                             f"({', '.join(matched_words[:3])}) tapi tidak ada run italic. "

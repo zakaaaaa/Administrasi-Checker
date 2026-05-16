@@ -18,7 +18,11 @@ from app.services.format_checker import (
     get_pkm_format_rules,
 )
 from app.services.style_resolver import StyleResolver, ResolvedFont
-from app.services.schema_rules import get_pkm_kc_proposal_rules
+from app.services.schema_rules import (
+    get_pkm_ai_article_rules,
+    get_pkm_kc_proposal_rules,
+)
+from types import SimpleNamespace
 
 SAMPLE_DIR = Path(__file__).parent / "sample_docs"
 DUMMY_FILE = SAMPLE_DIR / "dummy_pkm_kc.docx"
@@ -315,6 +319,64 @@ class TestRulesEdgeCases(unittest.TestCase):
         rules = FormatRules(require_justify=False)
         result = FormatChecker(parser, rules).check()
         self.assertNotIn("alignment", result.checks)
+
+
+# ============================================================================
+# Test: _body_start_index — skip front-matter PKM-AI
+# ============================================================================
+
+
+class TestBodyStartIndex(unittest.TestCase):
+    """
+    Untuk PKM-AI, format generik (TNR 12, 1.15, justify) tidak boleh
+    menyentuh zona judul/penulis/abstrak — harus mulai dari PENDAHULUAN.
+    """
+
+    @staticmethod
+    def _fake_parser(texts):
+        paras = [
+            SimpleNamespace(index=i, text=t) for i, t in enumerate(texts)
+        ]
+        return SimpleNamespace(paragraphs=paras)
+
+    def _checker(self, texts, schema):
+        parser = self._fake_parser(texts)
+        return FormatChecker(parser, schema=schema)
+
+    def test_pkm_ai_skips_until_pendahuluan(self):
+        texts = [
+            "JUDUL ARTIKEL ILMIAH",
+            "Nama Penulis, Institusi",
+            "ABSTRAK",
+            "Isi abstrak ...",
+            "PENDAHULUAN",
+            "Isi pendahuluan ...",
+        ]
+        fc = self._checker(texts, get_pkm_ai_article_rules())
+        self.assertEqual(fc._body_start_index(), 4)
+
+    def test_pkm_ai_accepts_bab_1_pendahuluan(self):
+        texts = ["Judul", "Abstrak", "BAB 1. PENDAHULUAN", "Isi"]
+        fc = self._checker(texts, get_pkm_ai_article_rules())
+        self.assertEqual(fc._body_start_index(), 2)
+
+    def test_pkm_ai_no_pendahuluan_returns_zero(self):
+        texts = ["Judul", "Abstrak", "Isi tanpa heading pendahuluan"]
+        fc = self._checker(texts, get_pkm_ai_article_rules())
+        self.assertEqual(fc._body_start_index(), 0)
+
+    def test_non_ai_schema_never_skips(self):
+        texts = ["Judul", "PENDAHULUAN", "Isi"]
+        fc = self._checker(texts, get_pkm_kc_proposal_rules())
+        self.assertEqual(fc._body_start_index(), 0)
+
+    def test_result_cached(self):
+        texts = ["Judul", "PENDAHULUAN", "Isi"]
+        fc = self._checker(texts, get_pkm_ai_article_rules())
+        self.assertEqual(fc._body_start_index(), 1)
+        # Ubah paragraphs setelah cache terisi → hasil tetap (cached)
+        fc.parser.paragraphs = []
+        self.assertEqual(fc._body_start_index(), 1)
 
 
 if __name__ == "__main__":
