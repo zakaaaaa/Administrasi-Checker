@@ -32,7 +32,7 @@ REPORT_TYPES = {
         {"code": "PROPOSAL", "name": "Proposal", "active": True},
         {"code": "PROGRESS_REPORT", "name": "Laporan Kemajuan", "active": False},
         {"code": "FINAL_REPORT", "name": "Laporan Akhir", "active": False},
-        {"code": "SCIENTIFIC_ARTICLE", "name": "Artikel Ilmiah", "active": False},
+        {"code": "SCIENTIFIC_ARTICLE", "name": "Artikel Ilmiah", "active": True},
     ],
 }
 SCHEMAS = {
@@ -46,6 +46,9 @@ SCHEMAS = {
         {"code": "PKM-KI", "name": "Karya Inovatif", "active": False},
         {"code": "PKM-GFT", "name": "Gagasan Futuristik Tertulis", "active": False},
         {"code": "PKM-VGK", "name": "Video Gagasan Konstruktif", "active": False},
+    ],
+    ("PKM", "SCIENTIFIC_ARTICLE"): [
+        {"code": "PKM-AI", "name": "Artikel Ilmiah", "active": True},
     ],
 }
 
@@ -304,23 +307,42 @@ def submit_check(
             )
         raise HTTPException(500, f"Gagal memproses dokumen: {e}")
 
-    # 8. Save results
+    # 8. Save results — modul yang tidak dijalankan disimpan NULL di DB,
+    # dan tidak dimasukkan ke payload response.
+    module_to_column = {
+        "structure": "structure_result",
+        "physical_sheet": "physical_sheet_result",
+        "format": "format_result",
+        "page_numbering": "page_numbering_result",
+        "budget": "budget_result",
+        "reference": "reference_result",
+        "ai_content": "ai_content_result",
+        "ai_format": "ai_format_result",
+    }
+
+    def _module_payload(key: str):
+        payload = results.get(key)
+        return json.dumps(payload) if payload is not None else None
+
     with get_cursor() as cur:
         cur.execute(
             """
             INSERT INTO results
                 (submission_id, structure_result, physical_sheet_result,
                  format_result, page_numbering_result, budget_result,
-                 reference_result, overall_status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                 reference_result, ai_content_result, ai_format_result,
+                 overall_status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (submission_id,
-             json.dumps(results["structure"]),
-             json.dumps(results["physical_sheet"]),
-             json.dumps(results["format"]),
-             json.dumps(results["page_numbering"]),
-             json.dumps(results["budget"]),
-             json.dumps(results["reference"]),
+             _module_payload("structure"),
+             _module_payload("physical_sheet"),
+             _module_payload("format"),
+             _module_payload("page_numbering"),
+             _module_payload("budget"),
+             _module_payload("reference"),
+             _module_payload("ai_content"),
+             _module_payload("ai_format"),
              results["overall_status"]),
         )
         cur.execute(
@@ -328,16 +350,15 @@ def submit_check(
             (submission_id,),
         )
 
+    response_results = {
+        key: results[key]
+        for key in module_to_column
+        if key in results
+    }
+
     return {
         "submission_id": submission_id,
         "status": "completed",
         "overall_status": results["overall_status"],
-        "results": {
-            "structure": results["structure"],
-            "physical_sheet": results["physical_sheet"],
-            "format": results["format"],
-            "page_numbering": results["page_numbering"],
-            "budget": results["budget"],
-            "reference": results["reference"],
-        },
+        "results": response_results,
     }

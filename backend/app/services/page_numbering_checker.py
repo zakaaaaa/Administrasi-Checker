@@ -76,6 +76,9 @@ class ZoneRule:
 class PageNumberingRules:
     front_matter: ZoneRule
     core_matter: ZoneRule
+    # 'two_zone' (default PKM dengan DAFTAR ISI + BAB 1) atau
+    # 'single_zone_core' (PKM-AI: semua halaman = core, arab/top/right).
+    mode: str = "two_zone"
 
 
 def get_pkm_page_numbering_rules() -> PageNumberingRules:
@@ -91,6 +94,27 @@ def get_pkm_page_numbering_rules() -> PageNumberingRules:
             numeral_type="arabic",
             position="top",
         ),
+        mode="two_zone",
+    )
+
+
+def get_pkm_ai_page_numbering_rules() -> PageNumberingRules:
+    """
+    PKM-AI: semua halaman pakai angka arab di pojok kanan ATAS, TNR 12pt,
+    mulai dari halaman judul (panduan PKM-AI 2026 hal 5-6, butir 1-2).
+    Tidak ada zona romawi/front-matter — DAFTAR ISI sendiri terlarang.
+    """
+    arab_top_right = ZoneRule(
+        name="core_matter",
+        numeral_type="arabic",
+        position="top",
+    )
+    return PageNumberingRules(
+        # front_matter di-isi placeholder yang identik supaya validator
+        # tidak crash jika ada section yang salah ter-klasifikasi.
+        front_matter=arab_top_right,
+        core_matter=arab_top_right,
+        mode="single_zone_core",
     )
 
 
@@ -259,6 +283,30 @@ class PageNumberingChecker:
         result.findings.extend(front_findings)
         result.findings.extend(core_findings)
 
+        # 3b. Mode single-zone (PKM-AI): halaman pertama HARUS bernomor 1
+        # (halaman judul = halaman 1). page_num_start eksplisit selain 1 = fail.
+        # None = default Word = 1, dianggap pass.
+        if getattr(self.rules, "mode", "two_zone") == "single_zone_core":
+            sections = list(self.parser.sections)
+            if sections:
+                first = sections[0]
+                start = first.page_num_start
+                if start is not None and start != 1:
+                    result.findings.append(
+                        ZoneFinding(
+                            zone="core_matter",
+                            severity="fail",
+                            aspect="start_number",
+                            expected="1",
+                            found=str(start),
+                            section_index=first.index,
+                            message=(
+                                f"Section pertama (halaman judul) mulai dari nomor "
+                                f"halaman {start}, seharusnya 1 sesuai panduan PKM-AI."
+                            ),
+                        )
+                    )
+
         # 4. Tentukan status per zona
         result.front_matter_status = self._zone_status(front_findings)
         result.core_matter_status = self._zone_status(core_findings)
@@ -285,7 +333,11 @@ class PageNumberingChecker:
         """
         Map section index → 'front_matter' | 'core_matter' | 'unknown'.
 
-        Strategi (versi rev):
+        Mode single_zone_core (PKM-AI): SEMUA section langsung dianggap
+        core_matter karena penomoran konsisten arab/top/right dari halaman
+        judul s/d akhir, tanpa pemisahan zona romawi/arab.
+
+        Mode two_zone (default PKM-KC dkk.):
         Untuk tiap section dengan range [start_para, end_para]:
         - Kalau end_para < daftar_isi_para → unknown (cover/pengesahan)
         - Kalau end_para < bab1_para → front_matter (memuat DAFTAR *, tidak
@@ -296,6 +348,10 @@ class PageNumberingChecker:
 
         Kalau DAFTAR ISI atau BAB 1 tidak ditemukan, return semua 'unknown'.
         """
+        if getattr(self.rules, "mode", "two_zone") == "single_zone_core":
+            section_para_ranges = self._compute_section_paragraph_ranges()
+            return {sec_idx: "core_matter" for sec_idx in section_para_ranges}
+
         boundaries = self.parser.find_section_boundaries(
             ["DAFTAR ISI", "BAB 1"], headings_only=True
         )
@@ -834,18 +890,22 @@ class PageNumberingChecker:
 
     def _build_messages(self, result: PageNumberingResult) -> None:
         if result.status == "pass":
-            result.messages.append(
-                CheckMessage(
-                    level="pass",
-                    text=(
-                        f"Penomoran halaman sesuai aturan: zona awal "
-                        f"{self.rules.front_matter.numeral_type} di "
-                        f"{self.rules.front_matter.position}, zona inti "
-                        f"{self.rules.core_matter.numeral_type} di "
-                        f"{self.rules.core_matter.position}."
-                    ),
+            if getattr(self.rules, "mode", "two_zone") == "single_zone_core":
+                text = (
+                    f"Penomoran halaman sesuai aturan: semua halaman pakai "
+                    f"{self.rules.core_matter.numeral_type} di pojok "
+                    f"{self.rules.core_matter.alignment}-"
+                    f"{self.rules.core_matter.position} mulai halaman judul."
                 )
-            )
+            else:
+                text = (
+                    f"Penomoran halaman sesuai aturan: zona awal "
+                    f"{self.rules.front_matter.numeral_type} di "
+                    f"{self.rules.front_matter.position}, zona inti "
+                    f"{self.rules.core_matter.numeral_type} di "
+                    f"{self.rules.core_matter.position}."
+                )
+            result.messages.append(CheckMessage(level="pass", text=text))
             return
 
         # Fail/warning — list semua finding sebagai message

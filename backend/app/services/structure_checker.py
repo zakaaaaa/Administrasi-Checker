@@ -210,6 +210,34 @@ def _looks_like_heading_candidate(text: str) -> bool:
     return upper_ratio >= 0.8
 
 
+def _looks_like_titlecase_heading_candidate(text: str) -> bool:
+    """
+    Kandidat heading untuk skema dengan section_titles_titlecase=True
+    (mis. PKM-AI: "Pendahuluan", "Metode", "Hasil dan Pembahasan").
+
+    Heuristik: paragraf pendek (≤ 80 char), tidak diakhiri tanda baca
+    kalimat (.?!), kandidat ada minimal 1 huruf kapital di awal kata.
+    """
+    t = text.strip()
+    if not t or len(t) > 80:
+        return False
+    # Bukan kalimat panjang yang diakhiri titik (alinea body).
+    # Heading "Hasil dan Pembahasan" tidak diakhiri titik.
+    if t.endswith((".", "?", "!", ":", ";", ",")):
+        # Boleh berakhir titik kalau heading bernomor "1. Pendahuluan"
+        # → di mana setelah angka.titik ada huruf, tetap diizinkan.
+        # Tapi kalau seluruh teks adalah satu kalimat, tolak.
+        if not re.match(r"^[0-9IVXLCM]+\s*\.", t, flags=re.IGNORECASE):
+            return False
+    # Harus mulai dengan kapital (atau angka penomoran)
+    first_alpha = next((c for c in t if c.isalpha()), None)
+    if first_alpha is None or not first_alpha.isupper():
+        # "1. Pendahuluan" — huruf pertama bisa angka; cek setelahnya
+        if not re.match(r"^[0-9IVXLCM]+\s*\.\s*[A-Z]", t):
+            return False
+    return True
+
+
 # ============================================================================
 # StructureChecker
 # ============================================================================
@@ -279,7 +307,12 @@ class StructureChecker:
             # Skip baris daftar isi yang sering false-positive.
             if _looks_like_toc_line(text):
                 continue
-            if not para.is_heading and not _looks_like_heading_candidate(text):
+            allow_titlecase = getattr(self.rules, "section_titles_titlecase", False)
+            if (
+                not para.is_heading
+                and not _looks_like_heading_candidate(text)
+                and not (allow_titlecase and _looks_like_titlecase_heading_candidate(text))
+            ):
                 continue
             # Dokumen real sering pakai style Normal untuk judul section.
             # Tetap izinkan selama text cocok rule.

@@ -1,15 +1,28 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import type { CheckResults } from './types';
+import type { CheckResults, ModuleKey } from './types';
 
-const MODULES = [
-  { key: 'structure', label: 'Struktur Dokumen' },
-  { key: 'physical_sheet', label: 'Jumlah Lembar Fisik' },
-  { key: 'format', label: 'Format Penulisan' },
-  { key: 'page_numbering', label: 'Penomoran Halaman' },
-  { key: 'budget', label: 'Audit Anggaran' },
-  { key: 'reference', label: 'Daftar Pustaka' },
-] as const;
+const MODULE_LABELS: Record<ModuleKey, string> = {
+  structure: 'Struktur Dokumen',
+  physical_sheet: 'Jumlah Lembar Fisik',
+  format: 'Format Penulisan',
+  page_numbering: 'Penomoran Halaman',
+  budget: 'Audit Anggaran',
+  reference: 'Daftar Pustaka',
+  ai_content: 'Konten Artikel Ilmiah',
+  ai_format: 'Format Khusus PKM-AI',
+};
+
+const MODULE_ORDER: ModuleKey[] = [
+  'structure',
+  'physical_sheet',
+  'format',
+  'ai_format',
+  'page_numbering',
+  'ai_content',
+  'budget',
+  'reference',
+];
 
 export function exportCheckResultPdf(result: CheckResults) {
   const doc = new jsPDF({ unit: 'pt', format: 'a4' });
@@ -35,8 +48,14 @@ export function exportCheckResultPdf(result: CheckResults) {
   doc.text(`Status Keseluruhan: ${overallStatusLabel}`, marginX, y);
   y += 22;
 
-  MODULES.forEach(({ key, label }, moduleIndex) => {
-    const mod = result.results[key] as { status?: string; messages?: { text: string }[] };
+  const modules = MODULE_ORDER.filter((key) => result.results[key] !== undefined).map(
+    (key) => ({ key, label: MODULE_LABELS[key] }),
+  );
+
+  modules.forEach(({ key, label }, moduleIndex) => {
+    const mod = result.results[key] as
+      | { status?: string; messages?: { text: string }[] }
+      | undefined;
     const status = (mod?.status ?? 'unknown').toUpperCase();
     const messages = Array.isArray(mod?.messages) ? mod.messages : [];
 

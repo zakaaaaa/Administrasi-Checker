@@ -1,8 +1,31 @@
 'use client';
 
-import type { CheckResults } from '@/features/check/types';
+import type { CheckResults, ModuleKey } from '@/features/check/types';
 
 type Message = { level: string; text: string };
+
+const MODULE_LABELS: Record<ModuleKey, string> = {
+  structure: 'Struktur Dokumen',
+  physical_sheet: 'Jumlah Lembar Fisik',
+  format: 'Format Penulisan',
+  page_numbering: 'Penomoran Halaman',
+  budget: 'Audit Anggaran',
+  reference: 'Daftar Pustaka',
+  ai_content: 'Konten Artikel Ilmiah',
+  ai_format: 'Format Khusus PKM-AI',
+};
+
+// Urutan tampil tetap stabil; modul yang tidak ada di response di-skip.
+const MODULE_ORDER: ModuleKey[] = [
+  'structure',
+  'physical_sheet',
+  'format',
+  'ai_format',
+  'page_numbering',
+  'ai_content',
+  'budget',
+  'reference',
+];
 
 export function CheckResultsView({ result }: { result: CheckResults }) {
   const overallColor =
@@ -12,14 +35,9 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
         ? 'text-amber-700'
         : 'text-red-700';
 
-  const modules = [
-    { key: 'structure', label: 'Struktur Dokumen' },
-    { key: 'physical_sheet', label: 'Jumlah Lembar Fisik' },
-    { key: 'format', label: 'Format Penulisan' },
-    { key: 'page_numbering', label: 'Penomoran Halaman' },
-    { key: 'budget', label: 'Audit Anggaran' },
-    { key: 'reference', label: 'Daftar Pustaka' },
-  ] as const;
+  const modules = MODULE_ORDER.filter((key) => result.results[key] !== undefined).map(
+    (key) => ({ key, label: MODULE_LABELS[key] }),
+  );
 
   return (
     <section id="check-result-content" className="glass-surface rounded-[1.75rem] p-6 sm:p-8">
@@ -42,14 +60,12 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
 
       <div className="mt-6 grid gap-3">
         {modules.map(({ key, label }) => {
-          const mod = result.results[key] as {
-            status?: string;
-            messages?: Message[];
-            message?: string;
-          };
+          const mod = result.results[key] as
+            | { status?: string; messages?: Message[]; message?: string }
+            | undefined;
           const status = mod?.status ?? 'unknown';
           const messages = Array.isArray(mod?.messages)
-            ? mod.messages
+            ? (mod?.messages as Message[])
             : typeof mod?.message === 'string' && mod.message.trim()
               ? [{ level: 'error' as const, text: mod.message }]
               : [];

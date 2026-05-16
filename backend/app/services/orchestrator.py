@@ -1,27 +1,54 @@
 """
-Orchestrator — panggil 7 checker secara berurutan untuk satu submission.
+Orchestrator — jalankan checker per skema lewat registry.
 
-Sementara hanya support PKM-KC Proposal. Skema lain → raise UnsupportedSchemaError.
+Registry memetakan (competition, report_type, schema_code) ke konfigurasi yang
+menentukan: factory SchemaRules, factory budget rules (opsional), factory
+page-numbering rules, dan urutan modul yang dijalankan. Tiap skema bebas
+mengaktifkan subset modul (mis. PKM-AI: tanpa budget & reference).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 
 from app.services.docx_parser import DocxParser
-from app.services.schema_rules import get_pkm_kc_proposal_rules
-from app.services.budget_rules import get_pkm_kc_budget_rules
+from app.services.schema_rules import (
+    SchemaRules,
+    get_pkm_kc_proposal_rules,
+    get_pkm_ai_article_rules,
+)
+from app.services.budget_rules import BudgetRules, get_pkm_kc_budget_rules
+from app.services.page_numbering_checker import (
+    PageNumberingChecker,
+    PageNumberingRules,
+    get_pkm_page_numbering_rules,
+    get_pkm_ai_page_numbering_rules,
+)
 from app.services.structure_checker import StructureChecker
 from app.services.physical_sheet_counter import PhysicalSheetCounter
 from app.services.format_checker import FormatChecker
-from app.services.page_numbering_checker import PageNumberingChecker
 from app.services.budget_auditor import BudgetAuditor
 from app.services.reference_validator import ReferenceValidator
+from app.services.ai_content_checker import AiContentChecker
+from app.services.ai_format_checker import AiFormatChecker
+
+
+# ============================================================================
+# Error & request
+# ============================================================================
 
 
 class UnsupportedSchemaError(ValueError):
     pass
+
+
+@dataclass
+class CheckRequest:
+    docx_path: str
+    competition: str   # mis. "PKM"
+    report_type: str   # mis. "PROPOSAL" / "SCIENTIFIC_ARTICLE"
+    schema_code: str   # mis. "PKM-KC" / "PKM-AI"
 
 
 def _module_error_payload(exc: BaseException) -> dict[str, Any]:
@@ -34,95 +61,188 @@ def _module_error_payload(exc: BaseException) -> dict[str, Any]:
     }
 
 
+# ============================================================================
+# Registry config
+# ============================================================================
+
+
+# Module key — dipakai sebagai key di response JSON `results` dan kolom DB.
+ALL_MODULES = (
+    "structure",
+    "physical_sheet",
+    "format",
+    "page_numbering",
+    "budget",
+    "reference",
+)
+
+# Modul yang dipakai PKM-KC (semua kecuali AI-specific).
+PKM_KC_MODULES = ALL_MODULES
+
+# Modul yang dipakai PKM-AI: 4 core + reference + 2 AI-specific (tanpa budget).
+PKM_AI_MODULES = (
+    "structure",
+    "physical_sheet",
+    "format",
+    "page_numbering",
+    "reference",
+    "ai_content",
+    "ai_format",
+)
+
+
 @dataclass
-class CheckRequest:
-    docx_path: str
-    competition: str   # "PKM"
-    report_type: str   # "PROPOSAL"
-    schema_code: str   # "PKM-KC"
+class SchemaConfig:
+    """Konfigurasi satu skema di registry."""
+    schema_rules_factory: Callable[[], SchemaRules]
+    modules: tuple[str, ...]
+    budget_rules_factory: Optional[Callable[[], BudgetRules]] = None
+    page_numbering_rules_factory: Optional[Callable[[], PageNumberingRules]] = None
+
+
+# Key = (competition, report_type, schema_code) — sesuai field di CheckRequest.
+SCHEMA_REGISTRY: dict[tuple[str, str, str], SchemaConfig] = {
+    ("PKM", "PROPOSAL", "PKM-KC"): SchemaConfig(
+        schema_rules_factory=get_pkm_kc_proposal_rules,
+        modules=PKM_KC_MODULES,
+        budget_rules_factory=get_pkm_kc_budget_rules,
+        page_numbering_rules_factory=get_pkm_page_numbering_rules,
+    ),
+    ("PKM", "SCIENTIFIC_ARTICLE", "PKM-AI"): SchemaConfig(
+        schema_rules_factory=get_pkm_ai_article_rules,
+        modules=PKM_AI_MODULES,
+        budget_rules_factory=None,  # PKM-AI tanpa RAB
+        page_numbering_rules_factory=get_pkm_ai_page_numbering_rules,
+    ),
+}
+
+
+def get_schema_config(req: CheckRequest) -> SchemaConfig:
+    key = (req.competition, req.report_type, req.schema_code)
+    cfg = SCHEMA_REGISTRY.get(key)
+    if cfg is None:
+        supported = ", ".join(
+            f"{c}/{r}/{s}" for (c, r, s) in SCHEMA_REGISTRY.keys()
+        )
+        raise UnsupportedSchemaError(
+            f"Belum di-support: {req.competition}/{req.report_type}/"
+            f"{req.schema_code}. Saat ini hanya: {supported}."
+        )
+    return cfg
+
+
+# ============================================================================
+# Module runners
+# ============================================================================
+
+
+def _run_structure(parser: DocxParser, schema: SchemaRules, cfg: SchemaConfig) -> dict:
+    return StructureChecker(parser, schema).check().to_dict()
+
+
+def _run_physical_sheet(parser: DocxParser, schema: SchemaRules, cfg: SchemaConfig) -> dict:
+    return PhysicalSheetCounter(parser, schema).check().to_dict()
+
+
+def _run_format(parser: DocxParser, schema: SchemaRules, cfg: SchemaConfig) -> dict:
+    return FormatChecker(parser, schema=schema).check().to_dict()
+
+
+def _run_page_numbering(parser: DocxParser, schema: SchemaRules, cfg: SchemaConfig) -> dict:
+    rules = (
+        cfg.page_numbering_rules_factory()
+        if cfg.page_numbering_rules_factory is not None
+        else None
+    )
+    return PageNumberingChecker(parser, schema, rules=rules).check().to_dict()
+
+
+def _run_budget(parser: DocxParser, schema: SchemaRules, cfg: SchemaConfig) -> dict:
+    if cfg.budget_rules_factory is None:
+        raise RuntimeError(
+            "Module 'budget' aktif tapi tidak ada budget_rules_factory di registry."
+        )
+    budget_rules = cfg.budget_rules_factory()
+    return BudgetAuditor(parser, budget_rules).check().to_dict()
+
+
+def _run_reference(parser: DocxParser, schema: SchemaRules, cfg: SchemaConfig) -> dict:
+    return ReferenceValidator(
+        parser,
+        schema,
+        recent_threshold_years=schema.recent_threshold_years,
+        minimum_recommended_recent=schema.min_recent_references,
+    ).check().to_dict()
+
+
+def _run_ai_content(parser: DocxParser, schema: SchemaRules, cfg: SchemaConfig) -> dict:
+    return AiContentChecker(parser, schema).check().to_dict()
+
+
+def _run_ai_format(parser: DocxParser, schema: SchemaRules, cfg: SchemaConfig) -> dict:
+    return AiFormatChecker(parser, schema).check().to_dict()
+
+
+MODULE_RUNNERS: dict[str, Callable[[DocxParser, SchemaRules, SchemaConfig], dict]] = {
+    "structure": _run_structure,
+    "physical_sheet": _run_physical_sheet,
+    "format": _run_format,
+    "page_numbering": _run_page_numbering,
+    "budget": _run_budget,
+    "reference": _run_reference,
+    "ai_content": _run_ai_content,
+    "ai_format": _run_ai_format,
+}
+
+
+# ============================================================================
+# Entry point
+# ============================================================================
 
 
 def run_all_checks(req: CheckRequest) -> dict[str, Any]:
     """
-    Jalankan 7 checker, return dict per modul + overall_status.
+    Jalankan semua modul yang terdaftar di SchemaConfig untuk skema yang diminta.
+
+    Return dict berisi:
+        - key per modul yang dijalankan (mis. 'structure', 'physical_sheet')
+        - 'overall_status': agregasi dari semua modul
+
+    Modul yang TIDAK di-list di SchemaConfig.modules tidak muncul di hasil
+    (caller bertanggung jawab handle key yang absent).
 
     Raises:
-        UnsupportedSchemaError: jika kombinasi competition/report/schema belum di-support
-        FileNotFoundError: jika docx_path tidak ada
-        Exception: error lain dari checker (bubble up ke caller)
+        UnsupportedSchemaError: jika kombinasi competition/report/schema belum
+            terdaftar.
+        FileNotFoundError: jika docx_path tidak ada.
     """
-    # Validasi kombinasi
-    if (req.competition, req.report_type, req.schema_code) != ("PKM", "PROPOSAL", "PKM-KC"):
-        raise UnsupportedSchemaError(
-            f"Belum di-support: {req.competition}/{req.report_type}/{req.schema_code}. "
-            "Saat ini hanya PKM/PROPOSAL/PKM-KC."
-        )
+    cfg = get_schema_config(req)
 
     docx_path = Path(req.docx_path)
     if not docx_path.exists():
         raise FileNotFoundError(f"File tidak ditemukan: {docx_path}")
 
-    # Setup
     parser = DocxParser(str(docx_path))
-    schema = get_pkm_kc_proposal_rules()
-    budget_rules = get_pkm_kc_budget_rules()
+    schema = cfg.schema_rules_factory()
 
     results: dict[str, Any] = {}
     statuses: list[str] = []
 
-    # 1. Structure
-    try:
-        r = StructureChecker(parser, schema).check()
-        results["structure"] = r.to_dict()
-        statuses.append(_extract_status(results["structure"]))
-    except Exception as e:
-        results["structure"] = _module_error_payload(e)
-        statuses.append("error")
-
-    # 2. Physical Sheet
-    try:
-        r = PhysicalSheetCounter(parser, schema).check()
-        results["physical_sheet"] = r.to_dict()
-        statuses.append(_extract_status(results["physical_sheet"]))
-    except Exception as e:
-        results["physical_sheet"] = _module_error_payload(e)
-        statuses.append("error")
-
-    # 3. Format
-    try:
-        r = FormatChecker(parser, schema=schema).check()
-        results["format"] = r.to_dict()
-        statuses.append(_extract_status(results["format"]))
-    except Exception as e:
-        results["format"] = _module_error_payload(e)
-        statuses.append("error")
-
-    # 4. Page Numbering
-    try:
-        r = PageNumberingChecker(parser, schema).check()
-        results["page_numbering"] = r.to_dict()
-        statuses.append(_extract_status(results["page_numbering"]))
-    except Exception as e:
-        results["page_numbering"] = _module_error_payload(e)
-        statuses.append("error")
-
-    # 5. Budget
-    try:
-        r = BudgetAuditor(parser, budget_rules).check()
-        results["budget"] = r.to_dict()
-        statuses.append(_extract_status(results["budget"]))
-    except Exception as e:
-        results["budget"] = _module_error_payload(e)
-        statuses.append("error")
-
-    # 6. Reference
-    try:
-        r = ReferenceValidator(parser, schema).check()
-        results["reference"] = r.to_dict()
-        statuses.append(_extract_status(results["reference"]))
-    except Exception as e:
-        results["reference"] = _module_error_payload(e)
-        statuses.append("error")
+    for module_key in cfg.modules:
+        runner = MODULE_RUNNERS.get(module_key)
+        if runner is None:
+            results[module_key] = _module_error_payload(
+                RuntimeError(f"Module '{module_key}' tidak dikenal di runner registry.")
+            )
+            statuses.append("error")
+            continue
+        try:
+            payload = runner(parser, schema, cfg)
+            results[module_key] = payload
+            statuses.append(_extract_status(payload))
+        except Exception as e:
+            results[module_key] = _module_error_payload(e)
+            statuses.append("error")
 
     results["overall_status"] = _aggregate_status(statuses)
     return results

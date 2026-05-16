@@ -291,6 +291,13 @@ class PhysicalSheetCounter:
     # Lampiran. Untuk PKM, akhir bagian inti = lembar terakhir PDF.
     # (asumsi: tidak ada appendix di luar LAMPIRAN)
 
+    # Pattern heading LAMPIRAN — dipakai mode 'first_page' (PKM-AI) untuk
+    # menandai akhir bagian inti = lembar sebelum heading "LAMPIRAN".
+    LAMPIRAN_HEADING_PATTERNS = [
+        re.compile(r"(?:^|\n)\s*LAMPIRAN(?:\s|$|[.,:])", re.IGNORECASE),
+        re.compile(r"(?:^|\n)\s*LAMPIRAN[\s\-]*\d", re.IGNORECASE),
+    ]
+
     # Pattern tambahan untuk mendeteksi konteks ToC: kalau dalam window 80 char
     # setelah "BAB 1 PENDAHULUAN" ada dot leader (3+ titik) atau
     # nomor halaman → kemungkinan baris ToC, skip lembar ini.
@@ -399,14 +406,26 @@ class PhysicalSheetCounter:
         """
         Cari lembar fisik (1-based) awal & akhir bagian inti.
 
-        - core_first: lembar pertama yang mengandung heading "BAB 1"
-          (bukan entri Daftar Isi). Kita filter dengan dua heuristik:
-            (1) match pattern CORE_START_PATTERNS (BAB 1 di awal baris,
-                diikuti huruf judul)
-            (2) lembar TIDAK didominasi dot leader / nomor halaman
-                (ciri khas Daftar Isi)
-        - core_last: lembar terakhir PDF.
+        Mode (dari `rules.core_start_mode`):
+        - 'bab1' (default — PKM-KC dkk.):
+            core_first = lembar pertama dengan heading "BAB 1"
+            core_last  = lembar terakhir PDF
+        - 'first_page' (PKM-AI):
+            core_first = halaman fisik 1 (halaman judul)
+            core_last  = lembar tepat sebelum heading "LAMPIRAN" pertama;
+                         fallback ke lembar terakhir PDF kalau LAMPIRAN
+                         tidak ter-detect
         """
+        total = len(sheet_texts)
+        if total == 0:
+            return (None, None)
+
+        mode = getattr(self.rules, "core_start_mode", "bab1")
+
+        if mode == "first_page":
+            return self._locate_core_range_first_page(sheet_texts)
+
+        # Default: mode 'bab1'
         core_first: Optional[int] = None
         for i, text in enumerate(sheet_texts):
             # Skip lembar yang jelas Daftar Isi: banyak dot leader
@@ -425,7 +444,45 @@ class PhysicalSheetCounter:
         if core_first is None:
             return (None, None)
 
-        core_last = len(sheet_texts)
+        core_last = total
+        return (core_first, core_last)
+
+    def _locate_core_range_first_page(
+        self, sheet_texts: list[str]
+    ) -> tuple[Optional[int], Optional[int]]:
+        """
+        Mode 'first_page' (PKM-AI): bagian inti = halaman judul s/d
+        sebelum heading "LAMPIRAN".
+
+        - core_first selalu 1 (asumsi halaman judul = lembar fisik 1).
+        - core_last  = index lembar sebelum heading "LAMPIRAN" pertama.
+                       Filter dot leader (≥3) untuk mencegah false match
+                       dari entri seperti "Lampiran 1. Biodata ... 11" di
+                       Daftar Isi (meski di PKM-AI Daftar Isi terlarang,
+                       sebagian dokumen kandidat tetap memuatnya).
+        """
+        total = len(sheet_texts)
+        if total == 0:
+            return (None, None)
+
+        core_first = 1
+        lampiran_sheet: Optional[int] = None
+        for i, text in enumerate(sheet_texts):
+            dot_leader_count = len(self._TOC_CONTEXT_RE.findall(text))
+            if dot_leader_count >= 3:
+                continue
+            for pat in self.LAMPIRAN_HEADING_PATTERNS:
+                if pat.search(text):
+                    lampiran_sheet = i + 1
+                    break
+            if lampiran_sheet is not None:
+                break
+
+        if lampiran_sheet is not None and lampiran_sheet > core_first:
+            core_last = lampiran_sheet - 1
+        else:
+            core_last = total
+
         return (core_first, core_last)
 
     # ------------------------------------------------------------------------
@@ -574,13 +631,21 @@ class PhysicalSheetCounter:
     ) -> list[CheckMessage]:
         msgs: list[CheckMessage] = []
         if result.core_first_sheet is None:
+            mode = getattr(self.rules, "core_start_mode", "bab1")
+            if mode == "first_page":
+                reason = (
+                    "PDF kosong atau gagal di-extract — tidak ada lembar "
+                    "yang bisa dianalisa."
+                )
+            else:
+                reason = (
+                    "'BAB 1' tidak ditemukan di teks PDF. Mungkin dokumen "
+                    "scan / OCR diperlukan."
+                )
             msgs.append(
                 CheckMessage(
                     level="fail",
-                    text=(
-                        "Bagian inti dokumen tidak teridentifikasi: 'BAB 1' tidak "
-                        "ditemukan di teks PDF. Mungkin dokumen scan / OCR diperlukan."
-                    ),
+                    text=f"Bagian inti dokumen tidak teridentifikasi: {reason}",
                 )
             )
             return msgs
