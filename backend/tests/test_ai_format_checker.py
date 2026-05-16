@@ -14,14 +14,14 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.services import ai_format_checker as afc
-from app.services.ai_format_checker import (
+from app.services.core.docx_parser import ParagraphInfo, RunInfo
+from app.services.schemas.pkm_ai import ai_format_checker as afc
+from app.services.schemas.pkm_ai.ai_format_checker import (
     AiFormatChecker,
     BODY_FONT_SIZE,
     BODY_LINE_SPACING,
 )
-from app.services.docx_parser import ParagraphInfo, RunInfo
-from app.services.schema_rules import get_pkm_ai_article_rules
+from app.services.schemas.pkm_ai.rules import get_pkm_ai_article_rules
 
 
 def _run(text: str, size: float = 12.0, italic: bool = False,

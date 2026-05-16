@@ -25,7 +25,7 @@ from pathlib import Path
 # Pastikan path import benar saat dijalankan dari folder backend/
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.services.docx_parser import DocxParser, dxa_to_cm
+from app.services.core.docx_parser import DocxParser, dxa_to_cm
 
 
 def inspect(file_path: str) -> None:

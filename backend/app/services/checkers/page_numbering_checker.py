@@ -38,14 +38,14 @@ from typing import Optional
 
 from lxml import etree
 
-from app.services.docx_parser import (
+from app.services.core.base_rules import SchemaRules
+from app.services.core.docx_parser import (
     DocxParser,
     SectionInfo,
     half_points_to_pt,
 )
-from app.services.message_format import format_finding
-from app.services.schema_rules import SchemaRules
-from app.services.style_resolver import StyleResolver
+from app.services.core.message_format import format_finding
+from app.services.core.style_resolver import StyleResolver
 
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -82,41 +82,9 @@ class PageNumberingRules:
     mode: str = "two_zone"
 
 
-def get_pkm_page_numbering_rules() -> PageNumberingRules:
-    """Default PKM: zona awal romawi-bawah, zona inti arab-atas, both TNR 12pt."""
-    return PageNumberingRules(
-        front_matter=ZoneRule(
-            name="front_matter",
-            numeral_type="roman_lower",
-            position="bottom",
-        ),
-        core_matter=ZoneRule(
-            name="core_matter",
-            numeral_type="arabic",
-            position="top",
-        ),
-        mode="two_zone",
-    )
-
-
-def get_pkm_ai_page_numbering_rules() -> PageNumberingRules:
-    """
-    PKM-AI: semua halaman pakai angka arab di pojok kanan ATAS, TNR 12pt,
-    mulai dari halaman judul (panduan PKM-AI 2026 hal 5-6, butir 1-2).
-    Tidak ada zona romawi/front-matter — DAFTAR ISI sendiri terlarang.
-    """
-    arab_top_right = ZoneRule(
-        name="core_matter",
-        numeral_type="arabic",
-        position="top",
-    )
-    return PageNumberingRules(
-        # front_matter di-isi placeholder yang identik supaya validator
-        # tidak crash jika ada section yang salah ter-klasifikasi.
-        front_matter=arab_top_right,
-        core_matter=arab_top_right,
-        mode="single_zone_core",
-    )
+# Factory PageNumberingRules per skema sekarang ada di
+# `app.services.schemas.<skema>.rules` (get_pkm_page_numbering_rules,
+# get_pkm_ai_page_numbering_rules).
 
 
 # ============================================================================
@@ -248,11 +216,14 @@ class PageNumberingChecker:
         self,
         parser: DocxParser,
         schema: SchemaRules,
-        rules: Optional[PageNumberingRules] = None,
+        rules: PageNumberingRules,
     ):
+        # `rules` wajib di-pass eksplisit. Factory rules per-skema ada di
+        # `app.services.schemas.<skema>.rules`; orchestrator yang memilih.
+        # (Layer `checkers/` dilarang import dari `schemas/`.)
         self.parser = parser
         self.schema = schema
-        self.rules = rules or get_pkm_page_numbering_rules()
+        self.rules = rules
         self.resolver = StyleResolver(parser)
         # Cache: rId → part_name (mis. 'rId6' → 'word/header1.xml')
         self._rid_to_part: Optional[dict[str, str]] = None

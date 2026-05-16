@@ -12,26 +12,31 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from app.services.docx_parser import DocxParser
-from app.services.schema_rules import (
-    SchemaRules,
-    get_pkm_kc_proposal_rules,
-    get_pkm_ai_article_rules,
-)
-from app.services.budget_rules import BudgetRules, get_pkm_kc_budget_rules
-from app.services.page_numbering_checker import (
+from app.services.checkers.format_checker import FormatChecker
+from app.services.checkers.page_numbering_checker import (
     PageNumberingChecker,
     PageNumberingRules,
-    get_pkm_page_numbering_rules,
+)
+from app.services.checkers.physical_sheet_counter import PhysicalSheetCounter
+from app.services.checkers.reference_validator import ReferenceValidator
+from app.services.checkers.structure_checker import StructureChecker
+from app.services.core.base_rules import FormatRules, SchemaRules
+from app.services.core.docx_parser import DocxParser
+from app.services.schemas.pkm_ai.ai_content_checker import AiContentChecker
+from app.services.schemas.pkm_ai.ai_format_checker import AiFormatChecker
+from app.services.schemas.pkm_ai.rules import (
+    get_pkm_ai_article_rules,
     get_pkm_ai_page_numbering_rules,
 )
-from app.services.structure_checker import StructureChecker
-from app.services.physical_sheet_counter import PhysicalSheetCounter
-from app.services.format_checker import FormatChecker, FormatRules
-from app.services.budget_auditor import BudgetAuditor
-from app.services.reference_validator import ReferenceValidator
-from app.services.ai_content_checker import AiContentChecker
-from app.services.ai_format_checker import AiFormatChecker
+from app.services.schemas.pkm_kc.budget_auditor import BudgetAuditor
+from app.services.schemas.pkm_kc.budget_rules import (
+    BudgetRules,
+    get_pkm_kc_budget_rules,
+)
+from app.services.schemas.pkm_kc.rules import (
+    get_pkm_kc_proposal_rules,
+    get_pkm_page_numbering_rules,
+)
 
 
 # ============================================================================

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.pdf_converter import PdfConverter, PdfConversionError
+from app.services.core.pdf_converter import PdfConverter, PdfConversionError
 
 
 def test_soffice_resolved_from_soffice_path_env(monkeypatch, tmp_path):

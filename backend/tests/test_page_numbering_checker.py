@@ -8,17 +8,19 @@ Cara jalankan:
 import unittest
 from pathlib import Path
 
-from app.services.docx_parser import DocxParser
-from app.services.page_numbering_checker import (
+from app.services.checkers.page_numbering_checker import (
     PageNumberingChecker,
     PageNumberingRules,
     ZoneRule,
     HeaderFooterAnalysis,
     SectionPageNumberingAnalysis,
     ZoneFinding,
+)
+from app.services.core.docx_parser import DocxParser
+from app.services.schemas.pkm_kc.rules import (
+    get_pkm_kc_proposal_rules,
     get_pkm_page_numbering_rules,
 )
-from app.services.schema_rules import get_pkm_kc_proposal_rules
 
 SAMPLE_DIR = Path(__file__).parent / "sample_docs"
 DUMMY_FILE = SAMPLE_DIR / "dummy_pkm_kc.docx"
@@ -59,7 +61,9 @@ class TestCheckerOnDummy(unittest.TestCase):
             raise unittest.SkipTest("Dummy belum di-generate")
         cls.parser = DocxParser(DUMMY_FILE)
         cls.schema = get_pkm_kc_proposal_rules()
-        cls.result = PageNumberingChecker(cls.parser, cls.schema).check()
+        cls.result = PageNumberingChecker(
+            cls.parser, cls.schema, get_pkm_page_numbering_rules()
+        ).check()
 
     def test_returns_result(self):
         self.assertIsNotNone(self.result)
@@ -111,7 +115,9 @@ class TestCheckerOnRealDoc(unittest.TestCase):
             raise unittest.SkipTest(f"{REAL_FILE.name} tidak ada")
         cls.parser = DocxParser(REAL_FILE)
         cls.schema = get_pkm_kc_proposal_rules()
-        cls.result = PageNumberingChecker(cls.parser, cls.schema).check()
+        cls.result = PageNumberingChecker(
+            cls.parser, cls.schema, get_pkm_page_numbering_rules()
+        ).check()
 
     def test_overall_fail(self):
         self.assertEqual(self.result.status, "fail")

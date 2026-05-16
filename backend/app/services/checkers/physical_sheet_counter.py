@@ -40,10 +40,10 @@ from typing import Optional
 
 from pypdf import PdfReader
 
-from app.services.docx_parser import DocxParser
-from app.services.message_format import format_finding
-from app.services.pdf_converter import PdfConverter
-from app.services.schema_rules import SchemaRules
+from app.services.core.base_rules import SchemaRules
+from app.services.core.docx_parser import DocxParser
+from app.services.core.message_format import format_finding
+from app.services.core.pdf_converter import PdfConverter
 
 
 # ============================================================================

@@ -11,7 +11,7 @@ import unittest
 import tempfile
 from pathlib import Path
 
-from app.services.docx_parser import (
+from app.services.core.docx_parser import (
     DocxParser,
     ParagraphInfo,
     TableInfo,

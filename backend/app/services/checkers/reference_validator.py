@@ -43,9 +43,9 @@ from typing import Optional
 from docx.oxml.ns import qn
 from lxml import etree
 
-from app.services.docx_parser import DocxParser, NSMAP
-from app.services.message_format import format_finding
-from app.services.schema_rules import SchemaRules
+from app.services.core.base_rules import SchemaRules
+from app.services.core.docx_parser import DocxParser, NSMAP
+from app.services.core.message_format import format_finding
 
 
 # ============================================================================

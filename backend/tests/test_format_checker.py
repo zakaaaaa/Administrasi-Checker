@@ -9,15 +9,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from app.services.docx_parser import DocxParser, ParagraphInfo
-from app.services.format_checker import (
+from app.services.checkers.format_checker import (
     FormatChecker,
-    FormatRules,
     FOREIGN_WORDS,
     _is_figure_table_caption_paragraph,
-    get_pkm_format_rules,
 )
-from app.services.style_resolver import StyleResolver, ResolvedFont
+from app.services.core.base_rules import FormatRules, get_pkm_format_rules
+from app.services.core.docx_parser import DocxParser, ParagraphInfo
+from app.services.core.style_resolver import StyleResolver, ResolvedFont
 
 SAMPLE_DIR = Path(__file__).parent / "sample_docs"
 DUMMY_FILE = SAMPLE_DIR / "dummy_pkm_kc.docx"
@@ -262,7 +261,7 @@ class TestAlignmentSkipsFigureCaptions(unittest.TestCase):
     """Alignment: center pada caption panjang tidak boleh false positive."""
 
     def test_center_caption_no_alignment_issue(self):
-        from app.services import format_checker as fc
+        from app.services.checkers import format_checker as fc
 
         paras = [
             ParagraphInfo(
@@ -281,7 +280,7 @@ class TestAlignmentSkipsFigureCaptions(unittest.TestCase):
         self.assertEqual(len(sec.issues), 0)
 
     def test_center_body_paragraph_still_fails(self):
-        from app.services import format_checker as fc
+        from app.services.checkers import format_checker as fc
 
         paras = [
             ParagraphInfo(

@@ -24,7 +24,7 @@ from typing import Optional
 
 from lxml import etree
 
-from app.services.docx_parser import DocxParser, half_points_to_pt
+from app.services.core.docx_parser import DocxParser, half_points_to_pt
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 

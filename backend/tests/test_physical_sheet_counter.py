@@ -12,9 +12,7 @@ import shutil
 import unittest
 from pathlib import Path
 
-from app.services.docx_parser import DocxParser
-from app.services.pdf_converter import PdfConverter, PdfConversionError
-from app.services.physical_sheet_counter import (
+from app.services.checkers.physical_sheet_counter import (
     PhysicalSheetCounter,
     SheetPageNumber,
     PageNumberAnomaly,
@@ -22,10 +20,10 @@ from app.services.physical_sheet_counter import (
     _roman_to_int,
     get_sheet_count_rule,
 )
-from app.services.schema_rules import (
-    get_pkm_kc_proposal_rules,
-    SchemaRules,
-)
+from app.services.core.base_rules import SchemaRules
+from app.services.core.docx_parser import DocxParser
+from app.services.core.pdf_converter import PdfConverter, PdfConversionError
+from app.services.schemas.pkm_kc.rules import get_pkm_kc_proposal_rules
 
 SAMPLE_DIR = Path(__file__).parent / "sample_docs"
 DUMMY_FILE = SAMPLE_DIR / "dummy_pkm_kc.docx"

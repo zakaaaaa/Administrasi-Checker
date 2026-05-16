@@ -8,18 +8,19 @@ Cara jalankan:
 import unittest
 from pathlib import Path
 
-from app.services.budget_auditor import (
+from app.services.core.docx_parser import DocxParser
+from app.services.schemas.pkm_kc.budget_auditor import (
     BudgetAuditResult,
     BudgetAuditor,
     FundingInput,
 )
-from app.services.budget_rules import (
+from app.services.schemas.pkm_kc.budget_rules import (
     BudgetRules,
     FundingSourceRule,
     BudgetCategory,
     get_pkm_kc_budget_rules,
 )
-from app.services.budget_table_parser import (
+from app.services.schemas.pkm_kc.budget_table_parser import (
     BudgetItem,
     Lampiran2ParseResult,
     parse_indonesian_number,
@@ -29,7 +30,6 @@ from app.services.budget_table_parser import (
     parse_lampiran2_table,
     match_category_to_canonical,
 )
-from app.services.docx_parser import DocxParser
 
 SAMPLE_DIR = Path(__file__).parent / "sample_docs"
 DUMMY_FILE = SAMPLE_DIR / "dummy_pkm_kc.docx"

@@ -7,13 +7,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.services.docx_parser import ParagraphInfo
-from app.services.reference_validator import (
+from app.services.checkers.reference_validator import (
     ReferenceValidator,
     _dp_has_dkk,
     _dp_has_et_al,
 )
-from app.services.schema_rules import get_pkm_kc_proposal_rules
+from app.services.core.docx_parser import ParagraphInfo
+from app.services.schemas.pkm_kc.rules import get_pkm_kc_proposal_rules
 
 
 def _fake_parser(paragraphs: list[ParagraphInfo]) -> MagicMock:
@@ -149,7 +149,7 @@ NUKI_FIXTURE = Path(r"c:\Users\ac300\Downloads\PKM KC  NUKI OTISTA_evp_KP_030426
 @pytest.mark.skipif(not NUKI_FIXTURE.exists(), reason="Lokal: file contoh Zotero tidak ada")
 def test_zotero_sdt_bibliography_extracted(schema):
     """Dokumen dengan bibliografi di w:sdt (Zotero) punya entri DP terbaca."""
-    from app.services.docx_parser import DocxParser
+    from app.services.core.docx_parser import DocxParser
 
     r = ReferenceValidator(DocxParser(NUKI_FIXTURE), schema, current_year=2026).check()
     assert r.total_entries >= 10

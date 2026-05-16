@@ -29,8 +29,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from app.services.docx_parser import DocxParser, ParagraphInfo
-from app.services.schema_rules import SchemaRules
+from app.services.core.base_rules import SchemaRules
+from app.services.core.docx_parser import DocxParser, ParagraphInfo
 
 
 # ============================================================================

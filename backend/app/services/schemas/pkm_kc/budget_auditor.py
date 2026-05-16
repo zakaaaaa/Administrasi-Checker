@@ -25,8 +25,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from app.services.budget_rules import BudgetRules, BudgetCategory
-from app.services.budget_table_parser import (
+from app.services.core.docx_parser import DocxParser
+from app.services.schemas.pkm_kc.budget_rules import BudgetRules, BudgetCategory
+from app.services.schemas.pkm_kc.budget_table_parser import (
     Bab4ParseResult,
     Lampiran2ParseResult,
     is_bab4_rab_table,
@@ -35,7 +36,6 @@ from app.services.budget_table_parser import (
     parse_bab4_table,
     parse_lampiran2_table,
 )
-from app.services.docx_parser import DocxParser
 
 
 # ============================================================================

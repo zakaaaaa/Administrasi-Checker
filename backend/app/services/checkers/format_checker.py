@@ -31,41 +31,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from app.services.docx_parser import DocxParser, dxa_to_cm
-from app.services.message_format import format_finding
-from app.services.schema_rules import SchemaRules
-from app.services.style_resolver import StyleResolver
-
-
-# ============================================================================
-# Aturan format default (mengikuti blueprint §3.3 untuk PKM)
-# ============================================================================
-#
-# Nantinya ini akan di-pull dari kolom `competition_schemas` di Supabase.
-# Untuk Phase 1, kita pakai default PKM yang sama untuk semua skema PKM.
-
-
-@dataclass
-class FormatRules:
-    font_name: str = "Times New Roman"
-    font_size_pt: float = 12.0
-    font_size_tolerance_pt: float = 0.3   # 11.7–12.3 diterima
-    margin_left_cm: float = 4.0
-    margin_right_cm: float = 3.0
-    margin_top_cm: float = 3.0
-    margin_bottom_cm: float = 3.0
-    margin_tolerance_cm: float = 0.05
-    paper_width_cm: float = 21.0      # A4
-    paper_height_cm: float = 29.7
-    paper_tolerance_cm: float = 0.1
-    line_spacing: float = 1.15
-    line_spacing_tolerance: float = 0.05
-    require_justify: bool = True
-
-
-def get_pkm_format_rules() -> FormatRules:
-    """Default rules untuk semua skema PKM (sama untuk KC, K, AI, GFT, dll)."""
-    return FormatRules()
+from app.services.core.base_rules import FormatRules, SchemaRules, get_pkm_format_rules
+from app.services.core.docx_parser import DocxParser, dxa_to_cm
+from app.services.core.message_format import format_finding
+from app.services.core.style_resolver import StyleResolver
 
 
 # ============================================================================

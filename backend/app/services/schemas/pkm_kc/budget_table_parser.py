@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from app.services.docx_parser import TableInfo
+from app.services.core.docx_parser import TableInfo
 
 
 # ============================================================================

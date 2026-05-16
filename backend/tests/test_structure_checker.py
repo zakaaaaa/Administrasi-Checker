@@ -8,17 +8,14 @@ Cara jalankan:
 import unittest
 from pathlib import Path
 
-from app.services.docx_parser import DocxParser
-from app.services.schema_rules import (
-    SchemaRules,
-    SectionRule,
-    get_pkm_kc_proposal_rules,
-)
-from app.services.structure_checker import (
+from app.services.checkers.structure_checker import (
     StructureChecker,
     _heading_matches_rule,
     _normalize,
 )
+from app.services.core.base_rules import SchemaRules, SectionRule
+from app.services.core.docx_parser import DocxParser
+from app.services.schemas.pkm_kc.rules import get_pkm_kc_proposal_rules
 
 SAMPLE_DIR = Path(__file__).parent / "sample_docs"
 DUMMY_FILE = SAMPLE_DIR / "dummy_pkm_kc.docx"
@@ -223,8 +220,8 @@ class TestOutOfOrderDetection(unittest.TestCase):
     """
 
     def test_simple_swap_detected(self):
-        from app.services.docx_parser import ParagraphInfo
-        from app.services.structure_checker import (
+        from app.services.core.docx_parser import ParagraphInfo
+        from app.services.checkers.structure_checker import (
             FoundSection, StructureCheckResult,
         )
 

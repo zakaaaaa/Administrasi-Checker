@@ -29,9 +29,9 @@ from dataclasses import dataclass, field
 from typing import Optional
 import re
 
-from app.services.docx_parser import DocxParser
-from app.services.message_format import format_finding
-from app.services.schema_rules import SchemaRules, SectionRule
+from app.services.core.base_rules import SchemaRules, SectionRule
+from app.services.core.docx_parser import DocxParser
+from app.services.core.message_format import format_finding
 
 
 # ============================================================================
@@ -249,9 +249,9 @@ class StructureChecker:
     Checker struktur dokumen.
 
     Usage:
-        from app.services.docx_parser import DocxParser
-        from app.services.schema_rules import get_pkm_kc_proposal_rules
-        from app.services.structure_checker import StructureChecker
+        from app.services.core.docx_parser import DocxParser
+        from app.services.schemas.pkm_kc.rules import get_pkm_kc_proposal_rules
+        from app.services.checkers.structure_checker import StructureChecker
 
         parser = DocxParser('path/to/doc.docx')
         rules = get_pkm_kc_proposal_rules()

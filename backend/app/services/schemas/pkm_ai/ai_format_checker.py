@@ -19,11 +19,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from app.services.docx_parser import DocxParser, ParagraphInfo, RunInfo
-from app.services.format_checker import FOREIGN_WORDS
-from app.services.message_format import format_finding
-from app.services.schema_rules import SchemaRules
-from app.services.style_resolver import StyleResolver
+from app.services.checkers.format_checker import FOREIGN_WORDS
+from app.services.core.base_rules import SchemaRules
+from app.services.core.docx_parser import DocxParser, ParagraphInfo, RunInfo
+from app.services.core.message_format import format_finding
+from app.services.core.style_resolver import StyleResolver
 
 
 # ============================================================================
