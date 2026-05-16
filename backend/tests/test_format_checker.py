@@ -15,15 +15,9 @@ from app.services.format_checker import (
     FormatRules,
     FOREIGN_WORDS,
     _is_figure_table_caption_paragraph,
-    _is_caption_to_skip,
     get_pkm_format_rules,
 )
 from app.services.style_resolver import StyleResolver, ResolvedFont
-from app.services.schema_rules import (
-    get_pkm_ai_article_rules,
-    get_pkm_kc_proposal_rules,
-)
-from types import SimpleNamespace
 
 SAMPLE_DIR = Path(__file__).parent / "sample_docs"
 DUMMY_FILE = SAMPLE_DIR / "dummy_pkm_kc.docx"
@@ -323,98 +317,40 @@ class TestRulesEdgeCases(unittest.TestCase):
 
 
 # ============================================================================
-# Test: _body_start_index — skip front-matter PKM-AI
+# Test: enabled_checks — registry-driven whitelist sub-check
 # ============================================================================
 
 
-class TestBodyStartIndex(unittest.TestCase):
+class TestEnabledChecks(unittest.TestCase):
     """
-    Untuk PKM-AI, format generik (TNR 12, 1.15, justify) tidak boleh
-    menyentuh zona judul/penulis/abstrak — harus mulai dari PENDAHULUAN.
-    """
-
-    @staticmethod
-    def _fake_parser(texts):
-        paras = [
-            SimpleNamespace(index=i, text=t) for i, t in enumerate(texts)
-        ]
-        return SimpleNamespace(paragraphs=paras)
-
-    def _checker(self, texts, schema):
-        parser = self._fake_parser(texts)
-        return FormatChecker(parser, schema=schema)
-
-    def test_pkm_ai_skips_until_pendahuluan(self):
-        texts = [
-            "JUDUL ARTIKEL ILMIAH",
-            "Nama Penulis, Institusi",
-            "ABSTRAK",
-            "Isi abstrak ...",
-            "PENDAHULUAN",
-            "Isi pendahuluan ...",
-        ]
-        fc = self._checker(texts, get_pkm_ai_article_rules())
-        self.assertEqual(fc._body_start_index(), 4)
-
-    def test_pkm_ai_accepts_bab_1_pendahuluan(self):
-        texts = ["Judul", "Abstrak", "BAB 1. PENDAHULUAN", "Isi"]
-        fc = self._checker(texts, get_pkm_ai_article_rules())
-        self.assertEqual(fc._body_start_index(), 2)
-
-    def test_pkm_ai_no_pendahuluan_returns_zero(self):
-        texts = ["Judul", "Abstrak", "Isi tanpa heading pendahuluan"]
-        fc = self._checker(texts, get_pkm_ai_article_rules())
-        self.assertEqual(fc._body_start_index(), 0)
-
-    def test_non_ai_schema_never_skips(self):
-        texts = ["Judul", "PENDAHULUAN", "Isi"]
-        fc = self._checker(texts, get_pkm_kc_proposal_rules())
-        self.assertEqual(fc._body_start_index(), 0)
-
-    def test_result_cached(self):
-        texts = ["Judul", "PENDAHULUAN", "Isi"]
-        fc = self._checker(texts, get_pkm_ai_article_rules())
-        self.assertEqual(fc._body_start_index(), 1)
-        # Ubah paragraphs setelah cache terisi → hasil tetap (cached)
-        fc.parser.paragraphs = []
-        self.assertEqual(fc._body_start_index(), 1)
-
-
-# ============================================================================
-# Test: _is_caption_to_skip — konsisten dgn AiFormatChecker (anti-kontradiksi)
-# ============================================================================
-
-
-class TestIsCaptionToSkip(unittest.TestCase):
-    """
-    Apa pun yang divalidasi AiFormatChecker sebagai caption (TNR 11) tidak
-    boleh ikut divonis ulang oleh cek body generik (12pt) → tidak kontradiksi.
+    Untuk PKM-AI, orchestrator membatasi FormatChecker ke {paper_size, margin}
+    karena sisanya (font/spasi/alignment/foreign) divalidasi AiFormatChecker
+    dengan aturan per-zona.
     """
 
-    def test_long_descriptive_caption_skipped(self):
-        # > 280 char: ditolak _is_figure_table_caption_paragraph (batas 280),
-        # tapi tetap caption menurut AiFormatChecker → harus tetap di-skip.
-        long_cap = "Gambar 7. " + ("penjelasan diagram alir sistem " * 15)
-        self.assertGreater(len(long_cap), 280)
-        self.assertFalse(_is_figure_table_caption_paragraph(long_cap))
-        self.assertTrue(_is_caption_to_skip(long_cap))
+    @classmethod
+    def setUpClass(cls):
+        if not DUMMY_FILE.exists():
+            raise unittest.SkipTest("Dummy belum di-generate")
+        cls.parser = DocxParser(DUMMY_FILE)
 
-    def test_short_standard_caption_skipped(self):
-        self.assertTrue(_is_caption_to_skip("Gambar 1. Arsitektur sistem"))
-        self.assertTrue(_is_caption_to_skip("Tabel 2: Hasil pengujian"))
+    def test_default_runs_all_subchecks(self):
+        """Tanpa enabled_checks → semua sub-check jalan (default PKM-KC)."""
+        result = FormatChecker(self.parser).check()
+        for name in ("paper_size", "margin", "font_body",
+                     "line_spacing", "alignment", "foreign_words_italic"):
+            self.assertIn(name, result.checks, f"{name} hilang")
 
-    def test_plain_body_not_skipped(self):
-        body = (
-            "Pada bagian ini dijelaskan metode penelitian yang digunakan "
-            "untuk menganalisis data secara menyeluruh."
-        )
-        self.assertFalse(_is_caption_to_skip(body))
+    def test_whitelist_paper_and_margin_only(self):
+        """enabled_checks={paper_size, margin} → cuma 2 section."""
+        result = FormatChecker(
+            self.parser, enabled_checks={"paper_size", "margin"}
+        ).check()
+        self.assertEqual(set(result.checks.keys()), {"paper_size", "margin"})
 
-    def test_mention_not_caption(self):
-        # "pada Gambar 1 terlihat ..." bukan caption (tak diawali label+titik)
-        self.assertFalse(
-            _is_caption_to_skip("Seperti pada Gambar 1 terlihat alurnya.")
-        )
+    def test_empty_whitelist_runs_nothing(self):
+        result = FormatChecker(self.parser, enabled_checks=set()).check()
+        self.assertEqual(result.checks, {})
 
 
 if __name__ == "__main__":

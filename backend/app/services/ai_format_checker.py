@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from app.services.docx_parser import DocxParser, ParagraphInfo, RunInfo
+from app.services.format_checker import FOREIGN_WORDS
 from app.services.message_format import format_finding
 from app.services.schema_rules import SchemaRules
 from app.services.style_resolver import StyleResolver
@@ -35,6 +36,12 @@ ABSTRACT_FONT_SIZE = 11.0
 AUTHOR_FONT_SIZE = 10.0
 CAPTION_FONT_SIZE = 11.0
 TITLE_FONT_SIZE = 12.0
+
+# Body PKM-AI (mulai dari setelah blok abstract EN selesai)
+BODY_FONT_SIZE = 12.0
+BODY_ALIGN = "justify"
+BODY_LINE_SPACING = 1.15
+BODY_LINE_SPACING_TOL = 0.05  # selaras FormatRules.line_spacing_tolerance
 
 # Alignment wajib per-zona (PKM-AI)
 TITLE_ALIGN = "center"
@@ -248,7 +255,12 @@ class AiFormatChecker:
         # Step 4: captions (Gambar N./Tabel N.) — di seluruh dokumen
         self._validate_captions(paragraphs, result)
 
-        # Step 5: messages + status
+        # Step 5: body (Pendahuluan → akhir) TNR 12 justify 1,15
+        # + kata asing wajib italic (warning)
+        self._validate_body_block(paragraphs, landmarks, result)
+        self._validate_foreign_italic_body(paragraphs, landmarks, result)
+
+        # Step 6: messages + status
         self._finalize(result)
         return result
 
@@ -583,6 +595,169 @@ class AiFormatChecker:
                 ))
 
     # ------------------------------------------------------------------------
+    # Body block (mulai setelah blok abstract EN selesai → akhir dokumen)
+    # ------------------------------------------------------------------------
+
+    def _body_start_idx(self, landmarks: dict[str, Optional[int]]) -> Optional[int]:
+        """
+        Indeks paragraf awal body. Spec §2: "Body (Pendahuluan → akhir)".
+        Prioritas: heading PENDAHULUAN (inklusif — heading sendiri di-skip via
+        guard `is_heading`). Kalau tidak ada PENDAHULUAN, fallback ke paragraf
+        SETELAH keywords/kata_kunci (akhir blok abstrak). Fallback terakhir:
+        paragraf setelah heading ABSTRACT / ABSTRAK.
+        """
+        pendahuluan = landmarks.get("pendahuluan")
+        if pendahuluan is not None:
+            return pendahuluan
+        kw_refs = [landmarks.get(k) for k in ("keywords", "kata_kunci")]
+        kw_refs = [r for r in kw_refs if r is not None]
+        if kw_refs:
+            return max(kw_refs) + 1
+        for key in ("abstract", "abstrak"):
+            idx = landmarks.get(key)
+            if idx is not None:
+                return idx + 1
+        return None
+
+    def _iter_body_paragraphs(
+        self,
+        paragraphs: list[ParagraphInfo],
+        landmarks: dict[str, Optional[int]],
+    ) -> list[ParagraphInfo]:
+        """Paragraf body: non-blank, bukan heading, bukan caption."""
+        body_start = self._body_start_idx(landmarks)
+        if body_start is None:
+            return []
+        out = []
+        for p in paragraphs:
+            if p.index < body_start:
+                continue
+            if _is_blank(p):
+                continue
+            if p.is_heading:
+                continue
+            if _parse_caption_label(p.text) is not None:
+                continue
+            out.append(p)
+        return out
+
+    def _validate_body_block(
+        self,
+        paragraphs: list[ParagraphInfo],
+        landmarks: dict[str, Optional[int]],
+        result: AiFormatResult,
+    ) -> None:
+        """
+        Body PKM-AI: TNR 12pt, justify, line spacing 1.15.
+        Pakai pola "mayoritas" (selaras `_validate_abstract_block`): emit 1
+        finding per aspek bila ≥ 50% paragraf di body mismatch.
+        """
+        body_paras = self._iter_body_paragraphs(paragraphs, landmarks)
+        if not body_paras:
+            return
+        result.zones_detected["body_paragraph_count"] = len(body_paras)
+        result.zones_detected["body_start_paragraph_index"] = body_paras[0].index
+
+        # Font size
+        sized = []
+        for p in body_paras:
+            _, size, _ = _aggregate_font(p)
+            if size is not None:
+                sized.append((p, size))
+        size_mismatches = [
+            (p, s) for (p, s) in sized if not _size_matches(s, BODY_FONT_SIZE)
+        ]
+        if sized and len(size_mismatches) >= max(1, len(sized) // 2):
+            p, s = size_mismatches[0]
+            result.findings.append(ZoneFinding(
+                zone="body", aspect="font_size", severity="fail",
+                expected=f"{BODY_FONT_SIZE}pt", found=f"{s}pt",
+                paragraph_index=p.index,
+                message=(
+                    f"Body ({len(size_mismatches)}/{len(sized)} paragraf) "
+                    f"pakai ukuran {s}pt"
+                ),
+            ))
+
+        # Alignment
+        align_mismatches = [
+            (p, a) for p in body_paras
+            for a in [self.resolver.resolve_paragraph_alignment(p.index)]
+            if a is not None and a != BODY_ALIGN
+        ]
+        if body_paras and len(align_mismatches) >= max(1, len(body_paras) // 2):
+            p, a = align_mismatches[0]
+            result.findings.append(ZoneFinding(
+                zone="body", aspect="alignment", severity="fail",
+                expected="rata kiri-kanan (justify)", found=a,
+                paragraph_index=p.index,
+                message=(
+                    f"Body ({len(align_mismatches)}/{len(body_paras)} paragraf) "
+                    f"ditulis rata '{a}', bukan justify"
+                ),
+            ))
+
+        # Line spacing
+        spaced = [p for p in body_paras if p.line_spacing is not None]
+        spacing_mismatches = [
+            p for p in spaced
+            if abs(p.line_spacing - BODY_LINE_SPACING) > BODY_LINE_SPACING_TOL
+        ]
+        if spaced and len(spacing_mismatches) >= max(1, len(spaced) // 2):
+            p = spacing_mismatches[0]
+            result.findings.append(ZoneFinding(
+                zone="body", aspect="line_spacing", severity="fail",
+                expected=f"{BODY_LINE_SPACING} (1,15 spasi)",
+                found=f"{p.line_spacing}",
+                paragraph_index=p.index,
+                message=(
+                    f"Body ({len(spacing_mismatches)}/{len(spaced)} paragraf) "
+                    f"pakai jarak baris {p.line_spacing}"
+                ),
+            ))
+
+    # ------------------------------------------------------------------------
+    # Foreign words wajib italic di body (warning)
+    # ------------------------------------------------------------------------
+
+    # Max issue per kategori agar tidak spam (selaras FormatChecker)
+    _MAX_FOREIGN_ISSUES = 10
+
+    def _validate_foreign_italic_body(
+        self,
+        paragraphs: list[ParagraphInfo],
+        landmarks: dict[str, Optional[int]],
+        result: AiFormatResult,
+    ) -> None:
+        body_paras = self._iter_body_paragraphs(paragraphs, landmarks)
+        if not body_paras:
+            return
+        patterns = [
+            (w, re.compile(r"\b" + re.escape(w) + r"\b", re.IGNORECASE))
+            for w in FOREIGN_WORDS
+        ]
+        emitted = 0
+        for p in body_paras:
+            if emitted >= self._MAX_FOREIGN_ISSUES:
+                break
+            matched = [w for (w, pat) in patterns if pat.search(p.text)]
+            if not matched:
+                continue
+            has_italic = any(r.italic for r in p.runs)
+            if has_italic:
+                continue
+            result.findings.append(ZoneFinding(
+                zone="body", aspect="foreign_italic", severity="warning",
+                expected="italic", found="tidak italic",
+                paragraph_index=p.index,
+                message=(
+                    f"Body memuat kata/frasa asing ({', '.join(matched[:3])}) "
+                    f"tapi tidak ada run italic"
+                ),
+            ))
+            emitted += 1
+
+    # ------------------------------------------------------------------------
     # Finalize
     # ------------------------------------------------------------------------
 
@@ -593,8 +768,8 @@ class AiFormatChecker:
                 text=(
                     "Format khusus PKM-AI sesuai panduan: judul TNR 12 bold "
                     "rata tengah, penulis TNR 10 rata tengah, "
-                    "abstrak/abstract TNR 11 justify, semua 1,0 spasi, "
-                    "caption TNR 11 rata tengah."
+                    "abstrak/abstract TNR 11 justify (semua 1,0 spasi), "
+                    "body TNR 12 justify 1,15 spasi, caption TNR 11 rata tengah."
                 ),
             ))
             result.status = "pass"

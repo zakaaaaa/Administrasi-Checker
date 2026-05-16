@@ -27,7 +27,7 @@ from app.services.page_numbering_checker import (
 )
 from app.services.structure_checker import StructureChecker
 from app.services.physical_sheet_counter import PhysicalSheetCounter
-from app.services.format_checker import FormatChecker
+from app.services.format_checker import FormatChecker, FormatRules
 from app.services.budget_auditor import BudgetAuditor
 from app.services.reference_validator import ReferenceValidator
 from app.services.ai_content_checker import AiContentChecker
@@ -98,6 +98,12 @@ class SchemaConfig:
     modules: tuple[str, ...]
     budget_rules_factory: Optional[Callable[[], BudgetRules]] = None
     page_numbering_rules_factory: Optional[Callable[[], PageNumberingRules]] = None
+    # Optional override untuk FormatChecker. `format_checks=None` = jalankan
+    # semua sub-check (default, PKM-KC). Set = whitelist sub-check yang aktif
+    # (mis. PKM-AI hanya {"paper_size","margin"} karena sisanya divalidasi
+    # AiFormatChecker dengan aturan per-zona).
+    format_rules_factory: Optional[Callable[[], FormatRules]] = None
+    format_checks: Optional[tuple[str, ...]] = None
 
 
 # Key = (competition, report_type, schema_code) — sesuai field di CheckRequest.
@@ -113,6 +119,7 @@ SCHEMA_REGISTRY: dict[tuple[str, str, str], SchemaConfig] = {
         modules=PKM_AI_MODULES,
         budget_rules_factory=None,  # PKM-AI tanpa RAB
         page_numbering_rules_factory=get_pkm_ai_page_numbering_rules,
+        format_checks=("paper_size", "margin"),  # sisanya: AiFormatChecker
     ),
 }
 
@@ -145,7 +152,14 @@ def _run_physical_sheet(parser: DocxParser, schema: SchemaRules, cfg: SchemaConf
 
 
 def _run_format(parser: DocxParser, schema: SchemaRules, cfg: SchemaConfig) -> dict:
-    return FormatChecker(parser, schema=schema).check().to_dict()
+    rules = cfg.format_rules_factory() if cfg.format_rules_factory else None
+    checks = set(cfg.format_checks) if cfg.format_checks else None
+    return FormatChecker(
+        parser,
+        rules=rules,
+        schema=schema,
+        enabled_checks=checks,
+    ).check().to_dict()
 
 
 def _run_page_numbering(parser: DocxParser, schema: SchemaRules, cfg: SchemaConfig) -> dict:

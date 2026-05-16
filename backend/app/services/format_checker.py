@@ -31,20 +31,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from app.services.ai_format_checker import _parse_caption_label
 from app.services.docx_parser import DocxParser, dxa_to_cm
 from app.services.message_format import format_finding
 from app.services.schema_rules import SchemaRules
 from app.services.style_resolver import StyleResolver
-
-
-# Heading PENDAHULUAN — penanda awal body untuk PKM-AI. Zona sebelum ini
-# (judul/penulis/abstrak/kata kunci) punya aturan format sendiri yang sudah
-# divalidasi AiFormatChecker, jadi tidak ikut format generik.
-_PKM_AI_PENDAHULUAN_RE = re.compile(
-    r"^\s*(?:1\s*\.?\s*)?pendahuluan\s*$|^\s*bab\s+(?:1|i)\.?\s+pendahuluan",
-    re.IGNORECASE,
-)
 
 
 # ============================================================================
@@ -128,23 +118,6 @@ def _is_figure_table_caption_paragraph(text: str) -> bool:
     if not stripped or len(stripped) > _MAX_CAPTION_PARAGRAPH_CHARS:
         return False
     return bool(_CAPTION_HEAD_RE.match(stripped))
-
-
-def _is_caption_to_skip(text: str) -> bool:
-    """
-    True jika paragraf adalah caption Gambar/Tabel yang HARUS di-skip oleh
-    cek format generik (font/spasi/alignment).
-
-    Pakai sumber kebenaran yang sama dengan AiFormatChecker
-    (`_parse_caption_label`, tanpa batas panjang) DITAMBAH heuristik
-    broad lama. Tujuannya: apa pun yang divalidasi AiFormatChecker
-    sebagai caption (TNR 11, 1,0 spasi, center) tidak boleh ikut
-    divonis ulang di sini → menghindari kontradiksi antar-section.
-    """
-    return (
-        _parse_caption_label(text) is not None
-        or _is_figure_table_caption_paragraph(text)
-    )
 
 
 # ============================================================================
@@ -233,41 +206,19 @@ class FormatChecker:
         parser: DocxParser,
         rules: Optional[FormatRules] = None,
         schema: Optional[SchemaRules] = None,
+        enabled_checks: Optional[set[str]] = None,
     ):
         self.parser = parser
         self.rules = rules or get_pkm_format_rules()
         self.schema = schema  # opsional, untuk skip pengecekan tertentu nanti
         self.resolver = StyleResolver(parser)
-        self._body_start_cache: Optional[int] = None
+        # None = jalankan semua sub-check (default, PKM-KC). Set = whitelist
+        # sub-check yang aktif (mis. PKM-AI: hanya {"paper_size","margin"}
+        # karena sisanya divalidasi AiFormatChecker dengan aturan per-zona).
+        self.enabled_checks = enabled_checks
 
-    def _body_start_index(self) -> int:
-        """
-        Indeks paragraf awal 'body' untuk format generik.
-
-        Untuk PKM-AI, zona judul/penulis/abstrak/kata kunci punya aturan
-        format sendiri (TNR 12 bold center / TNR 10 center / TNR 11 justify,
-        semua 1,0 spasi) yang sudah divalidasi AiFormatChecker. Aturan
-        generik (TNR 12, 1.15, justify) baru berlaku mulai PENDAHULUAN —
-        jadi semua paragraf sebelum PENDAHULUAN di-skip agar tidak
-        double-check / false-positive.
-
-        Skema lain (atau PENDAHULUAN tak ketemu): 0 → cek seluruh dokumen.
-        """
-        if self._body_start_cache is not None:
-            return self._body_start_cache
-        start = 0
-        sch = self.schema
-        if (
-            sch is not None
-            and sch.competition_code == "PKM"
-            and sch.schema_code == "AI"
-        ):
-            for para in self.parser.paragraphs:
-                if _PKM_AI_PENDAHULUAN_RE.match((para.text or "").strip()):
-                    start = para.index
-                    break
-        self._body_start_cache = start
-        return start
+    def _enabled(self, name: str) -> bool:
+        return self.enabled_checks is None or name in self.enabled_checks
 
     def _page_of(self, paragraph_index: int) -> Optional[int]:
         """Estimasi halaman fisik (1-based) dari paragraph index. None kalau tak bisa."""
@@ -288,14 +239,19 @@ class FormatChecker:
     def check(self) -> FormatCheckResult:
         result = FormatCheckResult(status="pass")
 
-        # Jalankan tiap sub-check
-        result.checks["paper_size"] = self._check_paper_size()
-        result.checks["margin"] = self._check_margin()
-        result.checks["font_body"] = self._check_font_body()
-        result.checks["line_spacing"] = self._check_line_spacing()
-        if self.rules.require_justify:
+        # Jalankan tiap sub-check (skip kalau enabled_checks membatasi)
+        if self._enabled("paper_size"):
+            result.checks["paper_size"] = self._check_paper_size()
+        if self._enabled("margin"):
+            result.checks["margin"] = self._check_margin()
+        if self._enabled("font_body"):
+            result.checks["font_body"] = self._check_font_body()
+        if self._enabled("line_spacing"):
+            result.checks["line_spacing"] = self._check_line_spacing()
+        if self.rules.require_justify and self._enabled("alignment"):
             result.checks["alignment"] = self._check_alignment()
-        result.checks["foreign_words_italic"] = self._check_foreign_words_italic()
+        if self._enabled("foreign_words_italic"):
+            result.checks["foreign_words_italic"] = self._check_foreign_words_italic()
 
         # Aggregate status
         statuses = [s.status for s in result.checks.values()]
@@ -438,17 +394,12 @@ class FormatChecker:
         font_distribution: dict[str, int] = {}
         size_distribution: dict[float, int] = {}
 
-        body_start = self._body_start_index()
         for para in self.parser.paragraphs:
-            if para.index < body_start:
-                continue
             if not para.text.strip():
                 continue
             if para.is_heading:
                 continue
-            # Caption Gambar/Tabel punya aturan font sendiri (PKM-AI: TNR 11)
-            # — divalidasi AiFormatChecker, jangan double-check di sini.
-            if _is_caption_to_skip(para.text.strip()):
+            if _is_figure_table_caption_paragraph(para.text.strip()):
                 continue
 
             # Resolve font level paragraf
@@ -513,16 +464,12 @@ class FormatChecker:
         sec = FormatCheckSection(name="line_spacing", status="pass")
         tol = self.rules.line_spacing_tolerance
         spacing_distribution: dict[float, int] = {}
-        body_start = self._body_start_index()
         for para in self.parser.paragraphs:
-            if para.index < body_start:
-                continue
             if not para.text.strip():
                 continue
             if para.is_heading:
                 continue
-            # Caption Gambar/Tabel: spasi sendiri (PKM-AI: 1.0), skip double-check.
-            if _is_caption_to_skip(para.text.strip()):
+            if _is_figure_table_caption_paragraph(para.text.strip()):
                 continue
             ls = para.line_spacing
             if ls is None:
@@ -564,16 +511,13 @@ class FormatChecker:
         - Satu baris caption Gambar/Figure/Tabel/… (umumnya center, bukan justify)
         """
         sec = FormatCheckSection(name="alignment", status="pass")
-        body_start = self._body_start_index()
         for para in self.parser.paragraphs:
-            if para.index < body_start:
-                continue
             text = para.text.strip()
             if len(text) < 30:
                 continue
             if para.is_heading:
                 continue
-            if _is_caption_to_skip(text):
+            if _is_figure_table_caption_paragraph(text):
                 continue
             align = para.alignment
             # python-docx return 'left'/'right'/'center'/'justify' atau None
@@ -627,10 +571,7 @@ class FormatChecker:
             for word in FOREIGN_WORDS
         ]
 
-        body_start = self._body_start_index()
         for para in self.parser.paragraphs:
-            if para.index < body_start:
-                continue
             text = para.text
             if not text.strip():
                 continue
