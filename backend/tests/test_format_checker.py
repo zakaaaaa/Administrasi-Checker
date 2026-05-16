@@ -15,7 +15,7 @@ from app.services.checkers.format_checker import (
     _is_figure_table_caption_paragraph,
 )
 from app.services.core.base_rules import FormatRules, get_pkm_format_rules
-from app.services.core.docx_parser import DocxParser, ParagraphInfo
+from app.services.core.docx_parser import DocxParser, ParagraphInfo, RunInfo
 from app.services.core.style_resolver import StyleResolver, ResolvedFont
 
 SAMPLE_DIR = Path(__file__).parent / "sample_docs"
@@ -225,6 +225,88 @@ class TestForeignWordsDetection(unittest.TestCase):
     def test_foreign_words_dictionary_not_empty(self):
         self.assertGreater(len(FOREIGN_WORDS), 10)
         self.assertIn("internet of things", FOREIGN_WORDS)
+
+    def test_non_italic_foreign_word_still_flagged_when_other_run_is_italic(self):
+        paras = [
+            ParagraphInfo(
+                index=0,
+                text="Metode machine learning ini memakai istilah lain.",
+                runs=[
+                    RunInfo(text="Metode machine learning ini memakai "),
+                    RunInfo(text="istilah lain.", italic=True),
+                ],
+            )
+        ]
+        parser = MagicMock()
+        parser.paragraphs = paras
+        parser.estimate_physical_page.return_value = 1
+        checker = FormatChecker(parser)
+        checker.resolver = MagicMock()
+        checker.resolver.resolve_run_font.side_effect = [
+            ResolvedFont(italic=False),
+            ResolvedFont(italic=True),
+        ]
+
+        sec = checker._check_foreign_words_italic()
+
+        self.assertEqual(sec.status, "warning")
+        self.assertEqual(len(sec.issues), 1)
+
+    def test_italic_foreign_word_split_across_runs_passes(self):
+        paras = [
+            ParagraphInfo(
+                index=0,
+                text="Metode machine learning digunakan.",
+                runs=[
+                    RunInfo(text="Metode "),
+                    RunInfo(text="machine ", italic=True),
+                    RunInfo(text="learning", italic=True),
+                    RunInfo(text=" digunakan."),
+                ],
+            )
+        ]
+        parser = MagicMock()
+        parser.paragraphs = paras
+        checker = FormatChecker(parser)
+        checker.resolver = MagicMock()
+        checker.resolver.resolve_run_font.side_effect = [
+            ResolvedFont(italic=True),
+            ResolvedFont(italic=True),
+        ]
+
+        sec = checker._check_foreign_words_italic()
+
+        self.assertEqual(sec.status, "pass")
+        self.assertEqual(len(sec.issues), 0)
+
+
+class TestRunLevelFontDetection(unittest.TestCase):
+    def test_calibri_run_inside_tnr_paragraph_fails(self):
+        paras = [
+            ParagraphInfo(
+                index=0,
+                text="Paragraf ini punya satu run Calibri.",
+                runs=[
+                    RunInfo(text="Paragraf ini punya satu run "),
+                    RunInfo(text="Calibri."),
+                ],
+            )
+        ]
+        parser = MagicMock()
+        parser.paragraphs = paras
+        parser.estimate_physical_page.return_value = 1
+        checker = FormatChecker(parser)
+        checker.resolver = MagicMock()
+        checker.resolver.resolve_run_font.side_effect = [
+            ResolvedFont(name="Times New Roman", size_pt=12.0),
+            ResolvedFont(name="Calibri", size_pt=12.0),
+        ]
+
+        sec = checker._check_font_body()
+
+        self.assertEqual(sec.status, "fail")
+        self.assertEqual(sec.issues[0].check_name, "font_name")
+        self.assertEqual(sec.issues[0].found, "Calibri")
 
 
 class TestCaptionParagraphDetection(unittest.TestCase):

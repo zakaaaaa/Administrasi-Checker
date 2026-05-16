@@ -371,45 +371,66 @@ class FormatChecker:
             if _is_figure_table_caption_paragraph(para.text.strip()):
                 continue
 
-            # Resolve font level paragraf
-            font = self.resolver.resolve_paragraph_font(para.index)
+            checked_any_run = False
+            reported_font_name = False
+            reported_font_size = False
+            for run_index, run in enumerate(para.runs):
+                if not run.text.strip():
+                    continue
 
-            # Track distribusi
-            if font.name:
-                font_distribution[font.name] = font_distribution.get(font.name, 0) + 1
-            if font.size_pt is not None:
-                size_distribution[font.size_pt] = size_distribution.get(font.size_pt, 0) + 1
+                checked_any_run = True
+                font = self.resolver.resolve_run_font(para.index, run_index)
 
-            # Cek font name
-            if font.name and font.name != self.rules.font_name:
-                sec.issues.append(
-                    FormatIssue(
-                        check_name="font_name",
-                        severity="fail",
-                        location=self._format_para_location(para.index),
-                        page=self._page_of(para.index),
-                        issue=f"Font bukan {self.rules.font_name}.",
-                        found=font.name,
-                        expected=self.rules.font_name,
+                if font.name:
+                    font_distribution[font.name] = font_distribution.get(font.name, 0) + 1
+                if font.size_pt is not None:
+                    size_distribution[font.size_pt] = size_distribution.get(font.size_pt, 0) + 1
+
+                if (
+                    font.name
+                    and font.name != self.rules.font_name
+                    and not reported_font_name
+                ):
+                    sec.issues.append(
+                        FormatIssue(
+                            check_name="font_name",
+                            severity="fail",
+                            location=self._format_para_location(para.index),
+                            page=self._page_of(para.index),
+                            issue=f"Font bukan {self.rules.font_name}.",
+                            found=font.name,
+                            expected=self.rules.font_name,
+                        )
                     )
-                )
+                    reported_font_name = True
 
-            # Cek size (dengan toleransi ±font_size_tolerance_pt)
-            if font.size_pt is not None and abs(font.size_pt - self.rules.font_size_pt) > self.rules.font_size_tolerance_pt:
-                tol = self.rules.font_size_tolerance_pt
-                lo = round(self.rules.font_size_pt - tol, 2)
-                hi = round(self.rules.font_size_pt + tol, 2)
-                sec.issues.append(
-                    FormatIssue(
-                        check_name="font_size",
-                        severity="fail",
-                        location=self._format_para_location(para.index),
-                        page=self._page_of(para.index),
-                        issue=f"Ukuran font di luar rentang {lo}–{hi}pt.",
-                        found=f"{font.size_pt}pt",
-                        expected=f"{self.rules.font_size_pt}pt (toleransi ±{tol}pt, rentang {lo}–{hi}pt)",
+                if (
+                    font.size_pt is not None
+                    and abs(font.size_pt - self.rules.font_size_pt)
+                    > self.rules.font_size_tolerance_pt
+                    and not reported_font_size
+                ):
+                    tol = self.rules.font_size_tolerance_pt
+                    lo = round(self.rules.font_size_pt - tol, 2)
+                    hi = round(self.rules.font_size_pt + tol, 2)
+                    sec.issues.append(
+                        FormatIssue(
+                            check_name="font_size",
+                            severity="fail",
+                            location=self._format_para_location(para.index),
+                            page=self._page_of(para.index),
+                            issue=f"Ukuran font di luar rentang {lo}-{hi}pt.",
+                            found=f"{font.size_pt}pt",
+                            expected=f"{self.rules.font_size_pt}pt (toleransi +/-{tol}pt, rentang {lo}-{hi}pt)",
+                        )
                     )
-                )
+                    reported_font_size = True
+            if not checked_any_run:
+                font = self.resolver.resolve_paragraph_font(para.index)
+                if font.name:
+                    font_distribution[font.name] = font_distribution.get(font.name, 0) + 1
+                if font.size_pt is not None:
+                    size_distribution[font.size_pt] = size_distribution.get(font.size_pt, 0) + 1
 
         if sec.issues:
             sec.status = "fail"
@@ -555,11 +576,19 @@ class FormatChecker:
             if not matched_words:
                 continue
 
-            # Cek apakah ada run italic
-            has_italic_run = any(r.italic for r in para.runs)
-            # Heuristik kasar: kalau seluruh paragraf tidak ada run italic
-            # padahal mengandung kata asing → flag warning.
-            if not has_italic_run:
+            pattern_map = dict(patterns)
+            spans = self._run_text_spans(para)
+            bad_words = [
+                word
+                for word in matched_words
+                if not any(
+                    self._match_is_fully_italic(
+                        para.index, match.start(), match.end(), spans
+                    )
+                    for match in pattern_map[word].finditer(text)
+                )
+            ]
+            if bad_words:
                 sec.issues.append(
                     FormatIssue(
                         check_name="foreign_words_italic",
@@ -568,7 +597,7 @@ class FormatChecker:
                         page=self._page_of(para.index),
                         issue=(
                             f"Paragraf memuat kata/frasa asing "
-                            f"({', '.join(matched_words[:3])}) tapi tidak ada run italic. "
+                            f"({', '.join(bad_words[:3])}) tapi tidak ditulis italic. "
                             f"Bahasa asing wajib italic."
                         ),
                         found="tidak italic",
@@ -580,3 +609,40 @@ class FormatChecker:
             sec.status = "warning"
         sec.detail = {"violations_count": len(sec.issues)}
         return sec
+
+    @staticmethod
+    def _run_text_spans(para) -> list[tuple[int, int, int, str]]:
+        """Return (start, end, run_index, text) untuk memetakan match ke run."""
+        spans: list[tuple[int, int, int, str]] = []
+        cursor = 0
+        for run_index, run in enumerate(para.runs):
+            text = run.text or ""
+            start = cursor
+            cursor += len(text)
+            spans.append((start, cursor, run_index, text))
+        return spans
+
+    def _match_is_fully_italic(
+        self,
+        paragraph_index: int,
+        start: int,
+        end: int,
+        spans: list[tuple[int, int, int, str]],
+    ) -> bool:
+        """
+        True jika semua run yang memuat karakter non-spasi dalam match sudah
+        italic efektif. Frasa yang split antar-run tetap dicek dengan benar.
+        """
+        touched = False
+        for run_start, run_end, run_index, run_text in spans:
+            if run_end <= start or run_start >= end:
+                continue
+            local_start = max(start, run_start) - run_start
+            local_end = min(end, run_end) - run_start
+            if not run_text[local_start:local_end].strip():
+                continue
+            touched = True
+            font = self.resolver.resolve_run_font(paragraph_index, run_index)
+            if font.italic is not True:
+                return False
+        return touched
