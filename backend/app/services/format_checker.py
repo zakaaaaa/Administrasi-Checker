@@ -31,6 +31,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from app.services.ai_format_checker import _parse_caption_label
 from app.services.docx_parser import DocxParser, dxa_to_cm
 from app.services.message_format import format_finding
 from app.services.schema_rules import SchemaRules
@@ -127,6 +128,23 @@ def _is_figure_table_caption_paragraph(text: str) -> bool:
     if not stripped or len(stripped) > _MAX_CAPTION_PARAGRAPH_CHARS:
         return False
     return bool(_CAPTION_HEAD_RE.match(stripped))
+
+
+def _is_caption_to_skip(text: str) -> bool:
+    """
+    True jika paragraf adalah caption Gambar/Tabel yang HARUS di-skip oleh
+    cek format generik (font/spasi/alignment).
+
+    Pakai sumber kebenaran yang sama dengan AiFormatChecker
+    (`_parse_caption_label`, tanpa batas panjang) DITAMBAH heuristik
+    broad lama. Tujuannya: apa pun yang divalidasi AiFormatChecker
+    sebagai caption (TNR 11, 1,0 spasi, center) tidak boleh ikut
+    divonis ulang di sini → menghindari kontradiksi antar-section.
+    """
+    return (
+        _parse_caption_label(text) is not None
+        or _is_figure_table_caption_paragraph(text)
+    )
 
 
 # ============================================================================
@@ -430,7 +448,7 @@ class FormatChecker:
                 continue
             # Caption Gambar/Tabel punya aturan font sendiri (PKM-AI: TNR 11)
             # — divalidasi AiFormatChecker, jangan double-check di sini.
-            if _is_figure_table_caption_paragraph(para.text.strip()):
+            if _is_caption_to_skip(para.text.strip()):
                 continue
 
             # Resolve font level paragraf
@@ -504,7 +522,7 @@ class FormatChecker:
             if para.is_heading:
                 continue
             # Caption Gambar/Tabel: spasi sendiri (PKM-AI: 1.0), skip double-check.
-            if _is_figure_table_caption_paragraph(para.text.strip()):
+            if _is_caption_to_skip(para.text.strip()):
                 continue
             ls = para.line_spacing
             if ls is None:
@@ -555,7 +573,7 @@ class FormatChecker:
                 continue
             if para.is_heading:
                 continue
-            if _is_figure_table_caption_paragraph(text):
+            if _is_caption_to_skip(text):
                 continue
             align = para.alignment
             # python-docx return 'left'/'right'/'center'/'justify' atau None

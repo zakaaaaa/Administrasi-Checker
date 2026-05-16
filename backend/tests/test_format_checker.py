@@ -15,6 +15,7 @@ from app.services.format_checker import (
     FormatRules,
     FOREIGN_WORDS,
     _is_figure_table_caption_paragraph,
+    _is_caption_to_skip,
     get_pkm_format_rules,
 )
 from app.services.style_resolver import StyleResolver, ResolvedFont
@@ -377,6 +378,43 @@ class TestBodyStartIndex(unittest.TestCase):
         # Ubah paragraphs setelah cache terisi → hasil tetap (cached)
         fc.parser.paragraphs = []
         self.assertEqual(fc._body_start_index(), 1)
+
+
+# ============================================================================
+# Test: _is_caption_to_skip — konsisten dgn AiFormatChecker (anti-kontradiksi)
+# ============================================================================
+
+
+class TestIsCaptionToSkip(unittest.TestCase):
+    """
+    Apa pun yang divalidasi AiFormatChecker sebagai caption (TNR 11) tidak
+    boleh ikut divonis ulang oleh cek body generik (12pt) → tidak kontradiksi.
+    """
+
+    def test_long_descriptive_caption_skipped(self):
+        # > 280 char: ditolak _is_figure_table_caption_paragraph (batas 280),
+        # tapi tetap caption menurut AiFormatChecker → harus tetap di-skip.
+        long_cap = "Gambar 7. " + ("penjelasan diagram alir sistem " * 15)
+        self.assertGreater(len(long_cap), 280)
+        self.assertFalse(_is_figure_table_caption_paragraph(long_cap))
+        self.assertTrue(_is_caption_to_skip(long_cap))
+
+    def test_short_standard_caption_skipped(self):
+        self.assertTrue(_is_caption_to_skip("Gambar 1. Arsitektur sistem"))
+        self.assertTrue(_is_caption_to_skip("Tabel 2: Hasil pengujian"))
+
+    def test_plain_body_not_skipped(self):
+        body = (
+            "Pada bagian ini dijelaskan metode penelitian yang digunakan "
+            "untuk menganalisis data secara menyeluruh."
+        )
+        self.assertFalse(_is_caption_to_skip(body))
+
+    def test_mention_not_caption(self):
+        # "pada Gambar 1 terlihat ..." bukan caption (tak diawali label+titik)
+        self.assertFalse(
+            _is_caption_to_skip("Seperti pada Gambar 1 terlihat alurnya.")
+        )
 
 
 if __name__ == "__main__":
