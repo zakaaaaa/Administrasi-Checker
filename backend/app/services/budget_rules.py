@@ -200,3 +200,10 @@ def get_pkm_kc_budget_rules() -> BudgetRules:
             "Souvenir",
         ],
     )
+
+
+def get_pkm_vgk_budget_rules() -> BudgetRules:
+    """Aturan anggaran PKM-VGK 2026 — identik dengan PKM-KC."""
+    rules = get_pkm_kc_budget_rules()
+    rules.schema_code = "VGK"
+    return rules

@@ -15,5 +15,6 @@ export type CheckResults = {
     page_numbering: ModuleResult;
     budget: ModuleResult;
     reference: ModuleResult;
+    ai_front_matter?: ModuleResult;
   };
 };

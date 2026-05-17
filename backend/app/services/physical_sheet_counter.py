@@ -282,14 +282,17 @@ class PhysicalSheetCounter:
     # 2. Tidak ada titik berturut (".....") atau angka halaman setelahnya
     #    dalam jarak dekat — ciri khas entri ToC
     CORE_START_PATTERNS = [
-        # "BAB 1." / "BAB 1 " / "BAB I." / "BAB I " di awal baris,
-        # diikuti judul (huruf), bukan dot leader
+        # PKM-KC: "BAB 1." / "BAB I." di awal baris, diikuti huruf judul
         re.compile(r"(?:^|\n)\s*BAB\s*1\.?\s+[A-Z]", re.IGNORECASE),
         re.compile(r"(?:^|\n)\s*BAB\s*I\.?\s+(?!I)[A-Z]", re.IGNORECASE),
+        # PKM-AI: heading "Pendahuluan" standalone (tanpa "BAB")
+        re.compile(r"(?:^|\n)\s*Pendahuluan\s*(?:\n|$)", re.IGNORECASE),
     ]
-    # Akhir bagian inti = lembar terakhir dokumen yang masih bagian dari
-    # Lampiran. Untuk PKM, akhir bagian inti = lembar terakhir PDF.
-    # (asumsi: tidak ada appendix di luar LAMPIRAN)
+    # Akhir bagian inti = halaman sebelum LAMPIRAN dimulai.
+    # Jika tidak ada LAMPIRAN, fallback ke halaman terakhir PDF.
+    LAMPIRAN_START_PATTERNS = [
+        re.compile(r"(?:^|\n)\s*LAMPIRAN\b", re.IGNORECASE),
+    ]
 
     # Pattern tambahan untuk mendeteksi konteks ToC: kalau dalam window 80 char
     # setelah "BAB 1 PENDAHULUAN" ada dot leader (3+ titik) atau
@@ -425,7 +428,21 @@ class PhysicalSheetCounter:
         if core_first is None:
             return (None, None)
 
-        core_last = len(sheet_texts)
+        # Cari halaman pertama yang bertuliskan LAMPIRAN — core berakhir sebelumnya
+        core_last = len(sheet_texts)  # default: sampai akhir dokumen
+        for i in range(core_first - 1, len(sheet_texts)):
+            text = sheet_texts[i]
+            # Skip ToC sheets (dot leader ≥3)
+            dot_leader_count = len(self._TOC_CONTEXT_RE.findall(text))
+            if dot_leader_count >= 3:
+                continue
+            for pat in self.LAMPIRAN_START_PATTERNS:
+                if pat.search(text):
+                    core_last = i  # 1-based: halaman sebelum LAMPIRAN (i+1)
+                    break
+            if core_last != len(sheet_texts):
+                break
+
         return (core_first, core_last)
 
     # ------------------------------------------------------------------------

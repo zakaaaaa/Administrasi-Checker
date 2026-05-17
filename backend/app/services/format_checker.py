@@ -76,22 +76,132 @@ def get_pkm_format_rules() -> FormatRules:
 
 
 FOREIGN_WORDS = {
-    # Tech / IoT
-    "internet of things", "machine learning", "deep learning", "artificial intelligence",
-    "smart farming", "smart city", "big data", "cloud computing", "open source",
-    "real time", "real-time", "user interface", "user experience",
-    # Penelitian / metode
-    "literature review", "case study", "purposive sampling", "random sampling",
+    # ----------------------------------------------------------------
+    # AI / Machine Learning (PKM-KC, RE)
+    # ----------------------------------------------------------------
+    "artificial intelligence", "machine learning", "deep learning",
+    "natural language processing", "computer vision",
+    "neural network", "convolutional neural network",
+    "recurrent neural network", "long short-term memory",
+    "generative adversarial network", "transformer",
+    "transfer learning", "reinforcement learning",
+    "support vector machine", "random forest", "gradient boosting",
+    "naive bayes", "decision tree", "k-nearest neighbor",
+    "principal component analysis", "autoencoder",
+    "object detection", "image segmentation", "speech recognition",
+    "sentiment analysis", "text mining", "data mining",
+    "named entity recognition", "topic modeling",
+    "recommendation system", "collaborative filtering",
+    "knowledge graph", "fuzzy logic", "genetic algorithm",
+    # ----------------------------------------------------------------
+    # Teknologi / Sistem / IoT (PKM-KC)
+    # ----------------------------------------------------------------
+    "internet of things", "edge computing", "cloud computing",
+    "blockchain", "big data",
+    "augmented reality", "virtual reality", "mixed reality",
+    "smart city", "smart farming", "smart agriculture",
+    "embedded system", "microcontroller", "printed circuit board",
+    "3d printing", "additive manufacturing", "nanotechnology",
+    "image processing", "signal processing", "remote sensing",
+    "geographic information system", "finite element analysis",
+    "renewable energy",
+    # ----------------------------------------------------------------
+    # Software / Web / Sistem Informasi (PKM-KC, K)
+    # ----------------------------------------------------------------
+    "software", "hardware", "framework", "open source",
+    "website", "web application", "mobile application",
+    "user interface", "user experience", "dashboard", "prototype",
+    "database", "server", "client", "input", "output",
+    "real time", "real-time", "chatbot",
+    "online", "offline", "e-commerce", "marketplace",
+    "supply chain", "microservices", "devops", "agile", "scrum",
+    "usability testing", "user testing", "a/b testing",
+    "search engine optimization", "application programming interface",
+    # ----------------------------------------------------------------
+    # Metodologi Penelitian (PKM-RE, RSH)
+    # ----------------------------------------------------------------
+    "literature review", "systematic review", "case study",
+    "focus group discussion", "action research", "grounded theory",
+    "thematic analysis", "content analysis", "discourse analysis",
+    "triangulation", "mixed method",
+    "purposive sampling", "random sampling", "snowball sampling",
+    "cluster sampling", "stratified sampling", "convenience sampling",
+    "simple random sampling", "quota sampling",
+    "cross-sectional study", "longitudinal study", "cohort study",
+    "randomized controlled trial", "double blind",
+    "pilot study", "baseline study", "observational study",
+    "open access", "peer review",
+    # ----------------------------------------------------------------
+    # Statistik (PKM-RE, RSH)
+    # ----------------------------------------------------------------
+    "p-value", "t-test", "chi-square", "one-way anova", "two-way anova",
+    "goodness of fit", "effect size", "confidence interval",
+    "standard deviation", "mean square error", "root mean square error",
+    "regression analysis", "logistic regression", "multiple regression",
+    "factor analysis", "structural equation modeling", "path analysis",
+    "pearson correlation", "spearman correlation",
+    "inter-rater reliability", "cronbach alpha",
+    # ----------------------------------------------------------------
+    # Kesehatan / Biologi / Lingkungan (PKM-RE, PM, PI)
+    # ----------------------------------------------------------------
     "in vivo", "in vitro", "in situ", "ex situ",
-    # Bahasa Latin / akademik
+    "clinical trial", "randomized controlled trial",
+    "placebo", "biomarker", "screening", "follow-up",
+    "body mass index", "informed consent", "ethical clearance",
+    "point of care", "telemedicine", "wearable",
+    "carbon footprint", "sustainability", "biodiversity",
+    "ecosystem services", "food security",
+    "water treatment", "wastewater treatment",
+    "biomass", "biofuel", "biogas",
+    "hydroponics", "aquaponics", "vertical farming",
+    "precision agriculture",
+    # ----------------------------------------------------------------
+    # Bisnis / Kewirausahaan (PKM-K)
+    # ----------------------------------------------------------------
+    "marketing", "branding", "startup", "stakeholder",
+    "feedback", "endorsement", "ads",
+    "business model", "value proposition",
+    "cost benefit analysis", "return on investment",
+    "market research", "customer satisfaction",
+    "competitive advantage", "product development",
+    "supply chain management", "total quality management",
+    "key performance indicator", "break even point",
+    "cash flow", "business plan", "market share",
+    "brand awareness", "target market",
+    "digital marketing", "content marketing", "social media marketing",
+    "influencer", "copywriting",
+    "crowdfunding", "minimum viable product",
+    "business-to-business", "business-to-consumer",
+    "customer journey", "net promoter score",
+    "conversion rate", "click-through rate",
+    "outsourcing", "franchising", "dropship", "reseller",
+    "launching", "rebranding", "packaging",
+    "loyalty program", "omnichannel",
+    # ----------------------------------------------------------------
+    # Pendidikan (PKM-PM, RSH)
+    # ----------------------------------------------------------------
+    "blended learning", "e-learning",
+    "problem-based learning", "project-based learning",
+    "flipped classroom", "learning management system",
+    "student-centered learning", "collaborative learning",
+    "active learning", "critical thinking",
+    "higher order thinking", "self-regulated learning",
+    "peer learning",
+    # ----------------------------------------------------------------
+    # Sosial (PKM-RSH, PM)
+    # ----------------------------------------------------------------
+    "empowerment", "capacity building", "community development",
+    "social capital", "gender mainstreaming",
+    # ----------------------------------------------------------------
+    # Latin / Akademik
+    # ----------------------------------------------------------------
     "et cetera", "id est", "exempli gratia", "circa", "versus",
     "a priori", "a posteriori", "ad hoc", "de facto", "de jure",
     "status quo", "vice versa", "per se", "ipso facto",
-    # Statistik / publikasi
-    "p-value", "open access",
-    # Bisnis (untuk PKM-K)
-    "marketing", "branding", "startup", "stakeholder",
-    "feedback", "endorsement", "ads", "online", "offline",
+    "et al", "nota bene", "ibid", "op cit",
+    "bona fide", "prima facie", "caveat", "addendum",
+    "curriculum vitae", "ex officio", "pro rata",
+    "mutatis mutandis",
 }
 
 # Caption gambar/tabel (sering center / bukan justify). Hanya pola awal baris
@@ -109,14 +219,15 @@ _CAPTION_HEAD_RE = re.compile(
     r"\s*[.:)\-–—]?\s*",
     re.IGNORECASE | re.UNICODE,
 )
+_KETERANGAN_RE = re.compile(r"^\s*Keterangan\s*:", re.IGNORECASE)
 
 
 def _is_figure_table_caption_paragraph(text: str) -> bool:
-    """True jika paragraf tampak seperti satu baris caption gambar/tabel."""
+    """True jika paragraf adalah caption gambar/tabel atau keterangan tabel."""
     stripped = text.strip()
     if not stripped or len(stripped) > _MAX_CAPTION_PARAGRAPH_CHARS:
         return False
-    return bool(_CAPTION_HEAD_RE.match(stripped))
+    return bool(_CAPTION_HEAD_RE.match(stripped)) or bool(_KETERANGAN_RE.match(stripped))
 
 
 # ============================================================================
@@ -210,36 +321,101 @@ class FormatChecker:
         self.schema = schema  # opsional, untuk skip pengecekan tertentu nanti
         self.resolver = StyleResolver(parser)
 
+    _LAMPIRAN_RE = re.compile(r"^\s*LAMPIRAN\b", re.IGNORECASE)
+
+    def _find_lampiran_para_index(self, after_idx: Optional[int] = None) -> Optional[int]:
+        """Return index paragraf pertama yang merupakan heading LAMPIRAN, atau None.
+
+        Hanya mencari SETELAH after_idx (biasanya Bab 1) sehingga entri
+        "Lampiran 1. ..." di Daftar Lampiran (halaman 2-3) tidak di-false-positive.
+
+        Tiga kriteria diterima sebagai heading LAMPIRAN:
+        (a) pakai Heading style
+        (b) teks pendek (≤60 char) all-caps  — mis. "LAMPIRAN 1"
+        (c) teks pendek (≤80 char) + semua run bold — heading non-style umum PKM
+        """
+        for para in self.parser.paragraphs:
+            if after_idx is not None and para.index < after_idx:
+                continue
+            text = para.text.strip()
+            if not text or not self._LAMPIRAN_RE.match(text):
+                continue
+            if para.is_heading:
+                return para.index
+            if len(text) <= 60 and text == text.upper():
+                return para.index
+            text_runs = [r for r in para.runs if r.text.strip()]
+            if text_runs and all(r.bold is True for r in text_runs) and len(text) <= 80:
+                return para.index
+        return None
+
     def _format_para_location(self, paragraph_index: int) -> str:
         estimator = getattr(self.parser, "estimate_physical_page", None)
-        in_page_estimator = getattr(self.parser, "estimate_paragraph_index_in_page", None)
         page: Optional[int] = None
         if callable(estimator):
             raw = estimator(paragraph_index)
             if isinstance(raw, int):
                 page = raw
-        in_page: Optional[int] = None
-        if callable(in_page_estimator):
-            raw_in = in_page_estimator(paragraph_index)
-            if isinstance(raw_in, int):
-                in_page = raw_in
         if page is None:
             return f"Paragraf #{paragraph_index}"
-        if in_page is None or in_page <= 0:
-            return f"Halaman fisik ~{page}, paragraf #{paragraph_index}"
-        return f"Halaman fisik ~{page}, paragraf ke-{in_page} (global #{paragraph_index})"
+        return f"Halaman ~{page}"
 
-    def check(self) -> FormatCheckResult:
+    def _section_location(self, section_index: int) -> str:
+        """Return 'Halaman ~N' untuk halaman pertama section, atau 'Section #N' sebagai fallback."""
+        estimator = getattr(self.parser, "estimate_physical_page", None)
+        if not callable(estimator):
+            return f"Section #{section_index}"
+
+        W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        try:
+            body = self.parser.document_xml.find(f"{{{W}}}body")
+        except Exception:
+            return f"Section #{section_index}"
+        if body is None:
+            return f"Section #{section_index}"
+
+        para_idx = -1
+        cur_sec = 0
+        sec_first_para = 0
+
+        for child in body:
+            if child.tag == f"{{{W}}}p":
+                para_idx += 1
+                ppr = child.find(f"{{{W}}}pPr")
+                if ppr is not None and ppr.find(f"{{{W}}}sectPr") is not None:
+                    if cur_sec == section_index:
+                        page = estimator(sec_first_para)
+                        return f"Halaman ~{page}" if page is not None else f"Section #{section_index}"
+                    cur_sec += 1
+                    sec_first_para = para_idx + 1
+            elif child.tag == f"{{{W}}}sectPr":
+                if cur_sec == section_index:
+                    page = estimator(sec_first_para)
+                    return f"Halaman ~{page}" if page is not None else f"Section #{section_index}"
+
+        # Section terakhir (tidak diakhiri sectPr dalam paragraf)
+        if cur_sec == section_index:
+            page = estimator(sec_first_para)
+            return f"Halaman ~{page}" if page is not None else f"Section #{section_index}"
+
+        return f"Section #{section_index}"
+
+    def check(self, start_para_idx: Optional[int] = None) -> FormatCheckResult:
         result = FormatCheckResult(status="pass")
+
+        # Batas paragraf: skip front matter (start_para_idx) dan stop sebelum LAMPIRAN.
+        # Cari LAMPIRAN hanya setelah start_para_idx agar entri Daftar Lampiran
+        # di halaman awal tidak di-false-positive sebagai batas akhir.
+        lampiran_idx = self._find_lampiran_para_index(after_idx=start_para_idx)
 
         # Jalankan tiap sub-check
         result.checks["paper_size"] = self._check_paper_size()
         result.checks["margin"] = self._check_margin()
-        result.checks["font_body"] = self._check_font_body()
-        result.checks["line_spacing"] = self._check_line_spacing()
+        result.checks["font_body"] = self._check_font_body(lampiran_idx, start_para_idx)
+        result.checks["line_spacing"] = self._check_line_spacing(lampiran_idx, start_para_idx)
         if self.rules.require_justify:
-            result.checks["alignment"] = self._check_alignment()
-        result.checks["foreign_words_italic"] = self._check_foreign_words_italic()
+            result.checks["alignment"] = self._check_alignment(lampiran_idx, start_para_idx)
+        result.checks["foreign_words_italic"] = self._check_foreign_words_italic(lampiran_idx, start_para_idx)
 
         # Aggregate status
         statuses = [s.status for s in result.checks.values()]
@@ -346,7 +522,7 @@ class FormatChecker:
                         FormatIssue(
                             check_name="margin",
                             severity="fail",
-                            location=f"Section #{s.index}",
+                            location=self._section_location(s.index),
                             issue=f"Margin {side} tidak sesuai aturan PKM.",
                             found=f"{act} cm",
                             expected=f"{exp} cm (toleransi ±{tol} cm)",
@@ -365,21 +541,25 @@ class FormatChecker:
     # Sub-check: font body
     # ------------------------------------------------------------------------
 
-    def _check_font_body(self) -> FormatCheckSection:
+    def _check_font_body(self, lampiran_idx: Optional[int] = None, start_para_idx: Optional[int] = None) -> FormatCheckSection:
         """
-        Cek font seluruh body. Skip:
-        - Paragraf di dalam tabel (bisa ada penyesuaian formatting wajar)
-        - Heading (style bisa pakai font berbeda by design)
-        - Paragraf kosong
+        Cek font body (dari start_para_idx sampai sebelum LAMPIRAN). Skip:
+        - Heading, paragraf kosong
         """
         sec = FormatCheckSection(name="font_body", status="pass")
         font_distribution: dict[str, int] = {}
         size_distribution: dict[float, int] = {}
 
         for para in self.parser.paragraphs:
+            if start_para_idx is not None and para.index < start_para_idx:
+                continue
+            if lampiran_idx is not None and para.index >= lampiran_idx:
+                break
             if not para.text.strip():
                 continue
             if para.is_heading:
+                continue
+            if _is_figure_table_caption_paragraph(para.text):
                 continue
 
             # Resolve font level paragraf
@@ -391,6 +571,9 @@ class FormatChecker:
             if font.size_pt is not None:
                 size_distribution[font.size_pt] = size_distribution.get(font.size_pt, 0) + 1
 
+            raw = para.text.strip()
+            snippet = raw[:60] + ("…" if len(raw) > 60 else "")
+
             # Cek font name
             if font.name and font.name != self.rules.font_name:
                 sec.issues.append(
@@ -398,7 +581,7 @@ class FormatChecker:
                         check_name="font_name",
                         severity="fail",
                         location=self._format_para_location(para.index),
-                        issue=f"Font bukan {self.rules.font_name}.",
+                        issue=f"Font bukan {self.rules.font_name} — \"{snippet}\"",
                         found=font.name,
                         expected=self.rules.font_name,
                     )
@@ -406,17 +589,14 @@ class FormatChecker:
 
             # Cek size (dengan toleransi ±font_size_tolerance_pt)
             if font.size_pt is not None and abs(font.size_pt - self.rules.font_size_pt) > self.rules.font_size_tolerance_pt:
-                tol = self.rules.font_size_tolerance_pt
-                lo = round(self.rules.font_size_pt - tol, 2)
-                hi = round(self.rules.font_size_pt + tol, 2)
                 sec.issues.append(
                     FormatIssue(
                         check_name="font_size",
                         severity="fail",
                         location=self._format_para_location(para.index),
-                        issue=f"Ukuran font di luar rentang {lo}–{hi}pt.",
+                        issue=f"Ukuran Font bukan 12 — \"{snippet}\"",
                         found=f"{font.size_pt}pt",
-                        expected=f"{self.rules.font_size_pt}pt (toleransi ±{tol}pt, rentang {lo}–{hi}pt)",
+                        expected=f"{self.rules.font_size_pt}pt",
                     )
                 )
 
@@ -438,14 +618,20 @@ class FormatChecker:
     # Sub-check: line spacing
     # ------------------------------------------------------------------------
 
-    def _check_line_spacing(self) -> FormatCheckSection:
+    def _check_line_spacing(self, lampiran_idx: Optional[int] = None, start_para_idx: Optional[int] = None) -> FormatCheckSection:
         sec = FormatCheckSection(name="line_spacing", status="pass")
         tol = self.rules.line_spacing_tolerance
         spacing_distribution: dict[float, int] = {}
         for para in self.parser.paragraphs:
+            if start_para_idx is not None and para.index < start_para_idx:
+                continue
+            if lampiran_idx is not None and para.index >= lampiran_idx:
+                break
             if not para.text.strip():
                 continue
             if para.is_heading:
+                continue
+            if _is_figure_table_caption_paragraph(para.text):
                 continue
             ls = para.line_spacing
             if ls is None:
@@ -478,15 +664,17 @@ class FormatChecker:
     # Sub-check: alignment (justify)
     # ------------------------------------------------------------------------
 
-    def _check_alignment(self) -> FormatCheckSection:
+    def _check_alignment(self, lampiran_idx: Optional[int] = None, start_para_idx: Optional[int] = None) -> FormatCheckSection:
         """
-        Body teks PKM wajib justify. Skip:
-        - Heading (biasanya center)
-        - Paragraf pendek <30 char (judul tabel/gambar, dll)
-        - Satu baris caption Gambar/Figure/Tabel/… (umumnya center, bukan justify)
+        Body teks PKM wajib justify (dari start_para_idx sampai sebelum LAMPIRAN). Skip:
+        - Heading, paragraf pendek <30 char, caption gambar/tabel
         """
         sec = FormatCheckSection(name="alignment", status="pass")
         for para in self.parser.paragraphs:
+            if start_para_idx is not None and para.index < start_para_idx:
+                continue
+            if lampiran_idx is not None and para.index >= lampiran_idx:
+                break
             text = para.text.strip()
             if len(text) < 30:
                 continue
@@ -525,7 +713,7 @@ class FormatChecker:
     # Sub-check: foreign words italic
     # ------------------------------------------------------------------------
 
-    def _check_foreign_words_italic(self) -> FormatCheckSection:
+    def _check_foreign_words_italic(self, lampiran_idx: Optional[int] = None, start_para_idx: Optional[int] = None) -> FormatCheckSection:
         """
         Untuk tiap kata/frasa asing di FOREIGN_WORDS yang muncul di body teks,
         cek apakah run yang memuatnya italic. Kalau tidak → warning.
@@ -546,6 +734,10 @@ class FormatChecker:
         ]
 
         for para in self.parser.paragraphs:
+            if start_para_idx is not None and para.index < start_para_idx:
+                continue
+            if lampiran_idx is not None and para.index >= lampiran_idx:
+                break
             text = para.text
             if not text.strip():
                 continue
@@ -568,7 +760,7 @@ class FormatChecker:
                 sec.issues.append(
                     FormatIssue(
                         check_name="foreign_words_italic",
-                        severity="warning",
+                        severity="fail",
                         location=self._format_para_location(para.index),
                         issue=(
                             f"Paragraf memuat kata/frasa asing "
@@ -581,6 +773,6 @@ class FormatChecker:
                 )
 
         if sec.issues:
-            sec.status = "warning"
+            sec.status = "fail"
         sec.detail = {"violations_count": len(sec.issues)}
         return sec

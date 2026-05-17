@@ -22,8 +22,12 @@ Output:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Optional
+
+_MONTH_RE = re.compile(r"(\d+)\s*(?:bulan|bln)", re.IGNORECASE)
+_MAX_DURATION_MONTHS = 4
 
 from app.services.budget_rules import BudgetRules, BudgetCategory
 from app.services.budget_table_parser import (
@@ -97,6 +101,15 @@ class ProhibitedItemFinding:
 
 
 @dataclass
+class VolumeDurationViolation:
+    description: str
+    category: Optional[str]
+    volume: str
+    months: int
+    approx_page: Optional[int] = None
+
+
+@dataclass
 class CheckMessage:
     level: str
     text: str
@@ -114,6 +127,7 @@ class BudgetAuditResult:
     cross_check_discrepancies: list[CrossCheckDiscrepancy] = field(default_factory=list)
     relocation_items: list[RelocationItem] = field(default_factory=list)
     prohibited_items: list[ProhibitedItemFinding] = field(default_factory=list)
+    volume_duration_violations: list[VolumeDurationViolation] = field(default_factory=list)
     bab4_grand_total_rp: Optional[int] = None
     lampiran2_grand_total_rp: Optional[int] = None
     messages: list[CheckMessage] = field(default_factory=list)
@@ -187,6 +201,16 @@ class BudgetAuditResult:
                     "approx_page": p.approx_page,
                 }
                 for p in self.prohibited_items
+            ],
+            "volume_duration_violations": [
+                {
+                    "description": v.description,
+                    "category": v.category,
+                    "volume": v.volume,
+                    "months": v.months,
+                    "approx_page": v.approx_page,
+                }
+                for v in self.volume_duration_violations
             ],
             "messages": [{"level": m.level, "text": m.text} for m in self.messages],
         }
@@ -263,6 +287,10 @@ class BudgetAuditor:
         # Lapis 6: Item terlarang
         if lamp2:
             self._scan_prohibited(result, lamp2)
+
+        # Lapis 7: Volume berjangka waktu melebihi batas
+        if lamp2:
+            self._scan_volume_duration(result, lamp2)
 
         # Aggregate status
         self._finalize_status(result)
@@ -628,6 +656,36 @@ class BudgetAuditor:
                     break  # Satu match per item cukup
 
     # ------------------------------------------------------------------------
+    # Lapis 7: Volume berjangka waktu > 4 bulan
+    # ------------------------------------------------------------------------
+
+    def _scan_volume_duration(
+        self, result: BudgetAuditResult, lamp2: Lampiran2ParseResult
+    ) -> None:
+        for item in lamp2.items:
+            if not item.volume:
+                continue
+            m = _MONTH_RE.search(item.volume)
+            if not m:
+                continue
+            months = int(m.group(1))
+            if months > _MAX_DURATION_MONTHS:
+                page: Optional[int] = None
+                if item.table_index >= 0 and item.row_index >= 0:
+                    page = self.parser.estimate_page_for_table_cell(
+                        item.table_index, item.row_index, 0
+                    )
+                result.volume_duration_violations.append(
+                    VolumeDurationViolation(
+                        description=item.description,
+                        category=item.category,
+                        volume=item.volume,
+                        months=months,
+                        approx_page=page,
+                    )
+                )
+
+    # ------------------------------------------------------------------------
     # Finalize status & messages
     # ------------------------------------------------------------------------
 
@@ -729,6 +787,23 @@ class BudgetAuditor:
                             f"({'Rp' + format(p.amount_rp, ',') if p.amount_rp else 'nilai tidak terbaca'}) "
                             f"— mengandung kata kunci '{p.matched_keyword}' yang dilarang "
                             f"di {self.rules.competition_code}-{self.rules.schema_code}."
+                        ),
+                    )
+                )
+
+        # Volume duration violations
+        if result.volume_duration_violations:
+            has_fail = True
+            for v in result.volume_duration_violations:
+                loc = f"[Halaman ~{v.approx_page}] " if v.approx_page is not None else ""
+                cat_txt = f" (kategori: {v.category})" if v.category else ""
+                result.messages.append(
+                    CheckMessage(
+                        level="fail",
+                        text=(
+                            f"{loc}Volume berjangka waktu melebihi batas: '{v.description}'{cat_txt} "
+                            f"— volume '{v.volume}' ({v.months} bulan) melebihi maksimum "
+                            f"{_MAX_DURATION_MONTHS} bulan yang diperbolehkan."
                         ),
                     )
                 )

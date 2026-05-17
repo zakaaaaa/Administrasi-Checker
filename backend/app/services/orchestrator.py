@@ -10,11 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from app.services.docx_parser import DocxParser
-from app.services.schema_rules import get_pkm_kc_proposal_rules
-from app.services.budget_rules import get_pkm_kc_budget_rules
+from app.services.schema_rules import get_pkm_kc_proposal_rules, get_pkm_ai_proposal_rules, get_pkm_vgk_proposal_rules
+from app.services.budget_rules import get_pkm_kc_budget_rules, get_pkm_vgk_budget_rules
 from app.services.structure_checker import StructureChecker
 from app.services.physical_sheet_counter import PhysicalSheetCounter
 from app.services.format_checker import FormatChecker
+from app.services.pkm_ai_format_checker import PkmAiFormatChecker
 from app.services.page_numbering_checker import PageNumberingChecker
 from app.services.budget_auditor import BudgetAuditor
 from app.services.reference_validator import ReferenceValidator
@@ -22,6 +23,16 @@ from app.services.reference_validator import ReferenceValidator
 
 class UnsupportedSchemaError(ValueError):
     pass
+
+
+def _find_core_start_idx(structure_result) -> Optional[int]:
+    """Return paragraph index section inti pertama (Bab 1), atau None."""
+    if structure_result is None:
+        return None
+    core_found = [s for s in structure_result.found_sections if s.is_core]
+    if not core_found:
+        return None
+    return min(s.paragraph_index for s in core_found)
 
 
 def _module_error_payload(exc: BaseException) -> dict[str, Any]:
@@ -51,29 +62,42 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
         FileNotFoundError: jika docx_path tidak ada
         Exception: error lain dari checker (bubble up ke caller)
     """
-    # Validasi kombinasi
-    if (req.competition, req.report_type, req.schema_code) != ("PKM", "PROPOSAL", "PKM-KC"):
-        raise UnsupportedSchemaError(
-            f"Belum di-support: {req.competition}/{req.report_type}/{req.schema_code}. "
-            "Saat ini hanya PKM/PROPOSAL/PKM-KC."
-        )
-
     docx_path = Path(req.docx_path)
     if not docx_path.exists():
         raise FileNotFoundError(f"File tidak ditemukan: {docx_path}")
 
-    # Setup
     parser = DocxParser(str(docx_path))
+    key = (req.competition, req.report_type, req.schema_code)
+
+    if key == ("PKM", "PROPOSAL", "PKM-KC"):
+        return _run_pkm_kc(parser)
+    elif key == ("PKM", "PROPOSAL", "PKM-VGK"):
+        return _run_pkm_vgk(parser)
+    elif key == ("PKM", "SCIENTIFIC_ARTICLE", "PKM-AI"):
+        return _run_pkm_ai(parser)
+    else:
+        raise UnsupportedSchemaError(
+            f"Belum di-support: {req.competition}/{req.report_type}/{req.schema_code}. "
+            "Skema yang tersedia: PKM/PROPOSAL/PKM-KC, PKM/PROPOSAL/PKM-VGK, PKM/SCIENTIFIC_ARTICLE/PKM-AI."
+        )
+
+
+# ============================================================================
+# Runner PKM-KC
+# ============================================================================
+
+
+def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
     schema = get_pkm_kc_proposal_rules()
     budget_rules = get_pkm_kc_budget_rules()
-
     results: dict[str, Any] = {}
     statuses: list[str] = []
 
     # 1. Structure
+    structure_result = None
     try:
-        r = StructureChecker(parser, schema).check()
-        results["structure"] = r.to_dict()
+        structure_result = StructureChecker(parser, schema).check()
+        results["structure"] = structure_result.to_dict()
         statuses.append(_extract_status(results["structure"]))
     except Exception as e:
         results["structure"] = _module_error_payload(e)
@@ -88,9 +112,11 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
         results["physical_sheet"] = _module_error_payload(e)
         statuses.append("error")
 
-    # 3. Format
+    # 3. Format (bagian inti: Bab 1 s.d. sebelum Lampiran)
     try:
-        r = FormatChecker(parser, schema=schema).check()
+        r = FormatChecker(parser, schema=schema).check(
+            start_para_idx=_find_core_start_idx(structure_result)
+        )
         results["format"] = r.to_dict()
         statuses.append(_extract_status(results["format"]))
     except Exception as e:
@@ -114,6 +140,162 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
     except Exception as e:
         results["budget"] = _module_error_payload(e)
         statuses.append("error")
+
+    # 6. Reference
+    try:
+        r = ReferenceValidator(parser, schema).check()
+        results["reference"] = r.to_dict()
+        statuses.append(_extract_status(results["reference"]))
+    except Exception as e:
+        results["reference"] = _module_error_payload(e)
+        statuses.append("error")
+
+    results["overall_status"] = _aggregate_status(statuses)
+    return results
+
+
+# ============================================================================
+# Runner PKM-VGK
+# ============================================================================
+
+
+def _run_pkm_vgk(parser: DocxParser) -> dict[str, Any]:
+    schema = get_pkm_vgk_proposal_rules()
+    budget_rules = get_pkm_vgk_budget_rules()
+    results: dict[str, Any] = {}
+    statuses: list[str] = []
+
+    # 1. Structure
+    structure_result = None
+    try:
+        structure_result = StructureChecker(parser, schema).check()
+        results["structure"] = structure_result.to_dict()
+        statuses.append(_extract_status(results["structure"]))
+    except Exception as e:
+        results["structure"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 2. Physical Sheet
+    try:
+        r = PhysicalSheetCounter(parser, schema).check()
+        results["physical_sheet"] = r.to_dict()
+        statuses.append(_extract_status(results["physical_sheet"]))
+    except Exception as e:
+        results["physical_sheet"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 3. Format (bagian inti: Bab 1 s.d. sebelum Lampiran)
+    try:
+        r = FormatChecker(parser, schema=schema).check(
+            start_para_idx=_find_core_start_idx(structure_result)
+        )
+        results["format"] = r.to_dict()
+        statuses.append(_extract_status(results["format"]))
+    except Exception as e:
+        results["format"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 4. Page Numbering
+    try:
+        r = PageNumberingChecker(parser, schema).check()
+        results["page_numbering"] = r.to_dict()
+        statuses.append(_extract_status(results["page_numbering"]))
+    except Exception as e:
+        results["page_numbering"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 5. Budget
+    try:
+        r = BudgetAuditor(parser, budget_rules).check()
+        results["budget"] = r.to_dict()
+        statuses.append(_extract_status(results["budget"]))
+    except Exception as e:
+        results["budget"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 6. Reference
+    try:
+        r = ReferenceValidator(parser, schema).check()
+        results["reference"] = r.to_dict()
+        statuses.append(_extract_status(results["reference"]))
+    except Exception as e:
+        results["reference"] = _module_error_payload(e)
+        statuses.append("error")
+
+    results["overall_status"] = _aggregate_status(statuses)
+    return results
+
+
+# ============================================================================
+# Runner PKM-AI
+# ============================================================================
+
+
+def _run_pkm_ai(parser: DocxParser) -> dict[str, Any]:
+    schema = get_pkm_ai_proposal_rules()
+    results: dict[str, Any] = {}
+    statuses: list[str] = []
+
+    # 1. Structure
+    try:
+        r = StructureChecker(parser, schema).check()
+        results["structure"] = r.to_dict()
+        statuses.append(_extract_status(results["structure"]))
+    except Exception as e:
+        results["structure"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 2. Physical Sheet (8–15 halaman, ditangani via SHEET_COUNT_RULES)
+    try:
+        r = PhysicalSheetCounter(parser, schema).check()
+        results["physical_sheet"] = r.to_dict()
+        statuses.append(_extract_status(results["physical_sheet"]))
+    except Exception as e:
+        results["physical_sheet"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 3a. Format front matter (judul, penulis, abstrak) — khusus PKM-AI
+    ai_format_status = "pass"
+    try:
+        ai_fmt = PkmAiFormatChecker(parser, schema).check()
+        results["ai_front_matter"] = ai_fmt.to_dict()
+        ai_format_status = _extract_status(results["ai_front_matter"])
+        statuses.append(ai_format_status)
+    except Exception as e:
+        results["ai_front_matter"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 3b. Format body (mulai BAB 1, stop sebelum Lampiran)
+    try:
+        # Temukan index paragraf "Pendahuluan" untuk skip front matter
+        import re as _re
+        _pendahuluan_re = _re.compile(r"^\s*(?:Pendahuluan|PENDAHULUAN)\s*$", _re.IGNORECASE)
+        bab1_idx = next(
+            (p.index for p in parser.paragraphs if _pendahuluan_re.match(p.text.strip())),
+            None,
+        )
+        r = FormatChecker(parser, schema=schema).check(start_para_idx=bab1_idx)
+        results["format"] = r.to_dict()
+        statuses.append(_extract_status(results["format"]))
+    except Exception as e:
+        results["format"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 4. Page Numbering
+    try:
+        r = PageNumberingChecker(parser, schema).check()
+        results["page_numbering"] = r.to_dict()
+        statuses.append(_extract_status(results["page_numbering"]))
+    except Exception as e:
+        results["page_numbering"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 5. Budget — tidak ada di PKM-AI
+    results["budget"] = {
+        "status": "pass",
+        "messages": [{"level": "pass", "text": "Anggaran biaya tidak diperlukan untuk PKM-AI."}],
+    }
+    statuses.append("pass")
 
     # 6. Reference
     try:

@@ -439,7 +439,7 @@ class DocxParser:
                     continue
                 if self._looks_like_toc_entry(text):
                     continue
-                if not self._looks_like_heading_fallback(text):
+                if not self._looks_like_heading_fallback(text, para=para):
                     continue
                 cmp_text = text if case_sensitive else text.upper()
                 for name in list(missing):
@@ -470,11 +470,12 @@ class DocxParser:
         return False
 
     @staticmethod
-    def _looks_like_heading_fallback(text: str) -> bool:
+    def _looks_like_heading_fallback(text: str, para=None) -> bool:
         """
         Heuristik heading saat style Heading tidak dipakai:
         - Pola BAB N...
-        - Atau mayoritas huruf uppercase (mis. DAFTAR PUSTAKA, LAMPIRAN)
+        - Mayoritas huruf uppercase (mis. DAFTAR PUSTAKA, LAMPIRAN)
+        - Paragraf pendek (≤60 char) dengan semua run explicitly bold
         """
         t = text.strip()
         if not t:
@@ -485,7 +486,13 @@ class DocxParser:
         if not letters:
             return False
         upper_ratio = sum(1 for c in letters if c.isupper()) / len(letters)
-        return upper_ratio >= 0.8
+        if upper_ratio >= 0.8:
+            return True
+        if para is not None and len(t) <= 60:
+            text_runs = [r for r in para.runs if r.text.strip()]
+            if text_runs and all(r.bold is True for r in text_runs):
+                return True
+        return False
 
     def read_raw_part(self, part_name: str) -> Optional[bytes]:
         """

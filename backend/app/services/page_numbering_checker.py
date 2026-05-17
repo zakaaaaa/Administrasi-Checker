@@ -848,6 +848,17 @@ class PageNumberingChecker:
             )
             return
 
-        # Fail/warning — list semua finding sebagai message
+        # Fail/warning — list semua finding sebagai message, prefix dengan halaman
+        para_ranges = self._compute_section_paragraph_ranges()
+        estimator = getattr(self.parser, "estimate_physical_page", None)
+
         for f in result.findings:
-            result.messages.append(CheckMessage(level=f.severity, text=f.message))
+            loc = ""
+            if f.section_index is not None and callable(estimator):
+                range_info = para_ranges.get(f.section_index)
+                if range_info is not None:
+                    page = estimator(range_info[0])
+                    if page is not None:
+                        loc = f"Halaman ~{page}"
+            text = f"[{loc}] {f.message}" if loc else f.message
+            result.messages.append(CheckMessage(level=f.severity, text=text))

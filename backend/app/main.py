@@ -32,7 +32,7 @@ REPORT_TYPES = {
         {"code": "PROPOSAL", "name": "Proposal", "active": True},
         {"code": "PROGRESS_REPORT", "name": "Laporan Kemajuan", "active": False},
         {"code": "FINAL_REPORT", "name": "Laporan Akhir", "active": False},
-        {"code": "SCIENTIFIC_ARTICLE", "name": "Artikel Ilmiah", "active": False},
+        {"code": "SCIENTIFIC_ARTICLE", "name": "Artikel Ilmiah", "active": True},
     ],
 }
 SCHEMAS = {
@@ -45,7 +45,10 @@ SCHEMAS = {
         {"code": "PKM-PI", "name": "Penerapan Iptek", "active": False},
         {"code": "PKM-KI", "name": "Karya Inovatif", "active": False},
         {"code": "PKM-GFT", "name": "Gagasan Futuristik Tertulis", "active": False},
-        {"code": "PKM-VGK", "name": "Video Gagasan Konstruktif", "active": False},
+        {"code": "PKM-VGK", "name": "Video Gagasan Konstruktif", "active": True},
+    ],
+    ("PKM", "SCIENTIFIC_ARTICLE"): [
+        {"code": "PKM-AI", "name": "Artikel Ilmiah", "active": True},
     ],
 }
 

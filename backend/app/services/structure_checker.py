@@ -194,9 +194,10 @@ def _looks_like_toc_line(text: str) -> bool:
     return False
 
 
-def _looks_like_heading_candidate(text: str) -> bool:
+def _looks_like_heading_candidate(text: str, para=None) -> bool:
     """
     Kandidat judul section saat style Heading tidak konsisten.
+    Termasuk: pola BAB N, mayoritas uppercase, atau paragraf pendek all-bold.
     """
     t = text.strip()
     if not t:
@@ -207,7 +208,14 @@ def _looks_like_heading_candidate(text: str) -> bool:
     if not letters:
         return False
     upper_ratio = sum(1 for c in letters if c.isupper()) / len(letters)
-    return upper_ratio >= 0.8
+    if upper_ratio >= 0.8:
+        return True
+    # Paragraf pendek (≤60 char) dengan semua run explicitly bold = heading
+    if para is not None and len(t) <= 60:
+        text_runs = [r for r in para.runs if r.text.strip()]
+        if text_runs and all(r.bold is True for r in text_runs):
+            return True
+    return False
 
 
 # ============================================================================
@@ -279,7 +287,7 @@ class StructureChecker:
             # Skip baris daftar isi yang sering false-positive.
             if _looks_like_toc_line(text):
                 continue
-            if not para.is_heading and not _looks_like_heading_candidate(text):
+            if not para.is_heading and not _looks_like_heading_candidate(text, para=para):
                 continue
             # Dokumen real sering pakai style Normal untuk judul section.
             # Tetap izinkan selama text cocok rule.
