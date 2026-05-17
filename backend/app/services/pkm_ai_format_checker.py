@@ -204,8 +204,8 @@ class PkmAiFormatChecker:
 
     def _check_author_font(self, bab1_idx: Optional[int]) -> FormatCheckSection:
         """
-        Zona penulis: paragraf setelah judul (pertama) sampai sebelum
-        heading Abstrak atau Abstract.
+        Zona penulis: paragraf setelah judul sampai sebelum heading Abstrak/Abstract.
+        Aturan PKM-AI: TNR 10pt, cetak normal (tidak bold, tidak italic).
         """
         sec = FormatCheckSection(name="author_font", status="pass")
 
@@ -219,30 +219,66 @@ class PkmAiFormatChecker:
                 title_passed = True
                 continue  # skip judul
 
-            # Berhenti di heading Abstrak/Abstract
             if self._ABSTRAK_ID_RE.match(text) or self._ABSTRACT_EN_RE.match(text):
                 break
 
-            font = self.resolver.resolve_paragraph_font(para.index)
+            snippet = text[:60] + ("…" if len(text) > 60 else "")
+            para_font = self.resolver.resolve_paragraph_font(para.index)
 
-            if font.name and font.name != "Times New Roman":
+            # Cek font name dan size per run (run override > paragraph default)
+            for run in para.runs:
+                if not run.text.strip():
+                    continue
+                if any(ord(c) > 127 for c in run.text):
+                    continue  # skip run dengan karakter non-ASCII
+
+                eff_name = run.font_name if run.font_name else para_font.name
+                eff_size = run.font_size_pt if run.font_size_pt is not None else para_font.size_pt
+
+                if eff_name and eff_name != "Times New Roman":
+                    sec.issues.append(FormatIssue(
+                        check_name="author_font_name",
+                        severity="fail",
+                        location=f"Penulis/Institusi",
+                        issue=f"Font nama penulis/institusi bukan Times New Roman — \"{snippet}\"",
+                        found=eff_name,
+                        expected="Times New Roman",
+                    ))
+                    break
+
+                if eff_size is not None and abs(eff_size - 10.0) > 0.3:
+                    sec.issues.append(FormatIssue(
+                        check_name="author_font_size",
+                        severity="fail",
+                        location=f"Penulis/Institusi",
+                        issue=f"Ukuran font nama penulis/institusi bukan 10pt — \"{snippet}\"",
+                        found=f"{eff_size}pt",
+                        expected="10pt",
+                    ))
+                    break
+
+            # Cek cetak normal: tidak bold, tidak italic
+            bold_runs = [r for r in para.runs if r.text.strip() and r.bold is True]
+            italic_runs = [r for r in para.runs if r.text.strip() and r.italic is True]
+
+            if bold_runs:
                 sec.issues.append(FormatIssue(
-                    check_name="author_font_name",
+                    check_name="author_bold",
                     severity="fail",
-                    location=f"Penulis/Institusi (paragraf #{para.index})",
-                    issue="Font nama penulis/institusi bukan Times New Roman.",
-                    found=font.name,
-                    expected="Times New Roman",
+                    location="Penulis/Institusi",
+                    issue=f"Nama penulis/institusi harus cetak normal, bukan tebal (bold) — \"{snippet}\"",
+                    found="bold",
+                    expected="normal",
                 ))
 
-            if font.size_pt is not None and abs(font.size_pt - 10.0) > 0.3:
+            if italic_runs:
                 sec.issues.append(FormatIssue(
-                    check_name="author_font_size",
+                    check_name="author_italic",
                     severity="fail",
-                    location=f"Penulis/Institusi (paragraf #{para.index})",
-                    issue=f"Ukuran font nama penulis/institusi bukan 10pt.",
-                    found=f"{font.size_pt}pt",
-                    expected="10pt",
+                    location="Penulis/Institusi",
+                    issue=f"Nama penulis/institusi harus cetak normal, bukan miring (italic) — \"{snippet}\"",
+                    found="italic",
+                    expected="normal",
                 ))
 
             if len(sec.issues) >= self.MAX_ISSUES:
@@ -258,36 +294,35 @@ class PkmAiFormatChecker:
 
     def _check_abstract(self, lang: str, bab1_idx: Optional[int]) -> FormatCheckSection:
         """
-        lang='id': Abstrak Indonesia — TNR 11pt, tegak (tidak italic), justified, ≤250 kata.
-        lang='en': Abstract English  — TNR 11pt, miring (italic), justified, ≤250 kata.
+        lang='id': Abstrak Indonesia — TNR 11pt, tegak (tidak italic), ≤250 kata.
+        lang='en': Abstract English  — TNR 11pt, miring (italic), ≤250 kata.
+        Kata-kata kunci juga wajib TNR 11pt (dicek terpisah dari word count).
         """
         is_id = lang == "id"
         label = "Abstrak (Indonesia)" if is_id else "Abstract (English)"
+        kw_label = "Kata-kata kunci" if is_id else "Keywords"
         sec = FormatCheckSection(name=f"abstract_{lang}_format", status="pass")
 
         start_re = self._ABSTRAK_ID_RE if is_id else self._ABSTRACT_EN_RE
         stop_re = self._ABSTRACT_EN_RE if is_id else None
 
-        # Kumpulkan paragraf konten abstrak
         in_abstract = False
         content_paras: list[ParagraphInfo] = []
+        keyword_paras: list[ParagraphInfo] = []
 
         for para in self._front_matter(bab1_idx):
             text = para.text.strip()
             if not text:
                 continue
-
             if not in_abstract:
                 if start_re.match(text):
                     in_abstract = True
                 continue
-
-            # Stop di heading lawan atau kata kunci
             if stop_re and stop_re.match(text):
                 break
             if self._KATA_KUNCI_RE.match(text):
-                continue  # skip baris "Kata Kunci: ..." / "Keywords: ..."
-
+                keyword_paras.append(para)
+                continue
             content_paras.append(para)
 
         if not content_paras:
@@ -301,7 +336,7 @@ class PkmAiFormatChecker:
             sec.status = sev
             return sec
 
-        # Word count
+        # Word count (tidak termasuk baris kata kunci)
         full_text = " ".join(p.text for p in content_paras)
         word_count = len(full_text.split())
         sec.detail = {"word_count": word_count}
@@ -315,47 +350,48 @@ class PkmAiFormatChecker:
                 expected="Maksimal 250 kata",
             ))
 
-        # Font & italic (cek setiap paragraf, stop di issue pertama)
+        # Font & italic — cek per run (run override > paragraph default)
         for para in content_paras:
-            font = self.resolver.resolve_paragraph_font(para.index)
+            para_font = self.resolver.resolve_paragraph_font(para.index)
+            snippet = para.text.strip()[:60]
 
-            if font.name and font.name != "Times New Roman":
+            bad_name: Optional[str] = None
+            bad_size: Optional[float] = None
+            for run in para.runs:
+                if not run.text.strip():
+                    continue
+                if any(ord(c) > 127 for c in run.text):
+                    continue
+                eff_name = run.font_name if run.font_name else para_font.name
+                eff_size = run.font_size_pt if run.font_size_pt is not None else para_font.size_pt
+                if eff_name and eff_name != "Times New Roman" and bad_name is None:
+                    bad_name = eff_name
+                if eff_size is not None and abs(eff_size - 11.0) > 0.3 and bad_size is None:
+                    bad_size = eff_size
+
+            if bad_name:
                 sec.issues.append(FormatIssue(
                     check_name=f"abstract_{lang}_font_name",
                     severity="fail",
                     location=label,
-                    issue=f"Font {label} bukan Times New Roman.",
-                    found=font.name,
+                    issue=f"Font {label} bukan Times New Roman — \"{snippet}\"",
+                    found=bad_name,
                     expected="Times New Roman",
                 ))
                 break
-
-            if font.size_pt is not None and abs(font.size_pt - 11.0) > 0.3:
+            if bad_size is not None:
                 sec.issues.append(FormatIssue(
                     check_name=f"abstract_{lang}_font_size",
                     severity="fail",
                     location=label,
-                    issue=f"Ukuran font {label} bukan 11pt.",
-                    found=f"{font.size_pt}pt",
+                    issue=f"Ukuran font {label} bukan 11pt — \"{snippet}\"",
+                    found=f"{bad_size}pt",
                     expected="11pt",
                 ))
                 break
 
-            # Italic check
             has_italic = any(r.italic is True for r in para.runs if r.text.strip())
             explicitly_not_italic = any(r.italic is False for r in para.runs if r.text.strip())
-
-            if is_id and has_italic:
-                sec.issues.append(FormatIssue(
-                    check_name="abstract_id_not_italic",
-                    severity="fail",
-                    location=label,
-                    issue="Abstrak (Indonesia) harus dicetak tegak, bukan miring (italic).",
-                    found="italic",
-                    expected="tegak",
-                ))
-                break
-
             if not is_id and explicitly_not_italic and not has_italic:
                 sec.issues.append(FormatIssue(
                     check_name="abstract_en_italic",
@@ -366,6 +402,44 @@ class PkmAiFormatChecker:
                     expected="italic",
                 ))
                 break
+
+        # Font kata-kata kunci / keywords — wajib TNR 11pt
+        for para in keyword_paras:
+            para_font = self.resolver.resolve_paragraph_font(para.index)
+            snippet = para.text.strip()[:60]
+
+            bad_name = None
+            bad_size = None
+            for run in para.runs:
+                if not run.text.strip():
+                    continue
+                if any(ord(c) > 127 for c in run.text):
+                    continue
+                eff_name = run.font_name if run.font_name else para_font.name
+                eff_size = run.font_size_pt if run.font_size_pt is not None else para_font.size_pt
+                if eff_name and eff_name != "Times New Roman" and bad_name is None:
+                    bad_name = eff_name
+                if eff_size is not None and abs(eff_size - 11.0) > 0.3 and bad_size is None:
+                    bad_size = eff_size
+
+            if bad_name:
+                sec.issues.append(FormatIssue(
+                    check_name=f"keywords_{lang}_font_name",
+                    severity="fail",
+                    location=kw_label,
+                    issue=f"Font {kw_label} bukan Times New Roman — \"{snippet}\"",
+                    found=bad_name,
+                    expected="Times New Roman",
+                ))
+            if bad_size is not None:
+                sec.issues.append(FormatIssue(
+                    check_name=f"keywords_{lang}_font_size",
+                    severity="fail",
+                    location=kw_label,
+                    issue=f"Ukuran font {kw_label} bukan 11pt — \"{snippet}\"",
+                    found=f"{bad_size}pt",
+                    expected="11pt",
+                ))
 
         if sec.issues:
             sec.status = "fail"
@@ -378,6 +452,7 @@ class PkmAiFormatChecker:
     def _check_front_matter_spacing(self, bab1_idx: Optional[int]) -> FormatCheckSection:
         sec = FormatCheckSection(name="front_matter_spacing", status="pass")
         tol = 0.05
+        bad_values: list[float] = []
 
         for para in self._front_matter(bab1_idx):
             if not para.text.strip():
@@ -386,17 +461,18 @@ class PkmAiFormatChecker:
             if ls is None:
                 continue
             if abs(ls - 1.0) > tol:
-                sec.issues.append(FormatIssue(
-                    check_name="front_matter_spacing",
-                    severity="fail",
-                    location=f"Front matter (paragraf #{para.index})",
-                    issue=f"Spasi baris front matter harus 1.0 (ditemukan {ls}).",
-                    found=str(ls),
-                    expected="1.0",
-                ))
-            if len(sec.issues) >= self.MAX_ISSUES:
-                break
+                bad_values.append(ls)
 
-        if sec.issues:
+        if bad_values:
+            sample = bad_values[0]
+            sec.issues.append(FormatIssue(
+                check_name="front_matter_spacing",
+                severity="fail",
+                location="Front matter",
+                issue=f"Spasi baris front matter harus 1.0 (ditemukan {sample}).",
+                found=str(sample),
+                expected="1.0",
+            ))
             sec.status = "fail"
+
         return sec

@@ -324,9 +324,7 @@ class ReferenceValidator:
         # Step 3: ekstrak sitasi in-text
         result.in_text_citations = self._extract_in_text_citations()
 
-        # Step 3b: larangan et al./dkk. di sitasi in-text
-        intext_fmt = self._intext_forbidden_issues(result.in_text_citations)
-        result.format_issues = result.format_issues + intext_fmt
+        # et al./dkk. di sitasi in-text diizinkan — tidak ada pengecekan
 
         # Step 4: balance check (in-text ↔ DP)
         result.balance_findings = self._balance_check(
@@ -525,28 +523,15 @@ class ReferenceValidator:
         for i, e in enumerate(entries):
             preview = e.raw_text[: self.PREVIEW_CHARS]
             para_idx = e.paragraph_index
-            if e.has_etal_violation:
+            if e.has_etal_violation or e.has_dkk_violation:
                 issues.append(
                     FormatIssue(
                         entry_index=i,
                         text_preview=preview,
                         severity="fail",
                         issue=(
-                            "Mengandung 'et al.' — Harvard strict melarang. "
-                            "Tulis semua nama penulis lengkap."
-                        ),
-                        paragraph_index=para_idx,
-                    )
-                )
-            if e.has_dkk_violation:
-                issues.append(
-                    FormatIssue(
-                        entry_index=i,
-                        text_preview=preview,
-                        severity="fail",
-                        issue=(
-                            "Mengandung 'dkk.' — Harvard strict melarang. "
-                            "Tulis semua nama penulis lengkap."
+                            "Nama penulis di daftar pustaka tidak boleh ditulis "
+                            "dkk atau et al, tuliskan semua nama penulis."
                         ),
                         paragraph_index=para_idx,
                     )

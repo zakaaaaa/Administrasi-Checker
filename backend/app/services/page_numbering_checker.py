@@ -51,6 +51,23 @@ W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 
+import re as _re
+_ROMAN_RE = _re.compile(
+    r"^M{0,4}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$",
+    _re.IGNORECASE,
+)
+
+def _is_page_number_literal(text: str) -> bool:
+    """True jika teks adalah angka arab kecil (1-999) atau romawi kecil (i-mcmxcix)."""
+    t = text.strip()
+    if not t:
+        return False
+    if t.isdigit() and 1 <= int(t) <= 999:
+        return True
+    if bool(_ROMAN_RE.match(t)) and t.lower() != "m":  # 'm' terlalu ambigu
+        return True
+    return False
+
 
 def _q(tag: str) -> str:
     return f"{{{W_NS}}}{tag}"
@@ -76,6 +93,8 @@ class ZoneRule:
 class PageNumberingRules:
     front_matter: ZoneRule
     core_matter: ZoneRule
+    # Kalau di-set, semua section dipaksa masuk zona ini (tidak pakai landmark detection)
+    zone_override: Optional[str] = None
 
 
 def get_pkm_page_numbering_rules() -> PageNumberingRules:
@@ -94,6 +113,17 @@ def get_pkm_page_numbering_rules() -> PageNumberingRules:
     )
 
 
+def get_pkm_ai_page_numbering_rules() -> PageNumberingRules:
+    """PKM-AI: semua halaman angka arab di pojok kanan atas, tanpa zona awal romawi."""
+    arabic_top = ZoneRule(name="core_matter", numeral_type="arabic", position="top")
+    return PageNumberingRules(
+        # front_matter pakai aturan yang sama agar pesan konsisten
+        front_matter=ZoneRule(name="front_matter", numeral_type="arabic", position="top"),
+        core_matter=arabic_top,
+        zone_override="core_matter",
+    )
+
+
 # ============================================================================
 # Data: hasil parsing satu header/footer XML
 # ============================================================================
@@ -108,6 +138,8 @@ class HeaderFooterAnalysis:
     alignment: Optional[str] = None # 'left' | 'center' | 'right' atau None (default = left)
     font_name: Optional[str] = None
     font_size_pt: Optional[float] = None
+    # Numeral type jika dideteksi dari teks literal (bukan PAGE field)
+    literal_numeral_type: Optional[str] = None  # 'arabic' | 'roman_lower' | None
 
 
 @dataclass
@@ -285,17 +317,12 @@ class PageNumberingChecker:
         """
         Map section index → 'front_matter' | 'core_matter' | 'unknown'.
 
-        Strategi (versi rev):
-        Untuk tiap section dengan range [start_para, end_para]:
-        - Kalau end_para < daftar_isi_para → unknown (cover/pengesahan)
-        - Kalau end_para < bab1_para → front_matter (memuat DAFTAR *, tidak
-          mencapai BAB 1)
-        - Kalau start_para <= bab1_para <= end_para → core_matter
-          (section ini memuat BAB 1 = bagian inti dimulai di sini)
-        - Kalau start_para > bab1_para → core_matter (sudah pasti di bagian inti)
-
-        Kalau DAFTAR ISI atau BAB 1 tidak ditemukan, return semua 'unknown'.
+        Kalau rules.zone_override di-set, semua section langsung masuk zona itu
+        (dipakai untuk PKM-AI yang tidak punya landmark DAFTAR ISI / BAB 1).
         """
+        if self.rules.zone_override is not None:
+            return {sec.index: self.rules.zone_override for sec in self.parser.sections}
+
         boundaries = self.parser.find_section_boundaries(
             ["DAFTAR ISI", "BAB 1"], headings_only=True
         )
@@ -416,6 +443,8 @@ class PageNumberingChecker:
                 analysis.actual_alignment = hf.alignment
                 analysis.actual_font_name = hf.font_name
                 analysis.actual_font_size_pt = hf.font_size_pt
+                if hf.literal_numeral_type is not None:
+                    analysis.actual_numeral_type = hf.literal_numeral_type
 
         # Footer references
         for ref_type, rid in sec.footer_refs.items():
@@ -426,13 +455,13 @@ class PageNumberingChecker:
             if hf.has_page_field:
                 analysis.has_footer_with_page = True
                 analysis.footer_part = part
-                # Footer override header? Tidak — biasanya hanya satu yang dipakai
-                # untuk page number. Kalau dua-duanya ada, kita ambil yang ada.
                 if not analysis.has_header_with_page:
                     analysis.actual_position = "bottom"
                     analysis.actual_alignment = hf.alignment
                     analysis.actual_font_name = hf.font_name
                     analysis.actual_font_size_pt = hf.font_size_pt
+                    if hf.literal_numeral_type is not None:
+                        analysis.actual_numeral_type = hf.literal_numeral_type
 
         return analysis
 
@@ -484,6 +513,7 @@ class PageNumberingChecker:
         # 1. <w:instrText>PAGE</w:instrText>
         # 2. <w:fldSimple w:instr="PAGE"/>
         has_page = False
+        target_para = None
         for instr in xml_root.iter(_q("instrText")):
             if instr.text and "PAGE" in instr.text.upper():
                 has_page = True
@@ -494,33 +524,42 @@ class PageNumberingChecker:
                 if "PAGE" in instr.upper():
                     has_page = True
                     break
-        analysis.has_page_field = has_page
 
-        if not has_page:
-            self._hf_cache[part_name] = analysis
-            return analysis
-
-        # Cari paragraf yang memuat PAGE field, ambil alignment & font
-        # Heuristik: ambil alignment paragraf pertama, atau paragraf yang punya
-        # PAGE field paling spesifik.
-        target_para = None
-        for p in xml_root.iter(_q("p")):
-            # Apakah paragraf ini punya PAGE?
-            has_page_in_para = False
-            for instr in p.iter(_q("instrText")):
-                if instr.text and "PAGE" in instr.text.upper():
-                    has_page_in_para = True
-                    break
-            if not has_page_in_para:
-                for fld in p.iter(_q("fldSimple")):
-                    if "PAGE" in (fld.get(_q("instr")) or "").upper():
+        if has_page:
+            # Cari paragraf yang memuat PAGE field
+            for p in xml_root.iter(_q("p")):
+                has_page_in_para = False
+                for instr in p.iter(_q("instrText")):
+                    if instr.text and "PAGE" in instr.text.upper():
                         has_page_in_para = True
                         break
-            if has_page_in_para:
-                target_para = p
-                break
+                if not has_page_in_para:
+                    for fld in p.iter(_q("fldSimple")):
+                        if "PAGE" in (fld.get(_q("instr")) or "").upper():
+                            has_page_in_para = True
+                            break
+                if has_page_in_para:
+                    target_para = p
+                    break
+        else:
+            # Fallback: nomor halaman diketik manual (bukan field PAGE).
+            # Cek tiap paragraf: kalau seluruh teksnya hanya angka arab atau
+            # romawi kecil → anggap sebagai nomor halaman literal.
+            for p in xml_root.iter(_q("p")):
+                raw = "".join(t.text or "" for t in p.iter(_q("t"))).strip()
+                if _is_page_number_literal(raw):
+                    has_page = True
+                    target_para = p
+                    # Tentukan numeral type dari teks literal
+                    if raw.isdigit():
+                        analysis.literal_numeral_type = "arabic"
+                    else:
+                        analysis.literal_numeral_type = "roman_lower"
+                    break
 
-        if target_para is None:
+        analysis.has_page_field = has_page
+
+        if not has_page or target_para is None:
             self._hf_cache[part_name] = analysis
             return analysis
 
@@ -834,18 +873,22 @@ class PageNumberingChecker:
 
     def _build_messages(self, result: PageNumberingResult) -> None:
         if result.status == "pass":
-            result.messages.append(
-                CheckMessage(
-                    level="pass",
-                    text=(
-                        f"Penomoran halaman sesuai aturan: zona awal "
-                        f"{self.rules.front_matter.numeral_type} di "
-                        f"{self.rules.front_matter.position}, zona inti "
-                        f"{self.rules.core_matter.numeral_type} di "
-                        f"{self.rules.core_matter.position}."
-                    ),
+            if self.rules.zone_override is not None:
+                # Satu zona — pesan lebih ringkas
+                r = self.rules.core_matter
+                msg = (
+                    f"Penomoran halaman sesuai aturan: semua halaman "
+                    f"{r.numeral_type} di pojok kanan {r.position}."
                 )
-            )
+            else:
+                msg = (
+                    f"Penomoran halaman sesuai aturan: zona awal "
+                    f"{self.rules.front_matter.numeral_type} di "
+                    f"{self.rules.front_matter.position}, zona inti "
+                    f"{self.rules.core_matter.numeral_type} di "
+                    f"{self.rules.core_matter.position}."
+                )
+            result.messages.append(CheckMessage(level="pass", text=msg))
             return
 
         # Fail/warning — list semua finding sebagai message, prefix dengan halaman

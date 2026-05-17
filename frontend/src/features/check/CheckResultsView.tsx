@@ -14,6 +14,9 @@ const MODULES = [
   { key: 'page_numbering', label: 'Penomoran Halaman' },
   { key: 'budget', label: 'Anggaran' },
   { key: 'reference', label: 'Daftar Pustaka' },
+  { key: 'luaran', label: 'Luaran' },
+  { key: 'lampiran', label: 'Lampiran' },
+  { key: 'biodata_date', label: 'Tanggal Biodata' },
 ];
 
 function getMessages(mod: ModuleData): Message[] {
@@ -38,7 +41,10 @@ function extractPageNumber(lokasi: string): number | null {
 function isSummaryLine(text: string): boolean {
   return (
     /pelanggaran terdeteksi/.test(text) ||
-    /Urutan alfabetis Daftar Pustaka tidak sesuai/i.test(text)
+    /Urutan alfabetis Daftar Pustaka tidak sesuai/i.test(text) ||
+    // summary lines dari PkmAiFormatChecker: "check_name: N pelanggaran" atau "check_name: OK"
+    /^[a-z_]+: \d+ pelanggaran$/.test(text.trim()) ||
+    /^[a-z_]+: OK$/.test(text.trim())
   );
 }
 
@@ -54,8 +60,7 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
   const m = masalah.toLowerCase();
 
   switch (module) {
-    case 'structure':
-    case 'ai_front_matter': {
+    case 'structure': {
       if (/halaman[_\s]judul|sampul|pengesahan|ringkasan|abstrak|abstract/.test(m))
         return 'Kesalahan terdapat lembar judul / halaman sampul / lembar pengesahan / ringkasan / abstrak di proposal';
       if (/daftar[_\s]isi/.test(m))
@@ -64,11 +69,64 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
         return 'Kesalahan menuliskan 4 luaran wajib PKM di proposal pada Bab 1 Pendahuluan';
       const sectionMatch = masalah.match(/'([^']+)'/);
       const section = sectionMatch ? sectionMatch[1] : '';
-      // Missing: section tidak ada di dokumen sama sekali
       if (/tidak ditemukan di dokumen/i.test(masalah))
         return `Kesalahan tidak ditemukan (${section})`;
-      // Forbidden / out-of-order: nama terdeteksi di dokumen tapi salah
       return `Kesalahan Judul Bab (${section}) tidak sesuai panduan ${schemaCode} 2026`;
+    }
+
+    case 'ai_front_matter': {
+      // Judul
+      if (/melebihi batas 20 kata|word.count/i.test(m)) {
+        const countMatch = masalah.match(/\((\d+) kata\)/);
+        return `Kesalahan judul melebihi batas 20 kata${countMatch ? ` (${countMatch[1]} kata)` : ''}`;
+      }
+      if (/huruf kapital semua|all caps/i.test(m))
+        return 'Kesalahan judul tidak seluruhnya huruf kapital (ALL CAPS)';
+      if (/judul.*tidak ditemukan|tidak ditemukan.*judul/i.test(m))
+        return 'Kesalahan judul artikel tidak ditemukan di front matter';
+      if (/font judul bukan|judul.*times new roman/i.test(m))
+        return 'Kesalahan font judul bukan Times New Roman';
+      if (/ukuran font judul|judul.*12pt|judul.*bukan 12/i.test(m))
+        return 'Kesalahan ukuran font judul bukan 12pt';
+      if (/judul.*bold|judul.*tebal/i.test(m))
+        return 'Kesalahan judul tidak dicetak tebal (bold)';
+      // Penulis / institusi
+      if (/font nama penulis.*times|penulis.*times new roman/i.test(m))
+        return 'Kesalahan font nama penulis/institusi bukan Times New Roman';
+      if (/ukuran font.*penulis|penulis.*10pt|penulis.*bukan 10/i.test(m))
+        return 'Kesalahan ukuran font nama penulis/institusi bukan 10pt';
+      if (/penulis.*bold|penulis.*tebal/i.test(m))
+        return 'Kesalahan nama penulis/institusi dicetak tebal, harusnya normal';
+      if (/penulis.*italic|penulis.*miring/i.test(m))
+        return 'Kesalahan nama penulis/institusi dicetak miring, harusnya normal';
+      // Abstrak Indonesia
+      if (/abstrak.*indonesia.*tidak ditemukan|abstrak \(indonesia\) tidak/i.test(m))
+        return 'Kesalahan Abstrak Indonesia tidak ditemukan';
+      if (/abstrak.*indonesia.*250|abstrak.*indonesia.*kata/i.test(m)) {
+        const countMatch = masalah.match(/\((\d+) kata\)/);
+        return `Kesalahan Abstrak Indonesia melebihi 250 kata${countMatch ? ` (${countMatch[1]} kata)` : ''}`;
+      }
+      if (/font abstrak.*indonesia.*times|abstrak.*indonesia.*times/i.test(m))
+        return 'Kesalahan font Abstrak Indonesia bukan Times New Roman';
+      if (/ukuran font abstrak.*indonesia|abstrak.*indonesia.*11pt/i.test(m))
+        return 'Kesalahan ukuran font Abstrak Indonesia bukan 11pt';
+      // Abstract English
+      if (/abstract.*english.*tidak ditemukan|abstract \(english\) tidak/i.test(m))
+        return 'Kesalahan Abstract English tidak ditemukan';
+      if (/abstract.*english.*250|abstract.*english.*kata/i.test(m)) {
+        const countMatch = masalah.match(/\((\d+) kata\)/);
+        return `Kesalahan Abstract English melebihi 250 kata${countMatch ? ` (${countMatch[1]} kata)` : ''}`;
+      }
+      if (/font abstract.*english.*times|abstract.*english.*times/i.test(m))
+        return 'Kesalahan font Abstract English bukan Times New Roman';
+      if (/ukuran font abstract.*english|abstract.*english.*11pt/i.test(m))
+        return 'Kesalahan ukuran font Abstract English bukan 11pt';
+      if (/abstract.*english.*italic|abstract.*english.*miring/i.test(m))
+        return 'Kesalahan Abstract English tidak dicetak miring (italic)';
+      // Spasi front matter
+      if (/spasi baris front matter|front matter.*1\.0/i.test(m))
+        return 'Kesalahan Judul Artikel, Nama Penulis, Alamat Institusi, Abstrak Tidak Menggunakan Spasi Baris 1.0';
+      return masalah;
     }
 
     case 'format': {
@@ -80,10 +138,20 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
         const snippet = snippetMatch ? ` — "${snippetMatch[1]}"` : '';
         return `Kesalahan tipe huruf tidak Times New Roman${snippet}`;
       }
+      if (/ukuran font keterangan/.test(m)) {
+        const snippetMatch = masalah.match(/"([^"]+)"/);
+        const snippet = snippetMatch ? ` — "${snippetMatch[1]}"` : '';
+        return `Kesalahan ukuran huruf keterangan gambar/tabel bukan 11${snippet}`;
+      }
       if (/ukuran font|bukan 12/.test(m))
         return 'Kesalahan ukuran huruf tidak 12';
       if (/margin/.test(m))
         return 'Kesalahan margin (kiri ≠ 4cm, atas / kanan / bawah ≠ 3cm)';
+      if (/keterangan gambar|keterangan tabel/.test(m)) {
+        const snippetMatch = masalah.match(/"([^"]+)"/);
+        const snippet = snippetMatch ? ` — "${snippetMatch[1]}"` : '';
+        return `Kesalahan spasi keterangan gambar/tabel bukan 1${snippet}`;
+      }
       if (/line spacing|spacing bukan/.test(m))
         return 'Kesalahan spasi teks/paragraf tidak 1,15';
       if (/justify|bukan justify/.test(m))
@@ -102,8 +170,27 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
     }
 
     case 'page_numbering': {
+      if (schemaCode === 'PKM-AI') {
+        if (/tidak terdeteksi|missing/.test(m))
+          return 'Nomor halaman arab (1, 2, 3...) tidak ditemukan di dokumen';
+        if (/posisi|position|bawah|bottom/.test(m))
+          return 'Kesalahan letak nomor halaman (harusnya pojok kanan atas untuk semua halaman PKM-AI)';
+        if (/numeral|roman_lower|roman/.test(m))
+          return 'Kesalahan jenis nomor halaman (harusnya angka arab untuk semua halaman PKM-AI, bukan romawi)';
+        if (/font|ukuran|times/.test(m))
+          return 'Kesalahan format font nomor halaman (harusnya Times New Roman 12pt)';
+        return 'Kesalahan nomor halaman';
+      }
+      if (/front.matter.*tidak terdeteksi|tidak terdeteksi.*front.matter|roman_lower/.test(m))
+        return 'Nomor halaman romawi kecil (i, ii, iii) tidak ditemukan di bagian awal dokumen';
+      if (/core.matter.*tidak terdeteksi|tidak terdeteksi.*core.matter|arabic.*top.right/.test(m))
+        return 'Nomor halaman arab tidak ditemukan di bagian isi dokumen (Bab 1 s.d. Daftar Pustaka)';
       if (/letak|posisi|atas|bawah|header|footer/.test(m))
-        return 'Kesalahan letak nomor halaman';
+        return 'Kesalahan letak nomor halaman (harusnya pojok kanan atas untuk isi, pojok kanan bawah untuk awal)';
+      if (/jenis|roman|arabic|arab|romawi/.test(m))
+        return 'Kesalahan jenis nomor halaman (romawi kecil untuk awal, angka arab untuk isi)';
+      if (/font|ukuran|times/.test(m))
+        return 'Kesalahan format font nomor halaman (harusnya Times New Roman 12pt)';
       return 'Kesalahan nomor halaman';
     }
 
@@ -140,6 +227,49 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
 
     case 'reference':
       return 'Kesalahan daftar pustaka (tidak Harvard style, urutan abjad, dan menguraikan nama penulis)';
+
+    case 'luaran': {
+      const schemaMatch = masalah.match(/Luaran (PKM-\w+)/i);
+      const luaranSchema = schemaMatch ? schemaMatch[1].toUpperCase() : 'PKM';
+      if (/yang tidak ditemukan:/i.test(m)) {
+        const missingMatch = masalah.match(/yang tidak ditemukan:\s*([^.]+)/i);
+        const missing = missingMatch ? missingMatch[1].trim() : '';
+        return `Kesalahan luaran ${luaranSchema} tidak lengkap${missing ? ` ${missing}` : ''}`;
+      }
+      if (/section.*tidak ditemukan|tidak ditemukan.*dokumen/i.test(m))
+        return `Kesalahan section Luaran tidak ditemukan di dokumen ${luaranSchema}`;
+      if (/melebihi batas/i.test(m)) {
+        const countMatch = masalah.match(/memuat (\d+) luaran/i);
+        const count = countMatch ? countMatch[1] : '';
+        return `Kesalahan jumlah luaran ${luaranSchema} melebihi 4${count ? ` (terdeteksi ${count})` : ''}`;
+      }
+      if (/hanya memuat (\d+)/i.test(m)) {
+        const countMatch = masalah.match(/hanya memuat (\d+)/i);
+        const count = countMatch ? countMatch[1] : '';
+        return `Kesalahan jumlah luaran ${luaranSchema} kurang dari 4${count ? ` (terdeteksi ${count})` : ''}`;
+      }
+      return masalah;
+    }
+
+    case 'lampiran': {
+      const numMatch = masalah.match(/Lampiran (\d+) \(([^)]+)\)/i);
+      if (numMatch) {
+        const [, num, label] = numMatch;
+        return `Kesalahan Lampiran ${num} (${label}) tidak ditemukan di dokumen`;
+      }
+      return masalah;
+    }
+
+    case 'biodata_date': {
+      if (/tidak dapat terdeteksi/i.test(m))
+        return 'Tanggal tanda tangan biodata tidak terdeteksi — periksa manual (harus 9 Maret s.d. 9 April 2026)';
+      if (/tidak valid/i.test(m)) {
+        const dateMatch = masalah.match(/'([^']+)'/);
+        const tgl = dateMatch ? dateMatch[1] : '';
+        return `Kesalahan tanggal/bulan/tahun${tgl ? ` '${tgl}'` : ''} di lampiran biodata tidak antara 9 Maret s.d. 9 April 2026`;
+      }
+      return masalah;
+    }
   }
 
   return masalah;
@@ -302,8 +432,16 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
       }
     }
 
-    // Flat list: tidak deduplikasi — tampilkan per halaman, urutkan ascending
-    flat.sort((a, b) => {
+    // Deduplikasi: pesan identik dengan halaman yang sama (atau keduanya null) hanya tampil sekali
+    const seenKeys = new Set<string>();
+    const dedupedFlat = flat.filter(item => {
+      const key = `${item.module}|${item.masalah}|${item.page}`;
+      if (seenKeys.has(key)) return false;
+      seenKeys.add(key);
+      return true;
+    });
+
+    dedupedFlat.sort((a, b) => {
       if (a.page === null && b.page === null) return 0;
       if (a.page === null) return -1;
       if (b.page === null) return 1;
@@ -311,7 +449,7 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
     });
 
     return {
-      flatItems: flat,
+      flatItems: dedupedFlat,
       budgetItems: budget,
       referenceItems: reference,
       balanceNotes: balance,

@@ -7,18 +7,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from app.services.docx_parser import DocxParser
 from app.services.schema_rules import get_pkm_kc_proposal_rules, get_pkm_ai_proposal_rules, get_pkm_vgk_proposal_rules
 from app.services.budget_rules import get_pkm_kc_budget_rules, get_pkm_vgk_budget_rules
 from app.services.structure_checker import StructureChecker
-from app.services.physical_sheet_counter import PhysicalSheetCounter
-from app.services.format_checker import FormatChecker
+from app.services.physical_sheet_counter import PhysicalSheetCounter, PhysicalSheetResult
+from app.services.format_checker import FormatChecker, get_pkm_ai_format_rules
 from app.services.pkm_ai_format_checker import PkmAiFormatChecker
-from app.services.page_numbering_checker import PageNumberingChecker
+from app.services.page_numbering_checker import PageNumberingChecker, get_pkm_ai_page_numbering_rules
 from app.services.budget_auditor import BudgetAuditor
 from app.services.reference_validator import ReferenceValidator
+from app.services.luaran_checker import LuaranChecker
+from app.services.lampiran_checker import LampiranChecker
+from app.services.biodata_date_checker import BiodataDateChecker
 
 
 class UnsupportedSchemaError(ValueError):
@@ -33,6 +36,24 @@ def _find_core_start_idx(structure_result) -> Optional[int]:
     if not core_found:
         return None
     return min(s.paragraph_index for s in core_found)
+
+
+def _load_pdf_sheet_texts(physical_result: PhysicalSheetResult) -> Optional[list[str]]:
+    """Baca teks per lembar dari PDF hasil konversi PhysicalSheetCounter."""
+    if not physical_result.pdf_path:
+        return None
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(physical_result.pdf_path)
+        texts: list[str] = []
+        for page in reader.pages:
+            try:
+                texts.append(page.extract_text() or "")
+            except Exception:
+                texts.append("")
+        return texts
+    except Exception:
+        return None
 
 
 def _module_error_payload(exc: BaseException) -> dict[str, Any]:
@@ -104,9 +125,10 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
         statuses.append("error")
 
     # 2. Physical Sheet
+    _physical_result = None
     try:
-        r = PhysicalSheetCounter(parser, schema).check()
-        results["physical_sheet"] = r.to_dict()
+        _physical_result = PhysicalSheetCounter(parser, schema).check()
+        results["physical_sheet"] = _physical_result.to_dict()
         statuses.append(_extract_status(results["physical_sheet"]))
     except Exception as e:
         results["physical_sheet"] = _module_error_payload(e)
@@ -114,7 +136,8 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
 
     # 3. Format (bagian inti: Bab 1 s.d. sebelum Lampiran)
     try:
-        r = FormatChecker(parser, schema=schema).check(
+        _pdf_texts = _load_pdf_sheet_texts(_physical_result) if _physical_result else None
+        r = FormatChecker(parser, schema=schema, pdf_sheet_texts=_pdf_texts).check(
             start_para_idx=_find_core_start_idx(structure_result)
         )
         results["format"] = r.to_dict()
@@ -148,6 +171,33 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
         statuses.append(_extract_status(results["reference"]))
     except Exception as e:
         results["reference"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 7. Luaran (khusus PKM-KC)
+    try:
+        r = LuaranChecker.for_pkm_kc(parser).check()
+        results["luaran"] = r.to_dict()
+        statuses.append(_extract_status(results["luaran"]))
+    except Exception as e:
+        results["luaran"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 8. Lampiran (khusus PKM-KC)
+    try:
+        r = LampiranChecker.for_pkm_kc(parser).check()
+        results["lampiran"] = r.to_dict()
+        statuses.append(_extract_status(results["lampiran"]))
+    except Exception as e:
+        results["lampiran"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 9. Tanggal biodata (khusus PKM-KC)
+    try:
+        r = BiodataDateChecker.for_pkm_kc(parser).check()
+        results["biodata_date"] = r.to_dict()
+        statuses.append(_extract_status(results["biodata_date"]))
+    except Exception as e:
+        results["biodata_date"] = _module_error_payload(e)
         statuses.append("error")
 
     results["overall_status"] = _aggregate_status(statuses)
@@ -176,9 +226,10 @@ def _run_pkm_vgk(parser: DocxParser) -> dict[str, Any]:
         statuses.append("error")
 
     # 2. Physical Sheet
+    _physical_result = None
     try:
-        r = PhysicalSheetCounter(parser, schema).check()
-        results["physical_sheet"] = r.to_dict()
+        _physical_result = PhysicalSheetCounter(parser, schema).check()
+        results["physical_sheet"] = _physical_result.to_dict()
         statuses.append(_extract_status(results["physical_sheet"]))
     except Exception as e:
         results["physical_sheet"] = _module_error_payload(e)
@@ -186,7 +237,8 @@ def _run_pkm_vgk(parser: DocxParser) -> dict[str, Any]:
 
     # 3. Format (bagian inti: Bab 1 s.d. sebelum Lampiran)
     try:
-        r = FormatChecker(parser, schema=schema).check(
+        _pdf_texts = _load_pdf_sheet_texts(_physical_result) if _physical_result else None
+        r = FormatChecker(parser, schema=schema, pdf_sheet_texts=_pdf_texts).check(
             start_para_idx=_find_core_start_idx(structure_result)
         )
         results["format"] = r.to_dict()
@@ -222,6 +274,15 @@ def _run_pkm_vgk(parser: DocxParser) -> dict[str, Any]:
         results["reference"] = _module_error_payload(e)
         statuses.append("error")
 
+    # 7. Luaran (khusus PKM-VGK)
+    try:
+        r = LuaranChecker.for_pkm_vgk(parser).check()
+        results["luaran"] = r.to_dict()
+        statuses.append(_extract_status(results["luaran"]))
+    except Exception as e:
+        results["luaran"] = _module_error_payload(e)
+        statuses.append("error")
+
     results["overall_status"] = _aggregate_status(statuses)
     return results
 
@@ -246,9 +307,10 @@ def _run_pkm_ai(parser: DocxParser) -> dict[str, Any]:
         statuses.append("error")
 
     # 2. Physical Sheet (8–15 halaman, ditangani via SHEET_COUNT_RULES)
+    _physical_result = None
     try:
-        r = PhysicalSheetCounter(parser, schema).check()
-        results["physical_sheet"] = r.to_dict()
+        _physical_result = PhysicalSheetCounter(parser, schema).check()
+        results["physical_sheet"] = _physical_result.to_dict()
         statuses.append(_extract_status(results["physical_sheet"]))
     except Exception as e:
         results["physical_sheet"] = _module_error_payload(e)
@@ -267,23 +329,23 @@ def _run_pkm_ai(parser: DocxParser) -> dict[str, Any]:
 
     # 3b. Format body (mulai BAB 1, stop sebelum Lampiran)
     try:
-        # Temukan index paragraf "Pendahuluan" untuk skip front matter
         import re as _re
         _pendahuluan_re = _re.compile(r"^\s*(?:Pendahuluan|PENDAHULUAN)\s*$", _re.IGNORECASE)
         bab1_idx = next(
             (p.index for p in parser.paragraphs if _pendahuluan_re.match(p.text.strip())),
             None,
         )
-        r = FormatChecker(parser, schema=schema).check(start_para_idx=bab1_idx)
+        _pdf_texts = _load_pdf_sheet_texts(_physical_result) if _physical_result else None
+        r = FormatChecker(parser, rules=get_pkm_ai_format_rules(), schema=schema, pdf_sheet_texts=_pdf_texts).check(start_para_idx=bab1_idx)
         results["format"] = r.to_dict()
         statuses.append(_extract_status(results["format"]))
     except Exception as e:
         results["format"] = _module_error_payload(e)
         statuses.append("error")
 
-    # 4. Page Numbering
+    # 4. Page Numbering (PKM-AI: semua halaman arabic di atas kanan)
     try:
-        r = PageNumberingChecker(parser, schema).check()
+        r = PageNumberingChecker(parser, schema, rules=get_pkm_ai_page_numbering_rules()).check()
         results["page_numbering"] = r.to_dict()
         statuses.append(_extract_status(results["page_numbering"]))
     except Exception as e:

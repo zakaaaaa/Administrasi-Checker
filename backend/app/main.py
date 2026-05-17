@@ -337,10 +337,118 @@ def submit_check(
         "overall_status": results["overall_status"],
         "results": {
             "structure": results["structure"],
+            "ai_front_matter": results.get("ai_front_matter"),
             "physical_sheet": results["physical_sheet"],
             "format": results["format"],
             "page_numbering": results["page_numbering"],
             "budget": results["budget"],
             "reference": results["reference"],
+            "luaran": results.get("luaran"),
+            "lampiran": results.get("lampiran"),
+            "biodata_date": results.get("biodata_date"),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Reviewer endpoint (no token required, authenticated via admin_id)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/reviewer/check")
+def reviewer_check(
+    admin_id: str = Form(...),
+    competition: str = Form(...),
+    report_type: str = Form(...),
+    schema_code: str = Form(...),
+    file: UploadFile = File(...),
+):
+    admin = _verify_admin(admin_id)
+
+    if not file.filename or not file.filename.lower().endswith(".docx"):
+        raise HTTPException(400, "File harus berformat .docx")
+
+    content = file.file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(400, f"File terlalu besar (max {MAX_FILE_SIZE // 1024 // 1024} MB)")
+    if len(content) == 0:
+        raise HTTPException(400, "File kosong")
+
+    submission_id = str(uuid.uuid4())
+    file_path = UPLOAD_DIR / f"{submission_id}.docx"
+    file_path.write_bytes(content)
+
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO submissions
+                (id, token_id, competition, report_type, schema_code,
+                 original_filename, file_path, file_size_bytes, status, reviewer_user_id)
+            VALUES (%s, NULL, %s, %s, %s, %s, %s, %s, 'processing', %s)
+            """,
+            (submission_id, competition, report_type, schema_code,
+             file.filename, str(file_path), len(content), admin["id"]),
+        )
+
+    try:
+        req = CheckRequest(
+            docx_path=str(file_path),
+            competition=competition,
+            report_type=report_type,
+            schema_code=schema_code,
+        )
+        results = run_all_checks(req)
+    except UnsupportedSchemaError as e:
+        with get_cursor() as cur:
+            cur.execute(
+                "UPDATE submissions SET status='failed', error_message=%s WHERE id=%s",
+                (str(e), submission_id),
+            )
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        with get_cursor() as cur:
+            cur.execute(
+                "UPDATE submissions SET status='failed', error_message=%s WHERE id=%s",
+                (str(e), submission_id),
+            )
+        raise HTTPException(500, f"Gagal memproses dokumen: {e}")
+
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO results
+                (submission_id, structure_result, physical_sheet_result,
+                 format_result, page_numbering_result, budget_result,
+                 reference_result, overall_status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (submission_id,
+             json.dumps(results["structure"]),
+             json.dumps(results["physical_sheet"]),
+             json.dumps(results["format"]),
+             json.dumps(results["page_numbering"]),
+             json.dumps(results["budget"]),
+             json.dumps(results["reference"]),
+             results["overall_status"]),
+        )
+        cur.execute(
+            "UPDATE submissions SET status='completed', completed_at=NOW() WHERE id=%s",
+            (submission_id,),
+        )
+
+    return {
+        "submission_id": submission_id,
+        "status": "completed",
+        "overall_status": results["overall_status"],
+        "results": {
+            "structure": results["structure"],
+            "ai_front_matter": results.get("ai_front_matter"),
+            "physical_sheet": results["physical_sheet"],
+            "format": results["format"],
+            "page_numbering": results["page_numbering"],
+            "budget": results["budget"],
+            "reference": results["reference"],
+            "luaran": results.get("luaran"),
+            "lampiran": results.get("lampiran"),
+            "biodata_date": results.get("biodata_date"),
         },
     }

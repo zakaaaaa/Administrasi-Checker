@@ -16,5 +16,9 @@ passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 python-dotenv==1.2.2
 
+# OCR (lampiran checker)
+pytesseract==0.3.13
+Pillow>=10.0.0
+
 # Dev/testing
 pytest==8.3.0

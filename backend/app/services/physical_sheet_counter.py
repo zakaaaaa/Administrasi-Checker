@@ -128,6 +128,7 @@ class PhysicalSheetResult:
     page_numbers: list[SheetPageNumber] = field(default_factory=list)
     anomalies: list[PageNumberAnomaly] = field(default_factory=list)
     messages: list[CheckMessage] = field(default_factory=list)
+    pdf_path: Optional[str] = None  # path PDF hasil konversi (internal, tidak di-serialize)
 
     def to_dict(self) -> dict:
         return {
@@ -333,6 +334,7 @@ class PhysicalSheetCounter:
         )
 
         # 3. Baca PDF, hitung lembar
+        result.pdf_path = str(pdf_path)
         reader = PdfReader(str(pdf_path))
         result.total_physical_sheets = len(reader.pages)
 
@@ -363,6 +365,10 @@ class PhysicalSheetCounter:
         # 8. Validasi jumlah lembar inti vs aturan skema
         sheet_count_msgs = self._validate_sheet_count(result, min_sheets, max_sheets)
         result.messages.extend(sheet_count_msgs)
+
+        # 8b. Validasi struktur halaman pertama
+        first_page_msgs = self._check_first_page_structure(sheet_texts)
+        result.messages.extend(first_page_msgs)
 
         # 9. Tambah message untuk anomali
         for a in result.anomalies:
@@ -408,22 +414,27 @@ class PhysicalSheetCounter:
                 diikuti huruf judul)
             (2) lembar TIDAK didominasi dot leader / nomor halaman
                 (ciri khas Daftar Isi)
-        - core_last: lembar terakhir PDF.
-        """
-        core_first: Optional[int] = None
-        for i, text in enumerate(sheet_texts):
-            # Skip lembar yang jelas Daftar Isi: banyak dot leader
-            dot_leader_count = len(self._TOC_CONTEXT_RE.findall(text))
-            if dot_leader_count >= 3:
-                # ≥3 baris dot leader → lembar ini ToC, skip
-                continue
+        - core_last: lembar terakhir PDF sebelum LAMPIRAN.
 
-            for pat in self.CORE_START_PATTERNS:
-                if pat.search(text):
-                    core_first = i + 1
+        Pengecualian PKM-AI: seluruh dokumen (mulai sheet 1) adalah naskah inti —
+        tidak ada front matter terpisah seperti PKM-KC/K. core_first selalu 1.
+        """
+        # PKM-AI: naskah dimulai dari halaman 1 (tidak ada front matter terpisah)
+        if self.rules.schema_code == "AI":
+            core_first = 1
+        else:
+            core_first = None
+            for i, text in enumerate(sheet_texts):
+                # Skip lembar yang jelas Daftar Isi: banyak dot leader
+                dot_leader_count = len(self._TOC_CONTEXT_RE.findall(text))
+                if dot_leader_count >= 3:
+                    continue
+                for pat in self.CORE_START_PATTERNS:
+                    if pat.search(text):
+                        core_first = i + 1
+                        break
+                if core_first is not None:
                     break
-            if core_first is not None:
-                break
 
         if core_first is None:
             return (None, None)
@@ -578,6 +589,51 @@ class PhysicalSheetCounter:
                 )
 
         return anomalies
+
+    # ------------------------------------------------------------------------
+    # Step: validasi struktur halaman pertama
+    # ------------------------------------------------------------------------
+
+    _DAFTAR_ISI_RE = re.compile(r"daftar\s+isi", re.IGNORECASE)
+    _ABSTRAK_RE = re.compile(r"(?:^|\n)\s*(?:ABSTRAK|ABSTRACT)\s*(?:\n|$)", re.IGNORECASE)
+
+    def _check_first_page_structure(self, sheet_texts: list[str]) -> list[CheckMessage]:
+        """
+        Validasi struktur halaman pertama berdasarkan skema:
+        - PKM-AI : halaman 1 harus memuat heading Abstrak/Abstract.
+        - Skema lain : halaman 1 harus memuat 'Daftar Isi'.
+          Jika tidak → kemungkinan halaman sampul/cover ikut ter-upload
+          atau urutan salah.
+        """
+        msgs: list[CheckMessage] = []
+        if not sheet_texts:
+            return msgs
+
+        first_text = sheet_texts[0]
+        is_ai = self.rules.schema_code == "AI"
+
+        if is_ai:
+            if not self._ABSTRAK_RE.search(first_text):
+                msgs.append(CheckMessage(
+                    level="fail",
+                    text=(
+                        "Halaman pertama tidak memuat heading 'Abstrak' atau 'Abstract'. "
+                        "Pastikan lembar pertama dokumen PKM-AI adalah naskah artikel "
+                        "(bukan halaman sampul terpisah)."
+                    ),
+                ))
+        else:
+            if not self._DAFTAR_ISI_RE.search(first_text):
+                msgs.append(CheckMessage(
+                    level="fail",
+                    text=(
+                        "Halaman pertama tidak memuat 'Daftar Isi'. "
+                        "Pastikan halaman pertama dokumen adalah Daftar Isi, "
+                        "bukan halaman sampul atau halaman lain."
+                    ),
+                ))
+
+        return msgs
 
     # ------------------------------------------------------------------------
     # Step: validasi jumlah lembar inti

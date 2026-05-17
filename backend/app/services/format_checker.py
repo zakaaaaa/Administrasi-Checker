@@ -59,12 +59,23 @@ class FormatRules:
     paper_tolerance_cm: float = 0.1
     line_spacing: float = 1.15
     line_spacing_tolerance: float = 0.05
+    caption_line_spacing: float = 1.0
+    caption_line_spacing_tolerance: float = 0.05
+    check_caption_line_spacing: bool = False
+    caption_font_size_pt: float = 11.0
+    caption_font_size_tolerance_pt: float = 0.3
+    check_caption_font_size: bool = False
     require_justify: bool = True
 
 
 def get_pkm_format_rules() -> FormatRules:
-    """Default rules untuk semua skema PKM (sama untuk KC, K, AI, GFT, dll)."""
+    """Default rules untuk semua skema PKM (sama untuk KC, K, GFT, dll)."""
     return FormatRules()
+
+
+def get_pkm_ai_format_rules() -> FormatRules:
+    """Rules format khusus PKM-AI — line spacing dan font size keterangan gambar/tabel."""
+    return FormatRules(check_caption_line_spacing=True, check_caption_font_size=True)
 
 
 # ============================================================================
@@ -315,11 +326,13 @@ class FormatChecker:
         parser: DocxParser,
         rules: Optional[FormatRules] = None,
         schema: Optional[SchemaRules] = None,
+        pdf_sheet_texts: Optional[list[str]] = None,
     ):
         self.parser = parser
         self.rules = rules or get_pkm_format_rules()
         self.schema = schema  # opsional, untuk skip pengecekan tertentu nanti
         self.resolver = StyleResolver(parser)
+        self._pdf_sheet_texts = pdf_sheet_texts  # teks PDF per lembar untuk lokasi akurat
 
     _LAMPIRAN_RE = re.compile(r"^\s*LAMPIRAN\b", re.IGNORECASE)
 
@@ -349,7 +362,34 @@ class FormatChecker:
                 return para.index
         return None
 
+    def _pdf_page_for_text(self, text: str, last_occurrence: bool = False) -> Optional[int]:
+        """Cari teks di PDF sheets, return nomor halaman fisik (1-based), atau None.
+
+        last_occurrence=True: kembalikan kemunculan terakhir. Berguna untuk heading
+        yang juga muncul di TOC (halaman awal) — kemunculan terakhir = lokasi asli.
+        """
+        if not self._pdf_sheet_texts or not text or len(text) < 20:
+            return None
+        search = text[:60].strip()
+        if last_occurrence:
+            found = None
+            for i, sheet_text in enumerate(self._pdf_sheet_texts):
+                if search in sheet_text:
+                    found = i + 1
+            return found
+        for i, sheet_text in enumerate(self._pdf_sheet_texts):
+            if search in sheet_text:
+                return i + 1
+        return None
+
     def _format_para_location(self, paragraph_index: int) -> str:
+        # Coba PDF text search dulu (akurat)
+        if self._pdf_sheet_texts and 0 <= paragraph_index < len(self.parser.paragraphs):
+            para_text = self.parser.paragraphs[paragraph_index].text.strip()
+            pdf_page = self._pdf_page_for_text(para_text)
+            if pdf_page is not None:
+                return f"Halaman {pdf_page}"
+        # Fallback: DOCX estimator (perkiraan)
         estimator = getattr(self.parser, "estimate_physical_page", None)
         page: Optional[int] = None
         if callable(estimator):
@@ -361,17 +401,47 @@ class FormatChecker:
         return f"Halaman ~{page}"
 
     def _section_location(self, section_index: int) -> str:
-        """Return 'Halaman ~N' untuk halaman pertama section, atau 'Section #N' sebagai fallback."""
-        estimator = getattr(self.parser, "estimate_physical_page", None)
-        if not callable(estimator):
-            return f"Section #{section_index}"
-
+        """Return nomor halaman fisik pertama dari section. Pakai PDF text search jika tersedia."""
         W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
         try:
             body = self.parser.document_xml.find(f"{{{W}}}body")
         except Exception:
             return f"Section #{section_index}"
         if body is None:
+            return f"Section #{section_index}"
+
+        estimator = getattr(self.parser, "estimate_physical_page", None)
+
+        def resolve(first_para_idx: int) -> str:
+            if self._pdf_sheet_texts:
+                paras = self.parser.paragraphs
+                limit = min(first_para_idx + 30, len(paras))
+                # Prioritas 1: heading pertama di section → pakai last_occurrence
+                # agar tidak tersangkut TOC di halaman awal.
+                for pi in range(first_para_idx, limit):
+                    p = paras[pi]
+                    txt = p.text.strip()
+                    if not txt:
+                        continue
+                    if p.is_heading and len(txt) >= 10:
+                        pg = self._pdf_page_for_text(txt, last_occurrence=True)
+                        if pg is not None:
+                            return f"Halaman {pg}"
+                        break  # heading tidak ditemukan di PDF, coba body text
+                # Prioritas 2: body paragraph pertama (first occurrence)
+                for pi in range(first_para_idx, limit):
+                    p = paras[pi]
+                    txt = p.text.strip()
+                    if not txt or p.is_heading or len(txt) < 30:
+                        continue
+                    pg = self._pdf_page_for_text(txt)
+                    if pg is not None:
+                        return f"Halaman {pg}"
+            # Fallback: DOCX estimator
+            if callable(estimator):
+                page = estimator(first_para_idx)
+                if page is not None:
+                    return f"Halaman ~{page}"
             return f"Section #{section_index}"
 
         para_idx = -1
@@ -384,19 +454,15 @@ class FormatChecker:
                 ppr = child.find(f"{{{W}}}pPr")
                 if ppr is not None and ppr.find(f"{{{W}}}sectPr") is not None:
                     if cur_sec == section_index:
-                        page = estimator(sec_first_para)
-                        return f"Halaman ~{page}" if page is not None else f"Section #{section_index}"
+                        return resolve(sec_first_para)
                     cur_sec += 1
                     sec_first_para = para_idx + 1
             elif child.tag == f"{{{W}}}sectPr":
                 if cur_sec == section_index:
-                    page = estimator(sec_first_para)
-                    return f"Halaman ~{page}" if page is not None else f"Section #{section_index}"
+                    return resolve(sec_first_para)
 
-        # Section terakhir (tidak diakhiri sectPr dalam paragraf)
         if cur_sec == section_index:
-            page = estimator(sec_first_para)
-            return f"Halaman ~{page}" if page is not None else f"Section #{section_index}"
+            return resolve(sec_first_para)
 
         return f"Section #{section_index}"
 
@@ -612,42 +678,110 @@ class FormatChecker:
             if para.is_heading:
                 continue
             if _is_figure_table_caption_paragraph(para.text):
+                if self.rules.check_caption_font_size:
+                    cap_font = self.resolver.resolve_paragraph_font(para.index)
+                    cap_tol = self.rules.caption_font_size_tolerance_pt
+                    # Cek per run; inherit dari cap_font jika run tidak set size explicit
+                    bad_cap_size: Optional[float] = None
+                    bad_cap_snippet: str = para.text.strip()[:60]
+                    if para.runs:
+                        for run in para.runs:
+                            if not run.text.strip():
+                                continue
+                            eff_size = run.font_size_pt if run.font_size_pt is not None else cap_font.size_pt
+                            if eff_size is not None and abs(eff_size - self.rules.caption_font_size_pt) > cap_tol:
+                                bad_cap_size = eff_size
+                                run_raw = run.text.strip()
+                                bad_cap_snippet = run_raw[:60] + ("…" if len(run_raw) > 60 else "")
+                                break
+                    elif cap_font.size_pt is not None and abs(cap_font.size_pt - self.rules.caption_font_size_pt) > cap_tol:
+                        bad_cap_size = cap_font.size_pt
+                    if bad_cap_size is not None:
+                        sec.issues.append(
+                            FormatIssue(
+                                check_name="caption_font_size",
+                                severity="fail",
+                                location=self._format_para_location(para.index),
+                                issue=f"Ukuran font keterangan gambar/tabel bukan {self.rules.caption_font_size_pt}pt — \"{bad_cap_snippet}\"",
+                                found=f"{bad_cap_size}pt",
+                                expected=f"{self.rules.caption_font_size_pt}pt",
+                            )
+                        )
                 continue
 
-            # Resolve font level paragraf
-            font = self.resolver.resolve_paragraph_font(para.index)
+            # Resolve font default paragraf (dari style chain, untuk run yang inherit)
+            para_font = self.resolver.resolve_paragraph_font(para.index)
 
-            # Track distribusi
-            if font.name:
-                font_distribution[font.name] = font_distribution.get(font.name, 0) + 1
-            if font.size_pt is not None:
-                size_distribution[font.size_pt] = size_distribution.get(font.size_pt, 0) + 1
+            # Track distribusi berdasarkan paragraph-level font (informatif)
+            if para_font.name:
+                font_distribution[para_font.name] = font_distribution.get(para_font.name, 0) + 1
+            if para_font.size_pt is not None:
+                size_distribution[para_font.size_pt] = size_distribution.get(para_font.size_pt, 0) + 1
 
             raw = para.text.strip()
-            snippet = raw[:60] + ("…" if len(raw) > 60 else "")
+            para_snippet = raw[:60] + ("…" if len(raw) > 60 else "")
 
-            # Cek font name
-            if font.name and font.name != self.rules.font_name:
+            # Cek font name: gunakan effective font per run.
+            # Run yang tidak set font explicit → inherit dari para_font.
+            # Ini mencegah false positive pada dokumen di mana mahasiswa set TNR
+            # secara manual (run-level) tapi paragraph style masih "Calibri" dari docDefaults.
+            bad_font: Optional[str] = None
+            bad_font_snippet: str = para_snippet
+            if para.runs:
+                for run in para.runs:
+                    if not run.text.strip():
+                        continue
+                    # Lewati run yang mengandung karakter non-ASCII (simbol kimia, matematika,
+                    # karakter Unicode, dsb) — font non-TNR pada run semacam ini sering muncul
+                    # akibat substitusi font otomatis Word dan tidak bisa diandalkan sebagai
+                    # indikator kesalahan format.
+                    if any(ord(c) > 127 for c in run.text):
+                        continue
+                    effective_name = run.font_name if run.font_name else para_font.name
+                    if effective_name and effective_name != self.rules.font_name:
+                        bad_font = effective_name
+                        run_raw = run.text.strip()
+                        bad_font_snippet = run_raw[:60] + ("…" if len(run_raw) > 60 else "")
+                        break
+            elif para_font.name and para_font.name != self.rules.font_name:
+                bad_font = para_font.name
+
+            if bad_font:
                 sec.issues.append(
                     FormatIssue(
                         check_name="font_name",
                         severity="fail",
                         location=self._format_para_location(para.index),
-                        issue=f"Font bukan {self.rules.font_name} — \"{snippet}\"",
-                        found=font.name,
+                        issue=f"Font bukan {self.rules.font_name} — \"{bad_font_snippet}\"",
+                        found=bad_font,
                         expected=self.rules.font_name,
                     )
                 )
 
-            # Cek size (dengan toleransi ±font_size_tolerance_pt)
-            if font.size_pt is not None and abs(font.size_pt - self.rules.font_size_pt) > self.rules.font_size_tolerance_pt:
+            # Cek size: gunakan effective size per run (sama seperti font name).
+            bad_size: Optional[float] = None
+            bad_size_snippet: str = para_snippet
+            if para.runs:
+                for run in para.runs:
+                    if not run.text.strip():
+                        continue
+                    effective_size = run.font_size_pt if run.font_size_pt is not None else para_font.size_pt
+                    if effective_size is not None and abs(effective_size - self.rules.font_size_pt) > self.rules.font_size_tolerance_pt:
+                        bad_size = effective_size
+                        run_raw = run.text.strip()
+                        bad_size_snippet = run_raw[:60] + ("…" if len(run_raw) > 60 else "")
+                        break
+            elif para_font.size_pt is not None and abs(para_font.size_pt - self.rules.font_size_pt) > self.rules.font_size_tolerance_pt:
+                bad_size = para_font.size_pt
+
+            if bad_size is not None:
                 sec.issues.append(
                     FormatIssue(
                         check_name="font_size",
                         severity="fail",
                         location=self._format_para_location(para.index),
-                        issue=f"Ukuran Font bukan 12 — \"{snippet}\"",
-                        found=f"{font.size_pt}pt",
+                        issue=f"Ukuran Font bukan 12 — \"{bad_size_snippet}\"",
+                        found=f"{bad_size}pt",
                         expected=f"{self.rules.font_size_pt}pt",
                     )
                 )
@@ -673,6 +807,7 @@ class FormatChecker:
     def _check_line_spacing(self, lampiran_idx: Optional[int] = None, start_para_idx: Optional[int] = None) -> FormatCheckSection:
         sec = FormatCheckSection(name="line_spacing", status="pass")
         tol = self.rules.line_spacing_tolerance
+        cap_tol = self.rules.caption_line_spacing_tolerance
         spacing_distribution: dict[float, int] = {}
         for para in self.parser.paragraphs:
             if start_para_idx is not None and para.index < start_para_idx:
@@ -683,17 +818,30 @@ class FormatChecker:
                 continue
             if para.is_heading:
                 continue
-            if _is_figure_table_caption_paragraph(para.text):
-                continue
             ls = para.line_spacing
             if ls is None:
                 continue
             spacing_distribution[ls] = spacing_distribution.get(ls, 0) + 1
-            if abs(ls - self.rules.line_spacing) > tol:
+            if _is_figure_table_caption_paragraph(para.text):
+                # Caption wajib spasi 1 — hanya cek jika skema mengaktifkan rule ini
+                if self.rules.check_caption_line_spacing and abs(ls - self.rules.caption_line_spacing) > cap_tol:
+                    raw = para.text.strip()
+                    snippet = raw[:60] + ("…" if len(raw) > 60 else "")
+                    sec.issues.append(
+                        FormatIssue(
+                            check_name="caption_line_spacing",
+                            severity="warning",
+                            location=self._format_para_location(para.index),
+                            issue=f"Line spacing keterangan gambar/tabel bukan 1 — \"{snippet}\"",
+                            found=str(ls),
+                            expected=str(self.rules.caption_line_spacing),
+                        )
+                    )
+            elif abs(ls - self.rules.line_spacing) > tol:
                 sec.issues.append(
                     FormatIssue(
                         check_name="line_spacing",
-                        severity="warning",  # warning karena banyak dokumen pakai 1.5 / 2.0
+                        severity="warning",
                         location=self._format_para_location(para.index),
                         issue=f"Line spacing bukan {self.rules.line_spacing}.",
                         found=str(ls),
@@ -705,6 +853,8 @@ class FormatChecker:
         sec.detail = {
             "expected": self.rules.line_spacing,
             "tolerance": tol,
+            "caption_expected": self.rules.caption_line_spacing,
+            "caption_tolerance": cap_tol,
             "spacing_distribution": dict(
                 sorted(spacing_distribution.items(), key=lambda x: -x[1])
             ),
