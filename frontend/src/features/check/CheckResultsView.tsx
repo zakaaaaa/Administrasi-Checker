@@ -36,7 +36,10 @@ function extractPageNumber(lokasi: string): number | null {
 }
 
 function isSummaryLine(text: string): boolean {
-  return /pelanggaran terdeteksi/.test(text);
+  return (
+    /pelanggaran terdeteksi/.test(text) ||
+    /Urutan alfabetis Daftar Pustaka tidak sesuai/i.test(text)
+  );
 }
 
 function isBalanceSummary(text: string): boolean {
@@ -47,7 +50,7 @@ function isBalanceSummary(text: string): boolean {
 }
 
 // Peta kalimat predefined per modul
-function mapToSentence(module: string, masalah: string): string {
+function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): string {
   const m = masalah.toLowerCase();
 
   switch (module) {
@@ -59,12 +62,13 @@ function mapToSentence(module: string, masalah: string): string {
         return 'Kesalahan tidak terdapat daftar isi';
       if (/luaran/.test(m))
         return 'Kesalahan menuliskan 4 luaran wajib PKM di proposal pada Bab 1 Pendahuluan';
-      if (/jadwal/.test(m))
-        return 'Kesalahan format jadwal kegiatan tidak sesuai Lampiran 1 buku panduan PKM 2026';
-      if (/waktu|pelaksanaan/.test(m))
-        return 'Kesalahan waktu pelaksanaan (tidak 3–4 bulan)';
-      // Out-of-order, forbidden, atau section lain yang tidak dikenal
-      return 'Kesalahan judul bab tidak sesuai panduan PKM 2026';
+      const sectionMatch = masalah.match(/'([^']+)'/);
+      const section = sectionMatch ? sectionMatch[1] : '';
+      // Missing: section tidak ada di dokumen sama sekali
+      if (/tidak ditemukan di dokumen/i.test(masalah))
+        return `Kesalahan tidak ditemukan (${section})`;
+      // Forbidden / out-of-order: nama terdeteksi di dokumen tapi salah
+      return `Kesalahan Judul Bab (${section}) tidak sesuai panduan ${schemaCode} 2026`;
     }
 
     case 'format': {
@@ -86,11 +90,13 @@ function mapToSentence(module: string, masalah: string): string {
         return 'Kesalahan perataan teks/paragraf tidak rata kiri-kanan';
       if (/kolom/.test(m))
         return 'Kesalahan format paragraf tidak satu kolom';
+      if (/indent|indentasi/.test(m))
+        return 'Kesalahan indentasi paragraf berlebihan (paragraf menggeser teks ke kanan)';
       if (/italic|asing/.test(m)) {
         // Ekstrak daftar kata asing dari backend: "...asing (word1, word2) tapi..."
         const wordsMatch = masalah.match(/\(([^)]+)\)/);
         const words = wordsMatch ? ` (${wordsMatch[1]})` : '';
-        return `Paragraf memuat kata asing${words} tapi belum italic`;
+        return `Paragraf memuat kata asing${words} namun belum italic`;
       }
       return masalah;
     }
@@ -101,8 +107,24 @@ function mapToSentence(module: string, masalah: string): string {
       return 'Kesalahan nomor halaman';
     }
 
-    case 'physical_sheet':
-      return 'Kesalahan jumlah halaman inti yang melebihi 10 halaman';
+    case 'physical_sheet': {
+      if (/melebihi batas|melebihi.*lembar|lembar.*melebihi/i.test(m)) {
+        const maxMatch = masalah.match(/melebihi batas (\d+)/i);
+        const max = maxMatch ? maxMatch[1] : '10';
+        return `Kesalahan jumlah halaman inti yang melebihi ${max} halaman`;
+      }
+      const duplikat = masalah.match(/Nomor halaman '(\d+)' duplikat — muncul di lembar fisik:\s*([\d,\s]+)/i);
+      if (duplikat) {
+        const [, num, sheets] = duplikat;
+        return `Kesalahan duplikasi nomor halaman "${num}" muncul di lembar ${sheets.trim()}`;
+      }
+      const meloncat = masalah.match(/Nomor halaman meloncat: dari '(\d+)'/i);
+      if (meloncat) {
+        const [, num] = meloncat;
+        return `Kesalahan urutan nomor halaman "${num}"`;
+      }
+      return masalah;
+    }
 
     case 'budget': {
       if (/belmawa/.test(m))
@@ -120,6 +142,17 @@ function mapToSentence(module: string, masalah: string): string {
       return 'Kesalahan daftar pustaka (tidak Harvard style, urutan abjad, dan menguraikan nama penulis)';
   }
 
+  return masalah;
+}
+
+// Reformat pesan Daftar Pustaka ke kalimat yang lebih deskriptif
+function formatReferenceMessage(masalah: string): string {
+  // Urutan alfabetis: "'Author1' muncul setelah 'Author2' (seharusnya sebelum)."
+  const orderMatch = masalah.match(/'([^']+)'\s+muncul setelah\s+'([^']+)'/i);
+  if (orderMatch) {
+    const [, cur, prev] = orderMatch;
+    return `Kesalahan urutan alfabetis "${cur}" harusnya sebelum "${prev}"`;
+  }
   return masalah;
 }
 
@@ -209,6 +242,10 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
     const reference: ErrorItem[] = [];
     const balance: string[] = [];
 
+    // Ambil kode skema dari structure result (mis. "KC" → "PKM-KC")
+    const structureSchema = (resultMap['structure'] as any)?.schema?.code;
+    const schemaCode = structureSchema ? `PKM-${structureSchema}` : 'PKM';
+
     for (const { key, label } of MODULES) {
       const mod = resultMap[key];
       if (!mod) continue;
@@ -230,7 +267,7 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
               module: key,
               moduleLabel: label,
               level: msg.level,
-              masalah,
+              masalah: formatReferenceMessage(masalah),
               page: extractPageNumber(lokasi),
             });
           }
@@ -254,7 +291,7 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
           module: key,
           moduleLabel: label,
           level: isBudgetRelokasiWarning ? 'fail' : msg.level,
-          masalah: key === 'budget' ? formatBudgetMessage(masalah) : mapToSentence(key, masalah),
+          masalah: key === 'budget' ? formatBudgetMessage(masalah) : mapToSentence(key, masalah, schemaCode),
           page: isBudgetNoPage ? null : extractPageNumber(lokasi),
         };
         if (key === 'budget') {

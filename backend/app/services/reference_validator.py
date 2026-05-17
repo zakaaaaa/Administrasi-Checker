@@ -655,22 +655,7 @@ class ReferenceValidator:
                             paragraph_index=c.paragraph_index,
                         )
                     )
-            if has_dkk:
-                k = (*key_base, "dkk")
-                if k not in seen:
-                    seen.add(k)
-                    issues.append(
-                        FormatIssue(
-                            entry_index=-1,
-                            text_preview=c.raw_text[: self.PREVIEW_CHARS],
-                            severity="fail",
-                            issue=(
-                                "Sitasi in-text mengandung 'dkk.' — Harvard strict "
-                                "melarang. Tulis nama penulis lengkap sebelum tahun."
-                            ),
-                            paragraph_index=c.paragraph_index,
-                        )
-                    )
+            # dkk. diizinkan di sitasi in-text (hanya dilarang di Daftar Pustaka)
         return issues
     @staticmethod
     def _extract_first_author_from_citation(author_text: str) -> Optional[str]:

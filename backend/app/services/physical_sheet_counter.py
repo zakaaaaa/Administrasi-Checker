@@ -583,6 +583,25 @@ class PhysicalSheetCounter:
     # Step: validasi jumlah lembar inti
     # ------------------------------------------------------------------------
 
+    def _count_core_pages_by_page_number(self, result: PhysicalSheetResult) -> Optional[int]:
+        """
+        Hitung jumlah halaman inti dari selisih nomor halaman tercetak.
+        Return None → fallback ke lembar fisik.
+        """
+        if result.core_first_sheet is None or result.core_last_sheet is None:
+            return None
+        pn_map = {p.sheet_index: p for p in result.page_numbers}
+        pn_first = pn_map.get(result.core_first_sheet)
+        pn_last = pn_map.get(result.core_last_sheet)
+        if pn_first is None or pn_last is None:
+            return None
+        if not pn_first.is_arabic or not pn_last.is_arabic:
+            return None
+        if pn_first.page_num_value is None or pn_last.page_num_value is None:
+            return None
+        count = pn_last.page_num_value - pn_first.page_num_value + 1
+        return count if count > 0 else None
+
     def _validate_sheet_count(
         self,
         result: PhysicalSheetResult,
@@ -602,14 +621,18 @@ class PhysicalSheetCounter:
             )
             return msgs
 
-        count = result.core_physical_sheets
+        # Prioritas: hitung dari selisih nomor halaman; fallback ke lembar fisik
+        count = self._count_core_pages_by_page_number(result)
+        if count is None:
+            count = result.core_physical_sheets
+
         if count > max_sheets:
             msgs.append(
                 CheckMessage(
                     level="fail",
                     text=(
-                        f"Bagian inti {count} lembar fisik — melebihi batas {max_sheets} "
-                        f"lembar untuk {self.rules.competition_code}-{self.rules.schema_code}."
+                        f"Bagian inti {count} halaman — melebihi batas {max_sheets} "
+                        f"halaman untuk {self.rules.competition_code}-{self.rules.schema_code}."
                     ),
                 )
             )
@@ -618,8 +641,8 @@ class PhysicalSheetCounter:
                 CheckMessage(
                     level="fail",
                     text=(
-                        f"Bagian inti {count} lembar fisik — kurang dari batas minimum "
-                        f"{min_sheets} lembar untuk {self.rules.competition_code}-"
+                        f"Bagian inti {count} halaman — kurang dari batas minimum "
+                        f"{min_sheets} halaman untuk {self.rules.competition_code}-"
                         f"{self.rules.schema_code}."
                     ),
                 )

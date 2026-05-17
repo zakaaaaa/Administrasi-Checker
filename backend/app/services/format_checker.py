@@ -411,6 +411,7 @@ class FormatChecker:
         # Jalankan tiap sub-check
         result.checks["paper_size"] = self._check_paper_size()
         result.checks["margin"] = self._check_margin()
+        result.checks["paragraph_indent"] = self._check_paragraph_indent(lampiran_idx, start_para_idx)
         result.checks["font_body"] = self._check_font_body(lampiran_idx, start_para_idx)
         result.checks["line_spacing"] = self._check_line_spacing(lampiran_idx, start_para_idx)
         if self.rules.require_justify:
@@ -533,6 +534,57 @@ class FormatChecker:
         sec.detail = {
             "expected": expected,
             "tolerance_cm": tol,
+            "violations_count": len(sec.issues),
+        }
+        return sec
+
+    # ------------------------------------------------------------------------
+    # Sub-check: paragraph indentation
+    # ------------------------------------------------------------------------
+
+    # Threshold: 1134 dxa ≈ 2.0 cm — flag indentasi kiri yang jelas berlebihan
+    # (normal list ≤ 720 dxa; first-line indent tidak dicek karena bukan ind.left)
+    _IND_LEFT_THRESHOLD_DXA: int = 1134
+
+    def _check_paragraph_indent(
+        self, lampiran_idx: Optional[int] = None, start_para_idx: Optional[int] = None
+    ) -> FormatCheckSection:
+        """
+        Cek apakah ada paragraf di bagian inti yang punya indentasi kiri berlebihan.
+        Indentasi kiri paragraph-level (pPr/ind@w:left) berbeda dari margin halaman
+        dan bisa dipakai (secara keliru) untuk mempersempit lebar teks.
+        """
+        sec = FormatCheckSection(name="paragraph_indent", status="pass")
+        for para in self.parser.paragraphs:
+            if start_para_idx is not None and para.index < start_para_idx:
+                continue
+            if lampiran_idx is not None and para.index >= lampiran_idx:
+                break
+            if not para.text.strip():
+                continue
+            if para.is_heading:
+                continue
+            if para.ind_left_dxa is None or para.ind_left_dxa <= self._IND_LEFT_THRESHOLD_DXA:
+                continue
+            ind_cm = round(para.ind_left_dxa / 1440 * 2.54, 2)
+            loc = self._format_para_location(para.index)
+            sec.issues.append(
+                FormatIssue(
+                    check_name="paragraph_indent",
+                    severity="fail",
+                    location=loc,
+                    issue=(
+                        f"Indentasi kiri paragraf berlebihan ({ind_cm} cm) — "
+                        f"seharusnya 0 cm (tanpa indent tambahan)."
+                    ),
+                    found=f"{ind_cm} cm",
+                    expected="0 cm",
+                )
+            )
+        if sec.issues:
+            sec.status = "fail"
+        sec.detail = {
+            "threshold_dxa": self._IND_LEFT_THRESHOLD_DXA,
             "violations_count": len(sec.issues),
         }
         return sec

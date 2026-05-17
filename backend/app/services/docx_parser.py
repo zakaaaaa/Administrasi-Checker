@@ -73,6 +73,7 @@ class ParagraphInfo:
     runs: list[RunInfo] = field(default_factory=list)
     is_heading: bool = False                  # heuristik: True jika style 'Heading N' atau pola UPPERCASE
     heading_level: Optional[int] = None       # 1, 2, 3, ... jika is_heading
+    ind_left_dxa: Optional[int] = None        # indentasi kiri paragraf dalam DXA (0 = normal)
 
 
 @dataclass
@@ -627,6 +628,19 @@ class DocxParser:
                 is_heading = True
                 heading_level = 0  # judul
 
+        # Paragraph left indentation (dari XML pPr/ind@w:left)
+        ind_left_dxa: Optional[int] = None
+        try:
+            ppr_el = para._element.find(qn("w:pPr"))
+            if ppr_el is not None:
+                ind_el = ppr_el.find(qn("w:ind"))
+                if ind_el is not None:
+                    raw = ind_el.get(qn("w:left"))
+                    if raw is not None:
+                        ind_left_dxa = int(float(raw))
+        except Exception:
+            pass
+
         return ParagraphInfo(
             index=idx,
             text=para.text or "",
@@ -636,6 +650,7 @@ class DocxParser:
             runs=runs,
             is_heading=is_heading,
             heading_level=heading_level,
+            ind_left_dxa=ind_left_dxa,
         )
 
     def _safe_font_name(self, run) -> Optional[str]:
