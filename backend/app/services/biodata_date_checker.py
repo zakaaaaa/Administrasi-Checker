@@ -231,6 +231,18 @@ class BiodataDateChecker:
 _easyocr_reader = None  # lazy singleton
 
 
+def preload_ocr_model() -> None:
+    """Inisialisasi easyocr reader di awal agar request pertama tidak lelet."""
+    global _easyocr_reader
+    if _easyocr_reader is not None:
+        return
+    try:
+        import easyocr
+        _easyocr_reader = easyocr.Reader(["id", "en"], gpu=False, verbose=False)
+    except Exception:
+        pass
+
+
 def _run_ocr(images: list) -> list[str]:
     """
     Coba pytesseract dulu. Kalau tidak tersedia, pakai easyocr.
@@ -333,12 +345,26 @@ def _collect_image_rids_after(
 # =============================================================================
 
 
-def _extract_dates(text: str) -> list[tuple[date, str]]:
-    """Ekstrak semua tanggal format 'Kota, DD Bulan YYYY' dari teks."""
-    results: list[tuple[date, str]] = []
-    seen: set[date] = set()
+# Pattern konteks tanggal lahir — baris ini dihapus sebelum ekstraksi tanggal
+_TTL_RE = re.compile(
+    r"(?:tempat\s+dan\s+tanggal\s+lahir|t\.?\s*t\.?\s*l\.?)[^\n]*",
+    re.IGNORECASE,
+)
 
-    for m in _DATE_RE.finditer(text):
+
+def _strip_birthdate_lines(text: str) -> str:
+    """Hapus baris 'Tempat dan Tanggal Lahir ...' agar tanggal lahir tidak ikut terdeteksi."""
+    return _TTL_RE.sub("", text)
+
+
+def _extract_dates(text: str) -> list[tuple[date, str]]:
+    """Ekstrak semua tanggal format 'Kota, DD Bulan YYYY' dari teks (tanggal lahir dikecualikan).
+    Setiap kemunculan dihitung terpisah sehingga bisa mendeteksi tanggal per orang.
+    """
+    clean = _strip_birthdate_lines(text)
+    results: list[tuple[date, str]] = []
+
+    for m in _DATE_RE.finditer(clean):
         day_str   = m.group(1)
         month_str = m.group(2).lower()
         year_str  = m.group(3)
@@ -351,8 +377,6 @@ def _extract_dates(text: str) -> list[tuple[date, str]]:
         except ValueError:
             continue
 
-        if d not in seen:
-            seen.add(d)
-            results.append((d, m.group(0)))
+        results.append((d, m.group(0)))
 
     return results

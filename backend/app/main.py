@@ -1,4 +1,6 @@
 """FastAPI app entrypoint."""
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -6,7 +8,22 @@ from pydantic import BaseModel
 from app.auth import verify_password, generate_token
 from app.db import get_cursor
 
-app = FastAPI(title="Administrasi Checker API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Preload easyocr model saat server start agar request pertama tidak lelet
+    try:
+        import asyncio
+        from app.services.biodata_date_checker import preload_ocr_model
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, preload_ocr_model)
+        print("[startup] EasyOCR model loaded.")
+    except Exception as e:
+        print(f"[startup] EasyOCR preload skipped: {e}")
+    yield
+
+
+app = FastAPI(title="Administrasi Checker API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
