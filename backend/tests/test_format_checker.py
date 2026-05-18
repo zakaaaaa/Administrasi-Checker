@@ -6,8 +6,12 @@ Cara jalankan:
 """
 
 import unittest
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+from docx import Document
+from lxml import etree
 
 from app.services.docx_parser import DocxParser, ParagraphInfo
 from app.services.format_checker import (
@@ -19,6 +23,8 @@ from app.services.format_checker import (
 )
 from app.services.style_resolver import StyleResolver, ResolvedFont
 from app.services.schema_rules import get_pkm_kc_proposal_rules
+
+W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 SAMPLE_DIR = Path(__file__).parent / "sample_docs"
 DUMMY_FILE = SAMPLE_DIR / "dummy_pkm_kc.docx"
@@ -69,6 +75,40 @@ class TestStyleResolverDummy(unittest.TestCase):
     def test_returns_resolved_font_object(self):
         font = self.resolver.resolve_paragraph_font(0)
         self.assertIsInstance(font, ResolvedFont)
+
+    def test_resolves_office_theme_font_name(self):
+        """Theme font di dokumen harus terbaca sebagai nama font, bukan None."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "theme_calibri.docx"
+            doc = Document()
+            doc.add_paragraph("Mendukung deteksi font theme.")
+            doc.save(path)
+
+            parser = DocxParser(path)
+            resolver = StyleResolver(parser)
+            font = resolver.resolve_paragraph_font(0)
+
+        self.assertIsNotNone(font.name)
+        self.assertIn("theme", font.name_source)
+
+    def test_theme_fallback_maps_minor_hansi_to_calibri(self):
+        """Jika theme file tidak tersedia, minorHAnsi tetap dianggap Calibri."""
+        parser = MagicMock()
+        parser.read_raw_part.return_value = None
+        resolver = StyleResolver(parser)
+        self.assertEqual(resolver._resolve_theme_font("minorHAnsi"), "Calibri")
+
+    def test_east_asia_theme_does_not_override_latin_font(self):
+        """eastAsiaTheme tidak boleh membuat teks Latin TNR terbaca Calibri."""
+        parser = MagicMock()
+        parser.read_raw_part.return_value = None
+        resolver = StyleResolver(parser)
+        font = ResolvedFont()
+        rpr = etree.fromstring(
+            f'<w:rPr xmlns:w="{W_NS}"><w:rFonts w:eastAsiaTheme="minorHAnsi"/></w:rPr>'
+        )
+        resolver._fill_from_rpr(font, rpr, source="paragraph")
+        self.assertIsNone(font.name)
 
 
 class TestStyleResolverReal(unittest.TestCase):
