@@ -179,7 +179,14 @@ class BiodataDateChecker:
         return " ".join(parts)
 
     def _ocr_lampiran_images(self, lampiran_section_idx: Optional[int]) -> str:
-        from PIL import Image
+        import logging
+        log = logging.getLogger(__name__)
+
+        try:
+            from PIL import Image
+        except ImportError as e:
+            log.warning(f"[biodata_date] PIL not available: {e}")
+            return ""
 
         docx_path = str(self.parser.file_path)
         ocr_parts: list[str] = []
@@ -188,6 +195,7 @@ class BiodataDateChecker:
             with zipfile.ZipFile(docx_path, "r") as zf:
                 rel_map = _load_image_rels(zf)
                 if not rel_map:
+                    log.warning("[biodata_date] No image rels found in docx")
                     return ""
 
                 with zf.open("word/document.xml") as f:
@@ -198,10 +206,11 @@ class BiodataDateChecker:
                     return ""
 
                 rids = _collect_image_rids_after(body, lampiran_section_idx, self.parser.paragraphs)
+                log.info(f"[biodata_date] Found {len(rids)} images in lampiran section")
                 if not rids:
                     return ""
 
-                images: list[Image.Image] = []
+                images: list = []
                 for rid in rids:
                     img_path = rel_map.get(rid)
                     if not img_path:
@@ -210,15 +219,19 @@ class BiodataDateChecker:
                     try:
                         img_bytes = zf.read(full_path)
                         images.append(Image.open(io.BytesIO(img_bytes)))
-                    except Exception:
+                    except Exception as e:
+                        log.warning(f"[biodata_date] Failed to open image {full_path}: {e}")
                         continue
 
+                log.info(f"[biodata_date] Loaded {len(images)} images, running OCR...")
                 if not images:
                     return ""
 
                 ocr_parts = _run_ocr(images)
+                log.info(f"[biodata_date] OCR done, total chars: {sum(len(t) for t in ocr_parts)}")
 
-        except Exception:
+        except Exception as e:
+            log.error(f"[biodata_date] OCR failed: {e}", exc_info=True)
             return ""
 
         return " ".join(ocr_parts)
@@ -248,6 +261,9 @@ def _run_ocr(images: list) -> list[str]:
     Coba pytesseract dulu. Kalau tidak tersedia, pakai easyocr.
     Return list teks per gambar.
     """
+    import logging
+    log = logging.getLogger(__name__)
+
     # --- pytesseract ---
     try:
         import pytesseract
@@ -257,12 +273,14 @@ def _run_ocr(images: list) -> list[str]:
                 text = pytesseract.image_to_string(img, lang="ind+eng", config="--psm 6")
                 if text.strip():
                     results.append(text)
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning(f"[biodata_date] pytesseract per-image error: {e}")
         if results:
+            log.info(f"[biodata_date] pytesseract OK: {len(results)} images with text")
             return results
-    except Exception:
-        pass
+        log.info("[biodata_date] pytesseract returned no text, trying easyocr...")
+    except Exception as e:
+        log.warning(f"[biodata_date] pytesseract unavailable: {e}")
 
     # --- easyocr fallback ---
     try:
@@ -270,6 +288,7 @@ def _run_ocr(images: list) -> list[str]:
         import numpy as np
         global _easyocr_reader
         if _easyocr_reader is None:
+            log.info("[biodata_date] Initializing easyocr reader...")
             _easyocr_reader = easyocr.Reader(["id", "en"], gpu=False, verbose=False)
         results = []
         for img in images:
@@ -279,11 +298,12 @@ def _run_ocr(images: list) -> list[str]:
                 text = "\n".join(detections)
                 if text.strip():
                     results.append(text)
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning(f"[biodata_date] easyocr per-image error: {e}")
+        log.info(f"[biodata_date] easyocr OK: {len(results)} images with text")
         return results
-    except Exception:
-        pass
+    except Exception as e:
+        log.error(f"[biodata_date] easyocr failed: {e}", exc_info=True)
 
     return []
 
