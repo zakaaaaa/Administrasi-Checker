@@ -323,8 +323,11 @@ class ReferenceValidator:
 
         # Step 3: ekstrak sitasi in-text
         result.in_text_citations = self._extract_in_text_citations()
+        result.format_issues.extend(
+            self._intext_forbidden_issues(result.in_text_citations)
+        )
 
-        # et al./dkk. di sitasi in-text diizinkan — tidak ada pengecekan
+        # et al./dkk. di sitasi in-text dilarang untuk mode Harvard strict.
 
         # Step 4: balance check (in-text ↔ DP)
         result.balance_findings = self._balance_check(
@@ -640,7 +643,22 @@ class ReferenceValidator:
                             paragraph_index=c.paragraph_index,
                         )
                     )
-            # dkk. diizinkan di sitasi in-text (hanya dilarang di Daftar Pustaka)
+            if has_dkk:
+                k = (*key_base, "dkk")
+                if k not in seen:
+                    seen.add(k)
+                    issues.append(
+                        FormatIssue(
+                            entry_index=-1,
+                            text_preview=c.raw_text[: self.PREVIEW_CHARS],
+                            severity="fail",
+                            issue=(
+                                "Sitasi in-text mengandung 'dkk.' — Harvard strict "
+                                "melarang. Tulis nama penulis lengkap sebelum tahun."
+                            ),
+                            paragraph_index=c.paragraph_index,
+                        )
+                    )
         return issues
     @staticmethod
     def _extract_first_author_from_citation(author_text: str) -> Optional[str]:

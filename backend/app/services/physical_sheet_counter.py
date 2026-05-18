@@ -6,8 +6,8 @@ Sumber blueprint: v0.3 §4.2
 Tugas:
 1. Konversi DOCX → PDF (via PdfConverter)
 2. Hitung total lembar fisik (pakai pypdf)
-3. Identifikasi rentang lembar bagian inti (BAB 1 sampai akhir Lampiran)
-4. Validasi jumlah lembar inti vs aturan skema:
+3. Identifikasi rentang lembar bagian inti (BAB 1 sampai sebelum Lampiran)
+4. Validasi jumlah lembar inti vs aturan skema (lampiran tidak dihitung):
      - GFT/AI: 8–15 lembar
      - 8 bidang lain (KC, K, RE, RSH, PM, PI, KI, VGK): maks 10 lembar
 5. Ekstrak nomor halaman per lembar, deteksi anomali:
@@ -449,7 +449,7 @@ class PhysicalSheetCounter:
                 continue
             for pat in self.LAMPIRAN_START_PATTERNS:
                 if pat.search(text):
-                    core_last = i  # 1-based: halaman sebelum LAMPIRAN (i+1)
+                    core_last = max(core_first, i)  # 1-based: halaman sebelum LAMPIRAN (i+1)
                     break
             if core_last != len(sheet_texts):
                 break
