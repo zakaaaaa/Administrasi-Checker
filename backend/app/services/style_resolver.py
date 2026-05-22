@@ -27,6 +27,7 @@ from lxml import etree
 from app.services.docx_parser import DocxParser, half_points_to_pt
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 
 
 def _q(tag: str) -> str:
@@ -62,6 +63,7 @@ class StyleResolver:
         self.parser = parser
         self._styles_index: Optional[dict[str, etree._Element]] = None
         self._default_font: Optional[ResolvedFont] = None
+        self._theme_fonts: Optional[dict[str, str]] = None
 
     # ------------------------------------------------------------------------
     # Public API
@@ -171,9 +173,8 @@ class StyleResolver:
     # Internal: extract dari rPr
     # ------------------------------------------------------------------------
 
-    @staticmethod
     def _fill_from_rpr(
-        result: ResolvedFont, rpr: etree._Element, source: str
+        self, result: ResolvedFont, rpr: etree._Element, source: str
     ) -> None:
         """
         Isi result dari elemen <w:rPr>. Hanya overwrite kalau field belum ter-set.
@@ -184,13 +185,26 @@ class StyleResolver:
         if result.name is None:
             rfonts = rpr.find(_q("rFonts"))
             if rfonts is not None:
-                # Coba ascii dulu (paling umum), lalu hAnsi, eastAsia, cs
-                for attr in ("ascii", "hAnsi", "eastAsia", "cs"):
+                # Coba font Latin dulu. Jangan pakai eastAsia untuk teks Latin:
+                # Word sering menyetel eastAsiaTheme="minorHAnsi" pada paragraf
+                # TNR, dan itu tidak berarti huruf Latin-nya Calibri.
+                for attr in ("ascii", "hAnsi", "cs"):
                     val = rfonts.get(_q(attr))
                     if val:
                         result.name = val
                         result.name_source = source
                         break
+                # Beberapa dokumen Word menyimpan Calibri/Cambria sebagai theme
+                # font (mis. w:asciiTheme="minorHAnsi"), bukan nama font langsung.
+                if result.name is None:
+                    for attr in ("asciiTheme", "hAnsiTheme", "csTheme"):
+                        val = rfonts.get(_q(attr))
+                        if val:
+                            theme_name = self._resolve_theme_font(val)
+                            if theme_name:
+                                result.name = theme_name
+                                result.name_source = f"{source}:theme:{val}"
+                                break
 
         # Font size
         if result.size_pt is None:
@@ -274,3 +288,53 @@ class StyleResolver:
         if result.size_pt is None:
             result.size_pt = defaults.size_pt
             result.size_source = defaults.size_source
+
+    def _resolve_theme_font(self, theme_value: str) -> Optional[str]:
+        """
+        Resolve nilai theme OOXML seperti ``minorHAnsi`` ke nama font aktual.
+
+        Word default theme:
+        - minorHAnsi/minorAscii umumnya Calibri
+        - majorHAnsi/majorAscii umumnya Cambria
+
+        Nilai ini penting agar dokumen berbasis Calibri theme tetap terdeteksi
+        sebagai font bukan Times New Roman, bukan dilewati karena nama font None.
+        """
+        lower = (theme_value or "").lower()
+        theme_fonts = self._get_theme_fonts()
+        if lower in theme_fonts:
+            return theme_fonts[lower]
+        if lower.startswith("minor"):
+            return "Calibri"
+        if lower.startswith("major"):
+            return "Cambria"
+        return None
+
+    def _get_theme_fonts(self) -> dict[str, str]:
+        """Baca ``word/theme/theme1.xml`` dan map major/minor theme ke font latin."""
+        if self._theme_fonts is not None:
+            return self._theme_fonts
+
+        fonts: dict[str, str] = {}
+        try:
+            raw = self.parser.read_raw_part("word/theme/theme1.xml")
+            if raw:
+                root = etree.fromstring(raw)
+                ns = {"a": A_NS}
+                major = root.find(".//a:fontScheme/a:majorFont/a:latin", namespaces=ns)
+                minor = root.find(".//a:fontScheme/a:minorFont/a:latin", namespaces=ns)
+                if major is not None:
+                    val = major.get("typeface")
+                    if val:
+                        for key in ("majorhansi", "majorascii", "majoreastasia", "majorbidi"):
+                            fonts[key] = val
+                if minor is not None:
+                    val = minor.get("typeface")
+                    if val:
+                        for key in ("minorhansi", "minorascii", "minoreastasia", "minorbidi"):
+                            fonts[key] = val
+        except Exception:
+            fonts = {}
+
+        self._theme_fonts = fonts
+        return fonts

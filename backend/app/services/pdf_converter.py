@@ -64,7 +64,11 @@ class PdfConverter:
 
     # Windows: installer tidak selalu menambahkan ke PATH
     _WINDOW_SOFFICE_PATHS = [
+        r"D:\libre\program\soffice.com",
+        r"D:\libre\program\soffice.exe",
+        r"C:\Program Files\LibreOffice\program\soffice.com",
         r"C:\Program Files\LibreOffice\program\soffice.exe",
+        r"C:\Program Files (x86)\LibreOffice\program\soffice.com",
         r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
     ]
 
@@ -136,28 +140,33 @@ class PdfConverter:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # LibreOffice headless command
-        # --headless: tanpa GUI
-        # --convert-to pdf: target format
-        # --outdir: folder output (LibreOffice akan generate file dengan nama asli + .pdf)
-        cmd = [
-            self.soffice_path,
-            "--headless",
-            "--convert-to", "pdf",
-            "--outdir", str(output_dir),
-            str(docx_path),
-        ]
-
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_seconds,
-                # LibreOffice butuh user profile dir yang writable; pakai temp dir
-                # untuk avoid konflik kalau ada instance LibreOffice lain
-                env=self._build_env(),
-            )
+            with tempfile.TemporaryDirectory(prefix="lo-profile-") as profile_dir:
+                # LibreOffice headless command
+                # --headless: tanpa GUI
+                # --convert-to pdf: target format
+                # --outdir: folder output (LibreOffice akan generate file dengan nama asli + .pdf)
+                # -env:UserInstallation: profile sementara agar tidak bentrok dengan instance GUI.
+                cmd = [
+                    self.soffice_path,
+                    f"-env:UserInstallation={Path(profile_dir).as_uri()}",
+                    "--headless",
+                    "--nologo",
+                    "--nodefault",
+                    "--nofirststartwizard",
+                    "--norestore",
+                    "--convert-to", "pdf",
+                    "--outdir", str(output_dir),
+                    str(docx_path),
+                ]
+
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout_seconds,
+                    env=self._build_env(),
+                )
         except subprocess.TimeoutExpired as e:
             raise PdfConversionError(
                 f"Konversi timeout setelah {self.timeout_seconds}s: {docx_path.name}"

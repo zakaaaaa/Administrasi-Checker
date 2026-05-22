@@ -3,6 +3,7 @@
 import type { ChangeEvent, DragEvent, FormEvent } from 'react';
 import { useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import Link from 'next/link';
 import type { CheckResults } from '@/features/check/types';
 import {
   ALL_REPORTS,
@@ -15,10 +16,8 @@ import {
   type ReportCode,
   type SkemaCode,
 } from './form/checkFormConstants';
-import { CheckFormHeader } from './form/CheckFormHeader';
 import { CheckFormSection } from './form/CheckFormSection';
 import { CheckFormSelectCard } from './form/CheckFormSelectCard';
-import { CheckFormSidebar } from './form/CheckFormSidebar';
 
 export function CheckFormView() {
   const router = useRouter();
@@ -45,7 +44,6 @@ export function CheckFormView() {
   }, [token, router]);
 
   const availableReports = ALL_REPORTS.filter((r) => SKEMA_LAPORAN_MAP[skema].includes(r.code));
-  const selectedReport = availableReports.find((r) => r.code === reportCode) ?? availableReports[0];
   const isFormReady = Boolean(token && file && !fileError);
 
   function handleFile(f: File | null) {
@@ -122,17 +120,67 @@ export function CheckFormView() {
   const tokenPreview = token.length > 14 ? `${token.slice(0, 8)}…${token.slice(-4)}` : token;
 
   return (
-    <main className="relative mx-auto max-w-6xl px-4 pb-24 pt-8 sm:px-6">
-      <CheckFormHeader tokenPreview={tokenPreview} />
+    <div className="relative min-h-screen">
+      {/* Sticky header — mirip ReviewerCheckForm */}
+      <header className="sticky top-0 z-10 border-b border-black/8 bg-white/80 backdrop-blur-lg">
+        <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3 sm:px-6">
+          <div className="flex items-center gap-3">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="https://wryvhzvzeuadzbpelbdz.supabase.co/storage/v1/object/public/web/logopkm.png"
+              alt="Logo PKM"
+              className="h-8 w-auto object-contain"
+            />
+            <div>
+              <p className="font-mono text-[10px] uppercase tracking-widest text-foreground-subtle">
+                Form Pengecekan
+              </p>
+              
+            </div>
+          </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
+          <Link
+            href="/check/new"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-black/10 px-3 py-2 text-xs font-medium text-foreground-muted transition hover:border-brand-200 hover:text-foreground"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-3.5 w-3.5"
+            >
+              <line x1="19" y1="12" x2="5" y2="12" />
+              <polyline points="12 19 5 12 12 5" />
+            </svg>
+            Kembali
+          </Link>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-5xl px-4 pb-24 pt-8 sm:px-6">
+        <div className="mb-6">
+          <p className="font-mono text-xs uppercase tracking-[0.18em] text-foreground-subtle">
+            Langkah 2 dari 3 · Form Pengecekan
+          </p>
+          <h1 className="mt-1.5 text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+            Cek Dokumen PKM
+          </h1>
+          <p className="mt-1 text-sm text-foreground-muted">
+            Pilih skema dan jenis laporan, lalu upload file{' '}
+            <code className="rounded bg-brand-100/60 px-1.5 py-0.5 font-mono text-[0.85em]">.docx</code>.
+          </p>
+        </div>
+
         <form onSubmit={onSubmit} className="space-y-5">
           <CheckFormSection
             number={1}
             title="Skema PKM"
             description="Pilih satu skema sesuai usulan Anda."
           >
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
               {SKEMA_OPTIONS.map((opt) => (
                 <CheckFormSelectCard
                   key={opt.value}
@@ -175,7 +223,7 @@ export function CheckFormView() {
 
           <CheckFormSection
             number={3}
-            title="Upload laporan"
+            title="Upload Laporan"
             description="Hanya menerima file .docx, maksimal 25 MB."
           >
             {!file ? (
@@ -212,8 +260,7 @@ export function CheckFormView() {
                   Klik untuk memilih atau seret file ke sini
                 </p>
                 <p className="mt-1 text-xs text-foreground-muted">
-                  Format <span className="font-mono font-semibold">.docx</span> · maks {MAX_FILE_MB}{' '}
-                  MB
+                  Format <span className="font-mono font-semibold">.docx</span> · maks {MAX_FILE_MB} MB
                 </p>
               </label>
             ) : (
@@ -325,14 +372,7 @@ export function CheckFormView() {
             )}
           </div>
         </form>
-
-        <CheckFormSidebar
-          tokenPreview={tokenPreview}
-          skema={skema}
-          selectedReport={selectedReport}
-          file={file}
-        />
-      </div>
-    </main>
+      </main>
+    </div>
   );
 }

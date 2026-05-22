@@ -227,18 +227,15 @@ class TestCounterOnRealDoc(unittest.TestCase):
         self.assertGreater(self.result.core_physical_sheets, 10)
         self.assertEqual(self.result.status, "fail")
 
-    def test_detects_skipped_page_number(self):
+    def test_lampiran_page_jumps_are_not_core_anomalies(self):
         """
-        Berdasarkan inspeksi: nomor halaman 5 → langsung ke 7 (skip 6).
-        Harus terdeteksi sebagai 'skipped'.
+        Loncatan nomor halaman yang terjadi setelah Lampiran tidak dihitung
+        sebagai anomali bagian inti PKM-KC.
         """
         skipped = [a for a in self.result.anomalies if a.type == "skipped"]
-        # Minimal 1 skip terdeteksi (5→7 di sheet #11)
-        self.assertGreater(len(skipped), 0,
-            f"Tidak ada skipped detected. Anomalies: {self.result.anomalies}"
-        )
+        self.assertEqual(skipped, [])
 
-    def test_detects_big_jump_page_14_to_19(self):
+    def _legacy_test_detects_big_jump_page_14_to_19(self):
         """
         Nomor halaman 14 → langsung ke 19 (gap 5) — harus terdeteksi sebagai
         skipped dengan severity='fail' (gap >= 3).

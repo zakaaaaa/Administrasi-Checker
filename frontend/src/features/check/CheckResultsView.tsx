@@ -4,7 +4,12 @@ import { useMemo } from 'react';
 import type { CheckResults } from '@/features/check/types';
 
 type Message = { level: string; text: string };
-type ModuleData = { status?: string; messages?: Message[]; message?: string };
+type ModuleData = {
+  status?: string;
+  messages?: Message[];
+  message?: string;
+  schema?: { code?: string };
+};
 
 const MODULES = [
   { key: 'structure', label: 'Struktur Dokumen' },
@@ -133,21 +138,28 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
     case 'format': {
       if (/ukuran kertas|bukan a4/.test(m))
         return 'Kesalahan ukuran kertas bukan A4';
-      if (/font bukan|bukan times/.test(m)) {
-        // Sertakan snippet teks yang salah font (format backend: Font bukan TNR — "snippet")
+      if (/ukuran font(?! keterangan)|bukan 12/.test(m)) {
         const snippetMatch = masalah.match(/"([^"]+)"/);
         const snippet = snippetMatch ? ` — "${snippetMatch[1]}"` : '';
-        return `Kesalahan tipe huruf tidak Times New Roman${snippet}`;
+        return `Kesalahan ukuran huruf tidak 12${snippet}`;
       }
       if (/ukuran font keterangan/.test(m)) {
         const snippetMatch = masalah.match(/"([^"]+)"/);
         const snippet = snippetMatch ? ` — "${snippetMatch[1]}"` : '';
         return `Kesalahan ukuran huruf keterangan gambar/tabel bukan 11${snippet}`;
       }
-      if (/ukuran font|bukan 12/.test(m))
-        return 'Kesalahan ukuran huruf tidak 12';
-      if (/margin/.test(m))
-        return 'Kesalahan margin (kiri ≠ 4cm, atas / kanan / bawah ≠ 3cm)';
+      if (/^font bukan|font body bukan|bukan times new roman/.test(m)) {
+        const snippetMatch = masalah.match(/"([^"]+)"/);
+        const snippet = snippetMatch ? ` - "${snippetMatch[1]}"` : '';
+        return `Kesalahan tipe huruf tidak Times New Roman${snippet}`;
+      }
+      if (/margin/.test(m)) {
+        if (/margin left|margin kiri/.test(m)) return 'Kesalahan margin kiri bukan 4cm';
+        if (/margin right|margin kanan/.test(m)) return 'Kesalahan margin kanan bukan 3cm';
+        if (/margin top|margin atas/.test(m)) return 'Kesalahan margin atas bukan 3cm';
+        if (/margin bottom|margin bawah/.test(m)) return 'Kesalahan margin bawah bukan 3cm';
+        return 'Kesalahan margin tidak sesuai aturan PKM';
+      }
       if (/keterangan gambar|keterangan tabel/.test(m)) {
         const snippetMatch = masalah.match(/"([^"]+)"/);
         const snippet = snippetMatch ? ` — "${snippetMatch[1]}"` : '';
@@ -353,23 +365,6 @@ type ErrorItem = {
 
 type BalanceGroup = { header: string; items: string[] };
 
-// Deduplikasi: satu kalimat predefined hanya muncul sekali; ambil severity terburuk
-function deduplicateBySentence(items: ErrorItem[]): ErrorItem[] {
-  const seen = new Map<string, ErrorItem>();
-  for (const item of items) {
-    const existing = seen.get(item.masalah);
-    if (!existing) {
-      seen.set(item.masalah, item);
-    } else {
-      const isFail = (e: ErrorItem) => e.level === 'fail' || e.level === 'error';
-      if (!isFail(existing) && isFail(item)) {
-        seen.set(item.masalah, item);
-      }
-    }
-  }
-  return Array.from(seen.values());
-}
-
 function parseBalanceGroups(notes: string[]): BalanceGroup[] {
   const groups: BalanceGroup[] = [];
   let current: BalanceGroup | null = null;
@@ -395,7 +390,7 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
     const balance: string[] = [];
 
     // Ambil kode skema dari structure result (mis. "KC" → "PKM-KC")
-    const structureSchema = (resultMap['structure'] as any)?.schema?.code;
+    const structureSchema = resultMap.structure?.schema?.code;
     const schemaCode = structureSchema ? `PKM-${structureSchema}` : 'PKM';
 
     for (const { key, label } of MODULES) {

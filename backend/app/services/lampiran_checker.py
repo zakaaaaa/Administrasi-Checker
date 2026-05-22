@@ -208,10 +208,13 @@ class LampiranChecker:
         Ekstrak gambar embedded dari section Lampiran di docx, lalu OCR.
         Return teks gabungan hasil OCR.
         """
+        import logging
+        log = logging.getLogger(__name__)
+
         try:
-            import pytesseract
             from PIL import Image
-        except ImportError:
+        except ImportError as e:
+            log.warning(f"[lampiran] PIL not available: {e}")
             return ""
 
         docx_path = str(self.parser.file_path)
@@ -237,8 +240,12 @@ class LampiranChecker:
                 image_rids = _collect_image_rids_after(
                     body, lampiran_section_idx, self.parser.paragraphs
                 )
+                log.info(f"[lampiran] Found {len(image_rids)} images in lampiran section")
+                print(f"[lampiran] Found {len(image_rids)} images in lampiran section", flush=True)
+                if not image_rids:
+                    return ""
 
-                # OCR tiap gambar
+                images: list = []
                 for rid in image_rids:
                     img_path = rel_map.get(rid)
                     if not img_path:
@@ -246,15 +253,25 @@ class LampiranChecker:
                     full_img_path = f"word/{img_path}" if not img_path.startswith("word/") else img_path
                     try:
                         img_bytes = zf.read(full_img_path)
-                        img = Image.open(io.BytesIO(img_bytes))
-                        # OCR dengan bahasa Indonesia + Inggris
-                        text = pytesseract.image_to_string(img, lang="ind+eng", config="--psm 6")
-                        if text.strip():
-                            ocr_parts.append(text)
-                    except Exception:
+                        images.append(Image.open(io.BytesIO(img_bytes)))
+                    except Exception as e:
+                        log.warning(f"[lampiran] Failed to open image {full_img_path}: {e}")
                         continue
 
-        except Exception:
+                if not images:
+                    return ""
+
+                # Pakai EasyOCR yang sama dengan BiodataDateChecker, sehingga
+                # model yang sudah di-preload saat startup benar-benar terpakai.
+                from app.services.biodata_date_checker import _run_ocr
+                log.info(f"[lampiran] Loaded {len(images)} images, running OCR...")
+                print(f"[lampiran] Loaded {len(images)} images, running OCR...", flush=True)
+                ocr_parts = _run_ocr(images)
+                log.info(f"[lampiran] OCR done, total chars: {sum(len(t) for t in ocr_parts)}")
+                print(f"[lampiran] OCR done, total chars: {sum(len(t) for t in ocr_parts)}", flush=True)
+
+        except Exception as e:
+            log.error(f"[lampiran] OCR failed: {e}", exc_info=True)
             return ""
 
         return " ".join(ocr_parts)

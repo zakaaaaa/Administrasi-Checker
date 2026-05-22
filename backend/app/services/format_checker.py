@@ -727,10 +727,11 @@ class FormatChecker:
                     bad_cap_size: Optional[float] = None
                     bad_cap_snippet: str = para.text.strip()[:60]
                     if para.runs:
-                        for run in para.runs:
+                        for run_idx, run in enumerate(para.runs):
                             if not run.text.strip():
                                 continue
-                            eff_size = run.font_size_pt if run.font_size_pt is not None else cap_font.size_pt
+                            run_font = self.resolver.resolve_run_font(para.index, run_idx)
+                            eff_size = run_font.size_pt if run_font.size_pt is not None else cap_font.size_pt
                             if eff_size is not None and abs(eff_size - self.rules.caption_font_size_pt) > cap_tol:
                                 bad_cap_size = eff_size
                                 run_raw = run.text.strip()
@@ -770,7 +771,7 @@ class FormatChecker:
             bad_font: Optional[str] = None
             bad_font_snippet: str = para_snippet
             if para.runs:
-                for run in para.runs:
+                for run_idx, run in enumerate(para.runs):
                     if not run.text.strip():
                         continue
                     # Lewati run yang mengandung karakter non-ASCII (simbol kimia, matematika,
@@ -779,7 +780,8 @@ class FormatChecker:
                     # indikator kesalahan format.
                     if any(ord(c) > 127 for c in run.text):
                         continue
-                    effective_name = run.font_name if run.font_name else para_font.name
+                    run_font = self.resolver.resolve_run_font(para.index, run_idx)
+                    effective_name = run_font.name if run_font.name else para_font.name
                     if effective_name and effective_name != self.rules.font_name:
                         bad_font = effective_name
                         run_raw = run.text.strip()
@@ -804,10 +806,11 @@ class FormatChecker:
             bad_size: Optional[float] = None
             bad_size_snippet: str = para_snippet
             if para.runs:
-                for run in para.runs:
+                for run_idx, run in enumerate(para.runs):
                     if not run.text.strip():
                         continue
-                    effective_size = run.font_size_pt if run.font_size_pt is not None else para_font.size_pt
+                    run_font = self.resolver.resolve_run_font(para.index, run_idx)
+                    effective_size = run_font.size_pt if run_font.size_pt is not None else para_font.size_pt
                     if effective_size is not None and abs(effective_size - self.rules.font_size_pt) > self.rules.font_size_tolerance_pt:
                         bad_size = effective_size
                         run_raw = run.text.strip()
