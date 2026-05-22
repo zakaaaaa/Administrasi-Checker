@@ -10,6 +10,7 @@ import { AdminSidebar } from './AdminSidebar';
 import { API_URL, MENU_ITEMS, STORAGE_KEY } from './constants';
 import { TokenGeneratePanel } from './TokenGeneratePanel';
 import { TokenMonitoringPanel } from './TokenMonitoringPanel';
+import { UploadHistoryPanel } from './UploadHistoryPanel';
 import type { MenuKey, TokenRecord } from './types';
 
 export function AdminPanel() {
@@ -261,6 +262,8 @@ export function AdminPanel() {
                 setFilterDateTo={setFilterDateTo}
                 onRefresh={fetchTokenList}
               />
+            ) : activeMenu === 'uploads' ? (
+              <UploadHistoryPanel adminId={adminId} />
             ) : (
               <AdminComingSoonPanel
                 activeItem={activeItem}

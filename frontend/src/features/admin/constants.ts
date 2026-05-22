@@ -5,6 +5,12 @@ export const STORAGE_KEY = 'admin_session_v1';
 
 export const MENU_ITEMS: MenuItem[] = [
   {
+    key: 'dashboard',
+    label: 'Overview',
+    description: 'Ringkasan metrik harian.',
+    active: false,
+  },
+  {
     key: 'token',
     label: 'Generate Token',
     description: 'Buat token sekali pakai untuk user.',
@@ -17,33 +23,15 @@ export const MENU_ITEMS: MenuItem[] = [
     active: true,
   },
   {
-    key: 'dashboard',
-    label: 'Dashboard',
-    description: 'Ringkasan metrik harian.',
-    active: false,
-  },
-  {
-    key: 'users',
-    label: 'Manajemen User',
-    description: 'Daftar dan aktivitas user.',
-    active: false,
-  },
-  {
     key: 'uploads',
     label: 'Riwayat Upload',
     description: 'Log seluruh berkas masuk.',
-    active: false,
+    active: true,
   },
   {
     key: 'server',
     label: 'Monitoring Server',
     description: 'CPU, RAM, dan Disk usage.',
-    active: false,
-  },
-  {
-    key: 'settings',
-    label: 'Pengaturan',
-    description: 'Konfigurasi sistem.',
     active: false,
   },
 ];
