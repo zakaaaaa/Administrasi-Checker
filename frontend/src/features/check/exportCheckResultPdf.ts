@@ -9,6 +9,7 @@ const MODULES = [
   { key: 'page_numbering', label: 'Penomoran Halaman' },
   { key: 'budget', label: 'Audit Anggaran' },
   { key: 'reference', label: 'Daftar Pustaka' },
+  { key: 'schedule', label: 'Jadwal Kegiatan' },
 ] as const;
 
 export function exportCheckResultPdf(result: CheckResults) {

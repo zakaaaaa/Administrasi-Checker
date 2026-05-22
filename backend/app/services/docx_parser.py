@@ -112,6 +112,7 @@ class SectionInfo:
     margin_right_dxa: Optional[int] = None
     page_num_format: Optional[str] = None     # 'decimal', 'lowerRoman', 'upperRoman', dll
     page_num_start: Optional[int] = None      # angka mulai (jika di-restart)
+    num_columns: Optional[int] = None         # jumlah kolom teks; 1 = normal, ≥2 = format jurnal
     # Reference ke header/footer (rId yang dipakai untuk lookup di header_xmls/footer_xmls)
     header_refs: dict[str, str] = field(default_factory=dict)  # {'default': 'rId4', 'first': 'rId5', 'even': 'rId6'}
     footer_refs: dict[str, str] = field(default_factory=dict)
@@ -766,6 +767,22 @@ class DocxParser:
             info.margin_right_dxa = self._safe_int(pg_mar.get(qn("w:right")))
             info.margin_bottom_dxa = self._safe_int(pg_mar.get(qn("w:bottom")))
             info.margin_left_dxa = self._safe_int(pg_mar.get(qn("w:left")))
+
+        # Jumlah kolom teks: <w:cols w:num="2" .../>
+        # - Elemen <w:cols> absen        → 1 kolom (default Word)
+        # - Ada w:num                    → pakai nilainya
+        # - w:num absen tapi ada <w:col> → hitung jumlah anak <w:col>
+        # - selain itu                   → 1 kolom
+        cols = sect_pr.find(qn("w:cols"))
+        if cols is None:
+            info.num_columns = 1
+        else:
+            num = self._safe_int(cols.get(qn("w:num")))
+            if num is not None:
+                info.num_columns = num
+            else:
+                col_children = cols.findall(qn("w:col"))
+                info.num_columns = len(col_children) if col_children else 1
 
         # Page number type: <w:pgNumType w:fmt="lowerRoman" w:start="1"/>
         pg_num_type = sect_pr.find(qn("w:pgNumType"))

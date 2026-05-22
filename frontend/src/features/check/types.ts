@@ -16,5 +16,6 @@ export type CheckResults = {
     budget: ModuleResult;
     reference: ModuleResult;
     ai_front_matter?: ModuleResult;
+    schedule?: ModuleResult;
   };
 };

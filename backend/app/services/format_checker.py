@@ -66,6 +66,7 @@ class FormatRules:
     caption_font_size_tolerance_pt: float = 0.3
     check_caption_font_size: bool = False
     require_justify: bool = True
+    require_single_column: bool = True   # isi proposal wajib 1 kolom (bukan 2 kolom seperti jurnal)
 
 
 def get_pkm_format_rules() -> FormatRules:
@@ -477,6 +478,8 @@ class FormatChecker:
         # Jalankan tiap sub-check
         result.checks["paper_size"] = self._check_paper_size()
         result.checks["margin"] = self._check_margin()
+        if self.rules.require_single_column:
+            result.checks["columns"] = self._check_columns()
         result.checks["paragraph_indent"] = self._check_paragraph_indent(lampiran_idx, start_para_idx)
         result.checks["font_body"] = self._check_font_body(lampiran_idx, start_para_idx)
         result.checks["line_spacing"] = self._check_line_spacing(lampiran_idx, start_para_idx)
@@ -555,6 +558,45 @@ class FormatChecker:
         sec.detail = {
             "expected_w_cm": self.rules.paper_width_cm,
             "expected_h_cm": self.rules.paper_height_cm,
+            "section_count": len(self.parser.sections),
+            "violations_count": len(sec.issues),
+        }
+        return sec
+
+    # ------------------------------------------------------------------------
+    # Sub-check: columns (1 kolom)
+    # ------------------------------------------------------------------------
+
+    def _check_columns(self) -> FormatCheckSection:
+        """
+        Isi proposal wajib 1 kolom. Format 2 kolom (seperti jurnal) → fail.
+
+        Jumlah kolom adalah properti section (XML <w:sectPr>/<w:cols w:num>).
+        Section tanpa elemen <w:cols> dianggap 1 kolom (default Word), jadi
+        tidak di-flag. Section dengan ≥2 kolom di mana pun dalam proposal
+        adalah pelanggaran (PKM tidak pernah memakai layout berkolom).
+        """
+        sec = FormatCheckSection(name="columns", status="pass")
+        for s in self.parser.sections:
+            num = s.num_columns
+            if num is None or num <= 1:
+                continue
+            sec.issues.append(
+                FormatIssue(
+                    check_name="columns",
+                    severity="fail",
+                    location=self._section_location(s.index),
+                    issue=(
+                        f"Isi proposal memakai {num} kolom seperti jurnal — "
+                        f"seharusnya 1 kolom."
+                    ),
+                    found=f"{num} kolom",
+                    expected="1 kolom",
+                )
+            )
+        if sec.issues:
+            sec.status = "fail"
+        sec.detail = {
             "section_count": len(self.parser.sections),
             "violations_count": len(sec.issues),
         }

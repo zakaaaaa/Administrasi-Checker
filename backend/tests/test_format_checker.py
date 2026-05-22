@@ -316,6 +316,106 @@ class TestRulesEdgeCases(unittest.TestCase):
         result = FormatChecker(parser, rules).check()
         self.assertNotIn("alignment", result.checks)
 
+    def test_disable_single_column_check(self):
+        """Kalau require_single_column=False, sub-check columns tidak di-run."""
+        if not DUMMY_FILE.exists():
+            self.skipTest("Dummy belum di-generate")
+        parser = DocxParser(DUMMY_FILE)
+        rules = FormatRules(require_single_column=False)
+        result = FormatChecker(parser, rules).check()
+        self.assertNotIn("columns", result.checks)
+
+
+# ============================================================================
+# Test: columns (1 kolom vs 2 kolom seperti jurnal)
+# ============================================================================
+
+
+class TestColumnsCheck(unittest.TestCase):
+    """Sub-check columns: section ≥2 kolom → fail; 1 kolom / None → pass."""
+
+    def _checker_with_sections(self, *num_columns):
+        from app.services import format_checker as fc
+        from app.services.docx_parser import SectionInfo
+
+        parser = MagicMock()
+        parser.sections = [
+            SectionInfo(index=i, num_columns=n) for i, n in enumerate(num_columns)
+        ]
+        with patch.object(fc, "StyleResolver", return_value=MagicMock()):
+            checker = FormatChecker(parser)
+        # Hindari _section_location yang butuh document_xml asli
+        checker._section_location = lambda idx: f"Section #{idx}"
+        return checker
+
+    def test_single_column_passes(self):
+        checker = self._checker_with_sections(1, 1)
+        sec = checker._check_columns()
+        self.assertEqual(sec.status, "pass")
+        self.assertEqual(len(sec.issues), 0)
+
+    def test_none_columns_passes(self):
+        """num_columns None (tidak terbaca) → tidak di-flag (hindari false positive)."""
+        checker = self._checker_with_sections(None, 1)
+        sec = checker._check_columns()
+        self.assertEqual(sec.status, "pass")
+
+    def test_two_columns_fails(self):
+        checker = self._checker_with_sections(1, 2)
+        sec = checker._check_columns()
+        self.assertEqual(sec.status, "fail")
+        self.assertEqual(len(sec.issues), 1)
+        issue = sec.issues[0]
+        self.assertEqual(issue.found, "2 kolom")
+        self.assertEqual(issue.expected, "1 kolom")
+        # Pesan harus mengandung "kolom" agar mapToSentence frontend mengenalinya
+        self.assertIn("kolom", issue.issue.lower())
+
+    def test_multiple_two_column_sections_all_flagged(self):
+        checker = self._checker_with_sections(2, 1, 3)
+        sec = checker._check_columns()
+        self.assertEqual(sec.status, "fail")
+        self.assertEqual(len(sec.issues), 2)
+
+
+# ============================================================================
+# Test: parsing num_columns dari XML sectPr
+# ============================================================================
+
+
+class TestSectionColumnParsing(unittest.TestCase):
+    """_populate_section_from_xml harus mengisi num_columns dengan benar."""
+
+    def _parse_cols(self, sect_pr_inner: str):
+        from lxml import etree
+        from app.services.docx_parser import DocxParser, SectionInfo, NSMAP
+
+        xml = (
+            f'<w:sectPr xmlns:w="{NSMAP["w"]}">{sect_pr_inner}</w:sectPr>'
+        )
+        sect_pr = etree.fromstring(xml.encode())
+        parser = DocxParser.__new__(DocxParser)  # tanpa __init__ (tak perlu file)
+        info = SectionInfo(index=0)
+        parser._populate_section_from_xml(info, sect_pr)
+        return info.num_columns
+
+    def test_no_cols_element_is_one(self):
+        self.assertEqual(self._parse_cols('<w:pgSz w:w="11906" w:h="16838"/>'), 1)
+
+    def test_cols_without_num_is_one(self):
+        self.assertEqual(self._parse_cols('<w:cols w:space="708"/>'), 1)
+
+    def test_cols_num_two(self):
+        self.assertEqual(self._parse_cols('<w:cols w:num="2" w:space="425"/>'), 2)
+
+    def test_cols_counts_col_children_when_num_absent(self):
+        inner = (
+            '<w:cols w:space="425">'
+            '<w:col w:w="4000"/><w:col w:w="4000"/>'
+            '</w:cols>'
+        )
+        self.assertEqual(self._parse_cols(inner), 2)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

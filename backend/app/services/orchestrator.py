@@ -22,6 +22,7 @@ from app.services.reference_validator import ReferenceValidator
 from app.services.luaran_checker import LuaranChecker
 from app.services.lampiran_checker import LampiranChecker
 from app.services.biodata_date_checker import BiodataDateChecker
+from app.services.schedule_checker import ScheduleChecker
 
 
 class UnsupportedSchemaError(ValueError):
@@ -198,6 +199,15 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
         statuses.append(_extract_status(results["biodata_date"]))
     except Exception as e:
         results["biodata_date"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 10. Jadwal kegiatan (khusus PKM-KC)
+    try:
+        r = ScheduleChecker.for_pkm_kc(parser).check()
+        results["schedule"] = r.to_dict()
+        statuses.append(_extract_status(results["schedule"]))
+    except Exception as e:
+        results["schedule"] = _module_error_payload(e)
         statuses.append("error")
 
     results["overall_status"] = _aggregate_status(statuses)

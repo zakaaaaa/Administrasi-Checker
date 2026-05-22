@@ -240,6 +240,102 @@ from pathlib import Path
 from fastapi import UploadFile, File, Form
 from app.services.orchestrator import CheckRequest, run_all_checks, UnsupportedSchemaError
 
+
+# ---------------------------------------------------------------------------
+# Upload history endpoint
+# ---------------------------------------------------------------------------
+
+def _parse_col(val) -> dict:
+    if val is None:
+        return {}
+    if isinstance(val, dict):
+        return val
+    try:
+        return json.loads(val)
+    except Exception:
+        return {}
+
+
+def _count_messages(mod: dict) -> tuple[int, int]:
+    fail, warn = 0, 0
+    msgs = mod.get("messages", [])
+    if isinstance(msgs, list):
+        for m in msgs:
+            lvl = m.get("level", "") if isinstance(m, dict) else ""
+            if lvl in ("fail", "error"):
+                fail += 1
+            elif lvl == "warning":
+                warn += 1
+    elif isinstance(mod.get("message"), str) and mod.get("status") in ("fail", "error"):
+        fail += 1
+    return fail, warn
+
+
+@app.get("/api/admin/uploads")
+def list_uploads(admin_id: str, limit: int = 100):
+    _verify_admin(admin_id)
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                s.id            AS submission_id,
+                s.original_filename,
+                s.schema_code,
+                s.report_type,
+                s.status,
+                s.completed_at,
+                r.overall_status,
+                r.structure_result,
+                r.physical_sheet_result,
+                r.format_result,
+                r.page_numbering_result,
+                r.budget_result,
+                r.reference_result
+            FROM submissions s
+            LEFT JOIN results r ON s.id = r.submission_id
+            ORDER BY s.completed_at DESC NULLS LAST
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        rows = cur.fetchall()
+
+    RESULT_KEYS = [
+        ("structure",       "structure_result"),
+        ("physical_sheet",  "physical_sheet_result"),
+        ("format",          "format_result"),
+        ("page_numbering",  "page_numbering_result"),
+        ("budget",          "budget_result"),
+        ("reference",       "reference_result"),
+    ]
+
+    uploads = []
+    for row in rows:
+        fail_total, warn_total = 0, 0
+        results: dict = {}
+        for mod_key, col_key in RESULT_KEYS:
+            mod = _parse_col(row.get(col_key))
+            results[mod_key] = mod
+            f, w = _count_messages(mod)
+            fail_total += f
+            warn_total += w
+
+        uploads.append({
+            "submission_id":    str(row["submission_id"]),
+            "original_filename": row["original_filename"],
+            "schema_code":      row["schema_code"],
+            "report_type":      row["report_type"],
+            "status":           row["status"],
+            "completed_at":     row["completed_at"].isoformat() if row["completed_at"] else None,
+            "overall_status":   row["overall_status"],
+            "fail_count":       fail_total,
+            "warn_count":       warn_total,
+            "results":          results,
+        })
+
+    return {"uploads": uploads}
+
+
 UPLOAD_DIR = Path(__file__).parent.parent / "storage" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
@@ -363,6 +459,7 @@ def submit_check(
             "luaran": results.get("luaran"),
             "lampiran": results.get("lampiran"),
             "biodata_date": results.get("biodata_date"),
+            "schedule": results.get("schedule"),
         },
     }
 
@@ -467,5 +564,6 @@ def reviewer_check(
             "luaran": results.get("luaran"),
             "lampiran": results.get("lampiran"),
             "biodata_date": results.get("biodata_date"),
+            "schedule": results.get("schedule"),
         },
     }

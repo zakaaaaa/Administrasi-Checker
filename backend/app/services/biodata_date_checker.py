@@ -37,9 +37,12 @@ _INDONESIAN_MONTHS: dict[str, int] = {
     "september": 9, "oktober": 10, "november": 11, "desember": 12,
 }
 
-# "Kota, DD Bulan YYYY" — kota bisa 1–3 kata, koma wajib
+# "Kota, DD Bulan YYYY" — kota harus proper-case (Awalan Kapital + huruf kecil)
+# (?-i:...) menonaktifkan IGNORECASE untuk bagian kota saja agar "AI" / "dengan" tidak ikut match
 _DATE_RE = re.compile(
-    r"[A-Za-z][a-zA-Z\.\s]{0,35},\s*"
+    r"(?<!\w)"
+    r"(?-i:[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})"   # Kota: proper noun, case-sensitive
+    r"\s*[,;]\s*"
     r"(\d{1,2})\s+"
     r"(Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus"
     r"|September|Oktober|November|Desember)\s+"
@@ -165,7 +168,7 @@ class BiodataDateChecker:
 
     def _find_lampiran_section_start(self) -> Optional[int]:
         for p in self.parser.paragraphs:
-            if _LAMPIRAN_SECTION_RE.match(p.text.strip()) and p.is_heading:
+            if _LAMPIRAN_SECTION_RE.match(p.text.strip()):
                 return p.index
         return None
 
@@ -256,15 +259,63 @@ def preload_ocr_model() -> None:
         pass
 
 
+_OCR_MONTH_FIXES: dict[str, str] = {
+    "mci": "Mei", "meil": "Mei", "mel": "Mei",
+    "apri": "April", "apnl": "April",
+    "marct": "Maret", "maret": "Maret",
+    "januari": "Januari", "januan": "Januari",
+    "februari": "Februari", "pebruari": "Februari",
+    "junl": "Juni", "junh": "Juni",
+    "agustus": "Agustus", "agustua": "Agustus",
+    "septembcr": "September", "septembér": "September",
+    "oktobcr": "Oktober",
+    "novembcr": "November",
+    "desembcr": "Desember", "desember": "Desember",
+}
+
+_MONTH_FIX_RE = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in _OCR_MONTH_FIXES) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _fix_ocr_months(text: str) -> str:
+    def _replace(m: re.Match) -> str:
+        return _OCR_MONTH_FIXES.get(m.group(0).lower(), m.group(0))
+    return _MONTH_FIX_RE.sub(_replace, text)
+
+
+_ROTATION_SCORE_THRESHOLD = 15  # kata bermakna cukup → skip rotasi lain
+
+
+def _best_rotation_text(img, reader) -> str:
+    """Coba rotasi gambar, berhenti lebih awal jika orientasi sudah bagus (lazy)."""
+    import numpy as np
+    best_text = ""
+    best_score = -1
+    for angle in [0, 90, 180, 270]:
+        rotated = img.rotate(angle, expand=True)
+        arr = np.array(rotated.convert("RGB"))
+        try:
+            detections = reader.readtext(arr, detail=0, paragraph=True)
+            text = " ".join(detections)
+            score = sum(1 for w in text.split() if w.isalpha() and len(w) > 3)
+            if score > best_score:
+                best_score = score
+                best_text = text
+            if score >= _ROTATION_SCORE_THRESHOLD:
+                break  # orientasi sudah bagus, tidak perlu coba rotasi lain
+        except Exception:
+            continue
+    return best_text
+
+
 def _run_ocr(images: list) -> list[str]:
-    """
-    Coba pytesseract dulu. Kalau tidak tersedia, pakai easyocr.
-    Return list teks per gambar.
-    """
+    """Pakai easyocr dengan auto-rotate dan normalisasi bulan. Return list teks per gambar."""
     import logging
     log = logging.getLogger(__name__)
 
-    # --- pytesseract ---
+    # --- pytesseract (opsional, jika tersedia) ---
     try:
         import pytesseract
         results = []
@@ -272,7 +323,7 @@ def _run_ocr(images: list) -> list[str]:
             try:
                 text = pytesseract.image_to_string(img, lang="ind+eng", config="--psm 6")
                 if text.strip():
-                    results.append(text)
+                    results.append(_fix_ocr_months(text))
             except Exception as e:
                 log.warning(f"[biodata_date] pytesseract per-image error: {e}")
         if results:
@@ -282,10 +333,9 @@ def _run_ocr(images: list) -> list[str]:
     except Exception as e:
         log.warning(f"[biodata_date] pytesseract unavailable: {e}")
 
-    # --- easyocr fallback ---
+    # --- easyocr dengan auto-rotate ---
     try:
         import easyocr
-        import numpy as np
         global _easyocr_reader
         if _easyocr_reader is None:
             log.info("[biodata_date] Initializing easyocr reader...")
@@ -293,11 +343,9 @@ def _run_ocr(images: list) -> list[str]:
         results = []
         for img in images:
             try:
-                arr = np.array(img.convert("RGB"))
-                detections = _easyocr_reader.readtext(arr, detail=0, paragraph=True)
-                text = "\n".join(detections)
+                text = _best_rotation_text(img, _easyocr_reader)
                 if text.strip():
-                    results.append(text)
+                    results.append(_fix_ocr_months(text))
             except Exception as e:
                 log.warning(f"[biodata_date] easyocr per-image error: {e}")
         log.info(f"[biodata_date] easyocr OK: {len(results)} images with text")
@@ -365,9 +413,13 @@ def _collect_image_rids_after(
 # =============================================================================
 
 
-# Pattern konteks tanggal lahir — baris ini dihapus sebelum ekstraksi tanggal
+# Strip tanggal lahir: "Tempat dan Tanggal [Lahir] ... DD Bulan YYYY"
+# Menangani OCR misread "Tempat"→"Tcmpat" dan format tanpa kata "Lahir"
 _TTL_RE = re.compile(
-    r"(?:tempat\s+dan\s+tanggal\s+lahir|t\.?\s*t\.?\s*l\.?)[^\n]*",
+    r"(?:t[ce]?mpat\s+dan\s+tanggal(?:\s+lahir)?|t\.?\s*t\.?\s*l\.?)"
+    r"[^\d]*\d{1,2}\s+"
+    r"(?:Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus"
+    r"|September|Oktober|November|Desember)\s+\d{4}",
     re.IGNORECASE,
 )
 

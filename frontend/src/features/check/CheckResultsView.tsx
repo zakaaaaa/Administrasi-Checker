@@ -17,6 +17,7 @@ const MODULES = [
   { key: 'luaran', label: 'Luaran' },
   { key: 'lampiran', label: 'Lampiran' },
   { key: 'biodata_date', label: 'Tanggal Biodata' },
+  { key: 'schedule', label: 'Jadwal Kegiatan' },
 ];
 
 function getMessages(mod: ModuleData): Message[] {
@@ -270,6 +271,27 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
       }
       return masalah;
     }
+
+    case 'schedule': {
+      if (/tidak terdeteksi/i.test(m))
+        return 'Tabel jadwal kegiatan tidak terdeteksi — periksa manual (kolom: No, Jadwal Kegiatan, Bulan, Penanggung Jawab)';
+      if (/header kolom|tidak ditemukan di tabel jadwal/i.test(m)) {
+        const colMatch = masalah.match(/"([^"]+)"/);
+        const col = colMatch ? ` "${colMatch[1]}"` : '';
+        return `Kesalahan penulisan header kolom tabel jadwal${col} (wajib persis: No, Jadwal Kegiatan, Bulan, Penanggung Jawab)`;
+      }
+      if (/jumlah bulan|rentang bulan|melebihi batas/i.test(m)) {
+        const cntMatch = masalah.match(/jumlah bulan pada tabel jadwal (\d+)/i);
+        const cnt = cntMatch ? ` (terdeteksi ${cntMatch[1]} bulan)` : '';
+        return `Kesalahan jumlah bulan tabel jadwal harus tepat 4 bulan${cnt}`;
+      }
+      if (/penanggung jawab kosong/i.test(m)) {
+        const noMatch = masalah.match(/nomor (\d+)/i);
+        const no = noMatch ? ` (kegiatan nomor ${noMatch[1]})` : '';
+        return `Kolom Penanggung Jawab pada tabel jadwal belum terisi${no}`;
+      }
+      return masalah;
+    }
   }
 
   return masalah;
@@ -493,7 +515,7 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
 
       {/* Flat list — kesalahan umum, per halaman */}
       {flatItems.length > 0 && (
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           {flatItems.map((item, i) => (
             <ErrorRow key={i} item={item} showPage />
           ))}
@@ -527,15 +549,15 @@ function ErrorRow({ item, showPage = false }: { item: ErrorItem; showPage?: bool
   const pageCls = isFail ? 'text-red-400' : 'text-amber-400';
 
   return (
-    <div className={`flex items-start gap-3 rounded-xl border px-3 py-2.5 ${rowCls}`}>
-      <span className={`mt-2 h-2 w-2 shrink-0 rounded-full ${dotCls}`} />
+    <div className={`flex items-start gap-3 rounded-xl border px-4 py-3 ${rowCls}`}>
+      <span className={`mt-2.5 h-2.5 w-2.5 shrink-0 rounded-full ${dotCls}`} />
       {showPage && (
-        <span className={`mt-0.5 w-16 shrink-0 font-mono text-xs font-medium ${pageCls}`}>
+        <span className={`mt-0.5 w-20 shrink-0 font-mono text-sm font-medium ${pageCls}`}>
           {item.page !== null ? `Hal. ${item.page}` : ''}
         </span>
       )}
-      <p className={`flex-1 text-sm font-medium leading-snug ${textCls}`}>{item.masalah}</p>
-      <span className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-xs font-medium ${tagCls}`}>
+      <p className={`flex-1 text-base font-medium leading-relaxed ${textCls}`}>{item.masalah}</p>
+      <span className={`shrink-0 rounded px-2 py-0.5 font-mono text-xs font-semibold ${tagCls}`}>
         {item.moduleLabel}
       </span>
     </div>
@@ -545,10 +567,10 @@ function ErrorRow({ item, showPage = false }: { item: ErrorItem; showPage?: bool
 function GroupedSection({ label, items, showPage = false }: { label: string; items: ErrorItem[]; showPage?: boolean }) {
   return (
     <div>
-      <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-foreground-subtle">
+      <p className="mb-2.5 text-sm font-semibold uppercase tracking-wider text-foreground-subtle">
         {label}
       </p>
-      <div className="space-y-1.5">
+      <div className="space-y-2">
         {items.map((item, i) => (
           <ErrorRow key={i} item={item} showPage={showPage} />
         ))}
@@ -560,17 +582,17 @@ function GroupedSection({ label, items, showPage = false }: { label: string; ite
 function SaranPerbaikanSection({ groups }: { groups: BalanceGroup[] }) {
   return (
     <div>
-      <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-foreground-subtle">
+      <p className="mb-3 text-sm font-semibold uppercase tracking-wider text-foreground-subtle">
         Saran Perbaikan
       </p>
       <div className="space-y-3">
         {groups.map((group, gi) => (
-          <div key={gi} className="rounded-2xl border border-sky-200 bg-sky-50/60 p-4">
-            <p className="mb-2.5 text-sm font-semibold text-sky-800">{group.header}</p>
+          <div key={gi} className="rounded-2xl border border-sky-200 bg-sky-50/60 p-5">
+            <p className="mb-3 text-base font-semibold text-sky-800">{group.header}</p>
             {group.items.length > 0 && (
-              <ul className="space-y-1">
+              <ul className="space-y-1.5">
                 {group.items.map((item, ii) => (
-                  <li key={ii} className="flex items-start gap-2 text-sm text-sky-700">
+                  <li key={ii} className="flex items-start gap-2 text-base text-sky-700">
                     <span className="mt-0.5 shrink-0 font-mono text-sky-400">•</span>
                     <span className="font-mono">{item}</span>
                   </li>
