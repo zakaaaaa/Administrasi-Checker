@@ -66,7 +66,7 @@ export function CheckResultPageView() {
               type="button"
               onClick={() => result && exportCheckResultPdf(result)}
               disabled={!result}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-brand-300 bg-brand-50 px-3.5 py-2 text-sm font-semibold text-brand-700 transition hover:bg-brand-100 disabled:cursor-not-allowed disabled:opacity-40 print:hidden"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-brand-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-40 print:hidden"
             >
               <svg
                 viewBox="0 0 24 24"
