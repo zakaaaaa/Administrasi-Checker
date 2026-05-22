@@ -336,6 +336,103 @@ def list_uploads(admin_id: str, limit: int = 100):
     return {"uploads": uploads}
 
 
+# ---------------------------------------------------------------------------
+# Overview / stats endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/api/admin/overview")
+def get_overview(admin_id: str):
+    _verify_admin(admin_id)
+    with get_cursor() as cur:
+        # Tokens
+        cur.execute("SELECT COUNT(*) AS total FROM tokens")
+        total_tokens = cur.fetchone()["total"]
+
+        cur.execute("SELECT COUNT(*) AS used FROM tokens WHERE consumed_at IS NOT NULL")
+        tokens_used = cur.fetchone()["used"]
+
+        # Submissions
+        cur.execute("SELECT COUNT(*) AS total FROM submissions WHERE status = 'completed'")
+        total_submissions = cur.fetchone()["total"]
+
+        cur.execute(
+            "SELECT COUNT(*) AS today FROM submissions WHERE status = 'completed' AND completed_at::date = CURRENT_DATE"
+        )
+        submissions_today = cur.fetchone()["today"]
+
+        # Status breakdown
+        cur.execute(
+            "SELECT overall_status, COUNT(*) AS cnt FROM results GROUP BY overall_status"
+        )
+        status_rows = cur.fetchall()
+        status_map = {r["overall_status"]: r["cnt"] for r in status_rows if r["overall_status"]}
+
+        # By schema
+        cur.execute(
+            """
+            SELECT schema_code, COUNT(*) AS cnt
+            FROM submissions
+            WHERE status = 'completed'
+            GROUP BY schema_code
+            ORDER BY cnt DESC
+            """
+        )
+        by_schema = [{"schema_code": r["schema_code"], "count": r["cnt"]} for r in cur.fetchall()]
+
+        # Avg processing time (seconds)
+        cur.execute(
+            """
+            SELECT AVG(EXTRACT(EPOCH FROM (completed_at - created_at))) AS avg_sec
+            FROM submissions
+            WHERE status = 'completed'
+              AND completed_at IS NOT NULL
+              AND created_at IS NOT NULL
+            """
+        )
+        avg_row = cur.fetchone()
+        avg_processing_seconds = (
+            round(avg_row["avg_sec"]) if avg_row and avg_row["avg_sec"] else None
+        )
+
+        # Recent 5 submissions
+        cur.execute(
+            """
+            SELECT s.original_filename, s.schema_code, s.report_type, s.completed_at,
+                   r.overall_status
+            FROM submissions s
+            LEFT JOIN results r ON s.id = r.submission_id
+            WHERE s.status = 'completed'
+            ORDER BY s.completed_at DESC NULLS LAST
+            LIMIT 5
+            """
+        )
+        recent_rows = cur.fetchall()
+        recent = [
+            {
+                "original_filename": r["original_filename"],
+                "schema_code":       r["schema_code"],
+                "report_type":       r["report_type"],
+                "completed_at":      r["completed_at"].isoformat() if r["completed_at"] else None,
+                "overall_status":    r["overall_status"],
+            }
+            for r in recent_rows
+        ]
+
+    return {
+        "total_tokens":           total_tokens,
+        "tokens_used":            tokens_used,
+        "tokens_unused":          total_tokens - tokens_used,
+        "total_submissions":      total_submissions,
+        "submissions_today":      submissions_today,
+        "pass_count":             status_map.get("pass", 0),
+        "fail_count":             status_map.get("fail", 0),
+        "warning_count":          status_map.get("warning", 0),
+        "avg_processing_seconds": avg_processing_seconds,
+        "by_schema":              by_schema,
+        "recent":                 recent,
+    }
+
+
 UPLOAD_DIR = Path(__file__).parent.parent / "storage" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB

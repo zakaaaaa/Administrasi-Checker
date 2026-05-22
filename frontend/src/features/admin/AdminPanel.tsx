@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AdminComingSoonPanel } from './AdminComingSoonPanel';
 import { AdminDesktopHeader } from './AdminDesktopHeader';
-import { AdminKpiGrid } from './AdminKpiGrid';
 import { AdminLoginScreen } from './AdminLoginScreen';
 import { AdminMobileNav } from './AdminMobileNav';
+import { AdminOverviewPanel } from './AdminOverviewPanel';
 import { AdminSidebar } from './AdminSidebar';
 import { API_URL, MENU_ITEMS, STORAGE_KEY } from './constants';
 import { TokenGeneratePanel } from './TokenGeneratePanel';
@@ -21,7 +21,7 @@ export function AdminPanel() {
   const [loginError, setLoginError] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
 
-  const [activeMenu, setActiveMenu] = useState<MenuKey>('token');
+  const [activeMenu, setActiveMenu] = useState<MenuKey>('dashboard');
   const [showPassword, setShowPassword] = useState(false);
 
   const [tokenCount, setTokenCount] = useState(1);
@@ -88,7 +88,7 @@ export function AdminPanel() {
     setBulkTokens([]);
     setTokenError('');
     setTokenList([]);
-    setActiveMenu('token');
+    setActiveMenu('dashboard');
   }
 
   async function handleAuth() {
@@ -230,13 +230,9 @@ export function AdminPanel() {
           <AdminDesktopHeader activeItem={activeItem} adminUsername={adminUsername} />
 
           <main className="flex-1 px-4 py-6 sm:px-6">
-            <AdminKpiGrid
-              adminUsername={adminUsername}
-              bulkTokensLength={bulkTokens.length}
-              hasGeneratedSingle={Boolean(generatedToken)}
-            />
-
-            {activeMenu === 'token' ? (
+            {activeMenu === 'dashboard' ? (
+              <AdminOverviewPanel adminId={adminId} />
+            ) : activeMenu === 'token' ? (
               <TokenGeneratePanel
                 tokenCount={tokenCount}
                 onTokenCountChange={setTokenCount}

@@ -8,7 +8,7 @@ export const MENU_ITEMS: MenuItem[] = [
     key: 'dashboard',
     label: 'Overview',
     description: 'Ringkasan metrik harian.',
-    active: false,
+    active: true,
   },
   {
     key: 'token',
