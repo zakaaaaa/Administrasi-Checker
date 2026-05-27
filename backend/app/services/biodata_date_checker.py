@@ -13,7 +13,6 @@ Strategi:
 
 from __future__ import annotations
 
-import io
 import re
 import zipfile
 from dataclasses import dataclass, field
@@ -118,6 +117,14 @@ class BiodataDateChecker:
     @classmethod
     def for_pkm_kc(cls, parser: DocxParser) -> "BiodataDateChecker":
         return cls(parser, "PKM-KC")
+
+    @classmethod
+    def for_pkm_re(cls, parser: DocxParser) -> "BiodataDateChecker":
+        return cls(parser, "PKM-RE")
+
+    @classmethod
+    def for_pkm_rsh(cls, parser: DocxParser) -> "BiodataDateChecker":
+        return cls(parser, "PKM-RSH")
 
     # -------------------------------------------------------------------------
     # Public
@@ -248,225 +255,25 @@ class BiodataDateChecker:
             fallback_rids.extend(seg.image_rids)
         return index.ocr_text_for_rids(fallback_rids)
 
-    def _ocr_lampiran_images(self, lampiran_section_idx: Optional[int]) -> str:
-        import logging
-        log = logging.getLogger(__name__)
-
-        try:
-            from PIL import Image
-        except ImportError as e:
-            log.warning(f"[biodata_date] PIL not available: {e}")
-            return ""
-
-        docx_path = str(self.parser.file_path)
-        ocr_parts: list[str] = []
-
-        try:
-            with zipfile.ZipFile(docx_path, "r") as zf:
-                rel_map = _load_image_rels(zf)
-                if not rel_map:
-                    log.warning("[biodata_date] No image rels found in docx")
-                    return ""
-
-                with zf.open("word/document.xml") as f:
-                    doc_xml = ET.parse(f).getroot()
-
-                body = doc_xml.find(f"{{{_W_NS}}}body")
-                if body is None:
-                    return ""
-
-                rids = _collect_image_rids_after(body, lampiran_section_idx, self.parser.paragraphs)
-                log.info(f"[biodata_date] Found {len(rids)} images in lampiran section")
-                if not rids:
-                    return ""
-
-                images: list = []
-                for rid in rids:
-                    img_path = rel_map.get(rid)
-                    if not img_path:
-                        continue
-                    full_path = f"word/{img_path}" if not img_path.startswith("word/") else img_path
-                    try:
-                        img_bytes = zf.read(full_path)
-                        images.append(Image.open(io.BytesIO(img_bytes)))
-                    except Exception as e:
-                        log.warning(f"[biodata_date] Failed to open image {full_path}: {e}")
-                        continue
-
-                log.info(f"[biodata_date] Loaded {len(images)} images, running OCR...")
-                if not images:
-                    return ""
-
-                ocr_parts = _run_ocr(images)
-                log.info(f"[biodata_date] OCR done, total chars: {sum(len(t) for t in ocr_parts)}")
-
-        except Exception as e:
-            log.error(f"[biodata_date] OCR failed: {e}", exc_info=True)
-            return ""
-
-        return " ".join(ocr_parts)
-
-
 # =============================================================================
-# OCR engine (pytesseract → easyocr fallback)
+# OCR — delegasi ke Google Vision (lihat ocr_engine.py)
 # =============================================================================
-
-_easyocr_reader = None  # lazy singleton
 
 
 def preload_ocr_model() -> None:
-    """Inisialisasi easyocr reader di awal agar request pertama tidak lelet."""
-    global _easyocr_reader
-    if _easyocr_reader is not None:
-        return
-    try:
-        import easyocr
-        _easyocr_reader = easyocr.Reader(["id", "en"], gpu=False, verbose=False)
-    except Exception:
-        pass
-
-
-_OCR_MONTH_FIXES: dict[str, str] = {
-    "mci": "Mei", "meil": "Mei", "mel": "Mei",
-    "apri": "April", "apnl": "April",
-    "marct": "Maret", "maret": "Maret",
-    "januari": "Januari", "januan": "Januari",
-    "februari": "Februari", "pebruari": "Februari",
-    "junl": "Juni", "junh": "Juni",
-    "agustus": "Agustus", "agustua": "Agustus",
-    "septembcr": "September", "septembér": "September",
-    "oktobcr": "Oktober",
-    "novembcr": "November",
-    "desembcr": "Desember", "desember": "Desember",
-}
-
-_MONTH_FIX_RE = re.compile(
-    r"\b(" + "|".join(re.escape(k) for k in _OCR_MONTH_FIXES) + r")\b",
-    re.IGNORECASE,
-)
-
-
-def _fix_ocr_months(text: str) -> str:
-    def _replace(m: re.Match) -> str:
-        return _OCR_MONTH_FIXES.get(m.group(0).lower(), m.group(0))
-    return _MONTH_FIX_RE.sub(_replace, text)
-
-
-_ROTATION_SCORE_THRESHOLD = 15  # skor tinggi → orientasi pasti benar, stop
-_ROTATION_FAST_ACCEPT = 3       # skor minimal di 0° untuk terima tanpa coba rotasi lain
-_OCR_MAX_DIM = 1500             # downscale sisi terpanjang sebelum OCR (waktu easyocr ∝ piksel)
-
-# "Sudah ada tanggal / persen" → jika 0° memuat ini, orientasi sudah benar, tak perlu rotasi.
-_ANY_DATE_RE = re.compile(
-    r"\d{1,2}\s+(?:Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus"
-    r"|September|Oktober|November|Desember)\s+\d{4}",
-    re.IGNORECASE,
-)
-_ANY_PERCENT_RE = re.compile(r"\d{1,3}\s*%")
-
-
-def _downscale_for_ocr(img):
-    """Kecilkan gambar besar (jaga rasio) agar OCR lebih cepat. No-op jika sudah kecil."""
-    w, h = img.size
-    longest = max(w, h)
-    if longest <= _OCR_MAX_DIM:
-        return img
-    scale = _OCR_MAX_DIM / float(longest)
-    return img.resize((max(1, int(w * scale)), max(1, int(h * scale))))
-
-
-def _rotation_score(text: str) -> int:
-    return sum(1 for w in text.split() if w.isalpha() and len(w) > 3)
-
-
-def _ocr_arr(arr, reader) -> str:
-    return " ".join(reader.readtext(arr, detail=0, paragraph=True))
-
-
-def _best_rotation_text(img, reader) -> str:
-    """
-    OCR satu gambar dengan auto-rotate hemat:
-      - downscale dulu (waktu ∝ piksel),
-      - OCR 0° dulu; terima langsung jika skor cukup (≥3) ATAU sudah memuat
-        pola tanggal/persen — gambar tegak (mayoritas) cukup 1× OCR,
-      - hanya jika 0° nyaris kosong baru coba 90/180/270° dan pilih terbaik
-        (early-stop bila skor sangat tinggi).
-    """
-    import numpy as np
-    img = _downscale_for_ocr(img)
-
-    try:
-        text0 = _ocr_arr(np.array(img.convert("RGB")), reader)
-    except Exception:
-        text0 = ""
-    score0 = _rotation_score(text0)
-    if (
-        score0 >= _ROTATION_FAST_ACCEPT
-        or _ANY_DATE_RE.search(text0)
-        or _ANY_PERCENT_RE.search(text0)
-    ):
-        return text0
-
-    # 0° nyaris kosong → kemungkinan gambar miring; coba orientasi lain.
-    best_text, best_score = text0, score0
-    for angle in (90, 180, 270):
-        try:
-            arr = np.array(img.rotate(angle, expand=True).convert("RGB"))
-            text = _ocr_arr(arr, reader)
-        except Exception:
-            continue
-        score = _rotation_score(text)
-        if score > best_score:
-            best_score, best_text = score, text
-        if score >= _ROTATION_SCORE_THRESHOLD:
-            break
-    return best_text
+    """Preload Vision client di startup biar request pertama tak nunggu init."""
+    from app.services.ocr_engine import preload_ocr_engine
+    preload_ocr_engine()
 
 
 def _run_ocr(images: list) -> list[str]:
-    """Pakai easyocr dengan auto-rotate dan normalisasi bulan. Return list teks per gambar."""
-    import logging
-    log = logging.getLogger(__name__)
-
-    # --- pytesseract (opsional, jika tersedia) ---
-    try:
-        import pytesseract
-        results = []
-        for img in images:
-            try:
-                text = pytesseract.image_to_string(img, lang="ind+eng", config="--psm 6")
-                if text.strip():
-                    results.append(_fix_ocr_months(text))
-            except Exception as e:
-                log.warning(f"[biodata_date] pytesseract per-image error: {e}")
-        if results:
-            log.info(f"[biodata_date] pytesseract OK: {len(results)} images with text")
-            return results
-        log.info("[biodata_date] pytesseract returned no text, trying easyocr...")
-    except Exception as e:
-        log.warning(f"[biodata_date] pytesseract unavailable: {e}")
-
-    # --- easyocr dengan auto-rotate ---
-    try:
-        import easyocr
-        global _easyocr_reader
-        if _easyocr_reader is None:
-            log.info("[biodata_date] Initializing easyocr reader...")
-            _easyocr_reader = easyocr.Reader(["id", "en"], gpu=False, verbose=False)
-        results = []
-        for img in images:
-            try:
-                text = _best_rotation_text(img, _easyocr_reader)
-                if text.strip():
-                    results.append(_fix_ocr_months(text))
-            except Exception as e:
-                log.warning(f"[biodata_date] easyocr per-image error: {e}")
-        log.info(f"[biodata_date] easyocr OK: {len(results)} images with text")
-        return results
-    except Exception as e:
-        log.error(f"[biodata_date] easyocr failed: {e}", exc_info=True)
-
-    return []
+    """
+    Entry point OCR semua checker. Delegasi ke Google Vision.
+    Output: list teks per gambar, urutan dipertahankan. Konsumen (similarity,
+    lampiran_index) import dari sini — signature & semantic dijaga.
+    """
+    from app.services.ocr_engine import get_ocr_engine
+    return get_ocr_engine().run(images)
 
 
 # =============================================================================
@@ -491,46 +298,18 @@ def _load_image_rels(zf: zipfile.ZipFile) -> dict[str, str]:
     return rel_map
 
 
-def _collect_image_rids_after(
-    body: ET.Element,
-    lampiran_section_idx: Optional[int],
-    paragraphs,
-) -> list[str]:
-    rids: list[str] = []
-    if lampiran_section_idx is not None:
-        valid_indices = {p.index for p in paragraphs if p.index >= lampiran_section_idx}
-    else:
-        valid_indices = {p.index for p in paragraphs}
-
-    para_counter = 0
-    for child in body:
-        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
-        if tag == "p":
-            if para_counter in valid_indices:
-                for blip in child.iter(f"{{{_A_NS}}}blip"):
-                    rid = blip.get(f"{{{_R_NS}}}embed")
-                    if rid:
-                        rids.append(rid)
-                _V_NS = "urn:schemas-microsoft-com:vml"
-                for imgdata in child.iter(f"{{{_V_NS}}}imagedata"):
-                    rid = imgdata.get(f"{{{_R_NS}}}id")
-                    if rid:
-                        rids.append(rid)
-            para_counter += 1
-
-    return rids
-
-
 # =============================================================================
 # Date helpers
 # =============================================================================
 
 
 # Strip tanggal lahir: "Tempat dan Tanggal [Lahir] ... DD Bulan YYYY"
-# Menangani OCR misread "Tempat"→"Tcmpat" dan format tanpa kata "Lahir"
+# Menangani OCR misread "Tempat"→"Tcmpat" dan format tanpa kata "Lahir".
+# Gap pakai [\s\S]{0,300}? (lazy, lintas newline) agar match ke layout tabel Vision
+# yang taruh label kolom dulu (mengandung digit) baru value-nya.
 _TTL_RE = re.compile(
-    r"(?:t[ce]?mpat\s+dan\s+tanggal(?:\s+lahir)?|t\.?\s*t\.?\s*l\.?)"
-    r"[^\d]*\d{1,2}\s+"
+    r"(?:t[ce]?mpat\s+dan\s+tanggal(?:\s+lahir)?|tanggal\s+lahir|t\.?\s*t\.?\s*l\.?)"
+    r"[\s\S]{0,300}?\d{1,2}\s+"
     r"(?:Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus"
     r"|September|Oktober|November|Desember)\s+\d{4}",
     re.IGNORECASE,

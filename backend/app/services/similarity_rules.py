@@ -29,3 +29,17 @@ def get_pkm_vgk_similarity_rules() -> SimilarityRules:
     rules = get_pkm_kc_similarity_rules()
     rules.schema_label = "PKM-VGK"
     return rules
+
+
+def get_pkm_re_similarity_rules() -> SimilarityRules:
+    """Aturan similaritas PKM-RE — sama dengan PKM-KC (maks 25%)."""
+    rules = get_pkm_kc_similarity_rules()
+    rules.schema_label = "PKM-RE"
+    return rules
+
+
+def get_pkm_rsh_similarity_rules() -> SimilarityRules:
+    """Aturan similaritas PKM-RSH — sama dengan PKM-KC (maks 25%)."""
+    rules = get_pkm_kc_similarity_rules()
+    rules.schema_label = "PKM-RSH"
+    return rules

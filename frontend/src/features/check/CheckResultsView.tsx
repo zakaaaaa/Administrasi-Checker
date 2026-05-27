@@ -76,8 +76,13 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
         return 'Kesalahan menuliskan 4 luaran wajib PKM di proposal pada Bab 1 Pendahuluan';
       const sectionMatch = masalah.match(/'([^']+)'/);
       const section = sectionMatch ? sectionMatch[1] : '';
-      if (/tidak ditemukan di dokumen/i.test(masalah))
+      if (/tidak ditemukan di dokumen/i.test(masalah)) {
+        const su = section.toUpperCase();
+        // Khusus DAFTAR LAMPIRAN: tanpa tanda kurung (sesuai permintaan)
+        if (su === 'DAFTAR LAMPIRAN' || su === 'DAFTAR LAMPIRAN-LAMPIRAN')
+          return `Kesalahan tidak ditemukan ${section}`;
         return `Kesalahan tidak ditemukan (${section})`;
+      }
       return `Kesalahan Judul Bab (${section}) tidak sesuai panduan ${schemaCode} 2026`;
     }
 
@@ -194,7 +199,7 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
         return 'Kesalahan nomor halaman';
       }
       if (/front.matter.*tidak terdeteksi|tidak terdeteksi.*front.matter|roman_lower/.test(m))
-        return 'Nomor halaman romawi kecil (i, ii, iii) tidak ditemukan di bagian awal dokumen';
+        return 'Kesalahan nomor halaman pada awal halaman, harus ditulis romawi (i, ii, iii)';
       if (/core.matter.*tidak terdeteksi|tidak terdeteksi.*core.matter|arabic.*top.right/.test(m))
         return 'Nomor halaman arab tidak ditemukan di bagian isi dokumen (Bab 1 s.d. Daftar Pustaka)';
       if (/letak|posisi|atas|bawah|header|footer/.test(m))
@@ -264,6 +269,17 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
     }
 
     case 'lampiran': {
+      // (a) Daftar Lampiran tidak ada sama sekali — tanpa tanda kurung
+      if (/DAFTAR LAMPIRAN tidak ditemukan/i.test(masalah))
+        return 'Kesalahan tidak ditemukan DAFTAR LAMPIRAN';
+      // (b) Body lampiran missing — strip prefix "Lampiran N", sisakan label dalam tanda kutip
+      const bodyMatch = masalah.match(/Tidak ditemukan Lampiran \d+\s+"([^"]+)" pada halaman lampiran/i);
+      if (bodyMatch)
+        return `Tidak ditemukan "${bodyMatch[1]}" pada halaman lampiran`;
+      // (c) Daftar Lampiran tidak lengkap padahal di body ada — pass-through
+      if (/^Kesalahan kelengkapan Daftar Lampiran/i.test(masalah))
+        return masalah;
+      // Legacy fallback (format lama)
       const numMatch = masalah.match(/Lampiran (\d+) \(([^)]+)\)/i);
       if (numMatch) {
         const [, num, label] = numMatch;

@@ -28,6 +28,8 @@ from app.services.schedule_rules import (
     ScheduleTableRules,
     get_pkm_kc_schedule_rules,
     get_pkm_vgk_schedule_rules,
+    get_pkm_re_schedule_rules,
+    get_pkm_rsh_schedule_rules,
 )
 
 
@@ -89,6 +91,14 @@ class ScheduleChecker:
     @classmethod
     def for_pkm_vgk(cls, parser: DocxParser) -> "ScheduleChecker":
         return cls(parser, get_pkm_vgk_schedule_rules())
+
+    @classmethod
+    def for_pkm_re(cls, parser: DocxParser) -> "ScheduleChecker":
+        return cls(parser, get_pkm_re_schedule_rules())
+
+    @classmethod
+    def for_pkm_rsh(cls, parser: DocxParser) -> "ScheduleChecker":
+        return cls(parser, get_pkm_rsh_schedule_rules())
 
     # --- public ---
 

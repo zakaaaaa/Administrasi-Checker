@@ -45,3 +45,17 @@ def get_pkm_vgk_schedule_rules() -> ScheduleTableRules:
     rules = get_pkm_kc_schedule_rules()
     rules.schema_label = "PKM-VGK"
     return rules
+
+
+def get_pkm_re_schedule_rules() -> ScheduleTableRules:
+    """Aturan tabel jadwal kegiatan PKM-RE — sama dengan PKM-KC."""
+    rules = get_pkm_kc_schedule_rules()
+    rules.schema_label = "PKM-RE"
+    return rules
+
+
+def get_pkm_rsh_schedule_rules() -> ScheduleTableRules:
+    """Aturan tabel jadwal kegiatan PKM-RSH — sama dengan PKM-KC."""
+    rules = get_pkm_kc_schedule_rules()
+    rules.schema_label = "PKM-RSH"
+    return rules

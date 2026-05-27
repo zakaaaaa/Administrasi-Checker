@@ -210,10 +210,148 @@ FOREIGN_WORDS = {
     "et cetera", "id est", "exempli gratia", "circa", "versus",
     "a priori", "a posteriori", "ad hoc", "de facto", "de jure",
     "status quo", "vice versa", "per se", "ipso facto",
-    "et al", "nota bene", "ibid", "op cit",
+    "nota bene", "ibid", "op cit",
     "bona fide", "prima facie", "caveat", "addendum",
     "curriculum vitae", "ex officio", "pro rata",
     "mutatis mutandis",
+    "modus operandi", "ad libitum", "ad infinitum",
+    "in press", "sui generis", "passim", "loc cit", "et seq",
+    "inter alia", "in toto", "ad valorem", "pro bono", "a fortiori",
+    # NOTE: "et al" / "et al." TIDAK dimasukkan karena sitasi in-text Harvard
+    # diperbolehkan pakai et al.; larangan hanya di Daftar Pustaka (validator
+    # terpisah di reference_validator.py).
+    # ----------------------------------------------------------------
+    # AI / ML — era LLM (PKM-KC, RE)
+    # ----------------------------------------------------------------
+    "large language model", "prompt engineering",
+    "fine-tuning", "embedding", "tokenization", "tokenizer",
+    "retrieval augmented generation", "attention mechanism",
+    "self-attention", "hallucination",
+    "supervised learning", "unsupervised learning",
+    "semi-supervised learning", "self-supervised learning",
+    "ensemble learning", "feature engineering", "feature extraction",
+    "feature selection", "data augmentation",
+    "hyperparameter", "hyperparameter tuning",
+    "overfitting", "underfitting",
+    "preprocessing", "postprocessing",
+    "benchmark", "evaluation metric", "f1-score",
+    "training data", "validation data", "testing data",
+    # ----------------------------------------------------------------
+    # Web / UI / Mobile — addendum (PKM-KC, K)
+    # ----------------------------------------------------------------
+    "frontend", "backend", "fullstack",
+    "username", "password", "login", "logout",
+    "sign-in", "sign-up", "sign in", "sign up",
+    "upload", "download", "browser",
+    "responsive", "single page application", "progressive web app",
+    "sidebar", "navbar", "popup", "modal", "tooltip", "dropdown",
+    "smart contract", "metaverse",
+    "monitoring", "tracking", "scanning",
+    "firmware", "middleware",
+    "sensor", "actuator",
+    "wireframe", "mockup",
+    "deployment", "rollout",
+    # ----------------------------------------------------------------
+    # Medis / Biologi — addendum (PKM-RE, PM, PI)
+    # ----------------------------------------------------------------
+    "antimicrobial", "antibacterial", "antiviral", "antifungal",
+    "vaccine", "vaccination", "immunization",
+    "telehealth", "ehealth", "mhealth",
+    "preventive", "curative", "rehabilitative",
+    "diagnostic", "therapeutic", "prognostic",
+    "pathogen", "outbreak", "epidemic", "pandemic", "endemic",
+    "zoonotic", "vector-borne",
+    "antibody", "antigen",
+    # ----------------------------------------------------------------
+    # Bisnis / Startup — addendum (PKM-K)
+    # ----------------------------------------------------------------
+    "unicorn", "scale-up", "scaleup", "bootstrapping",
+    "founder", "co-founder", "early adopter",
+    "pivot", "lean startup", "growth hacking",
+    "churn rate", "customer acquisition cost",
+    "lifetime value", "annual recurring revenue",
+    "monthly recurring revenue", "burn rate",
+    # ----------------------------------------------------------------
+    # Metodologi — addendum (PKM-RE, RSH)
+    # ----------------------------------------------------------------
+    "questionnaire", "in-depth interview",
+    "validity", "reliability",
+    "data saturation", "thematic saturation",
+    "ethnography", "phenomenology",
+    # ----------------------------------------------------------------
+    # Software Engineering / DevOps (PKM-KC)
+    # ----------------------------------------------------------------
+    "json", "xml", "yaml", "restful", "graphql",
+    "oauth", "jwt", "encryption", "decryption", "hashing",
+    "ssl", "tls", "https", "cdn", "caching",
+    "latency", "throughput", "bandwidth", "scalability",
+    "container", "containerization", "docker", "kubernetes",
+    "continuous integration", "continuous deployment", "ci/cd",
+    "codebase", "repository", "pull request", "merge", "branching",
+    "refactoring", "debugging",
+    "webhook", "websocket", "polling",
+    "saas", "paas", "iaas",
+    "software as a service", "platform as a service",
+    "infrastructure as a service",
+    # ----------------------------------------------------------------
+    # Engineering / Fisika / Material (PKM-KC, RE)
+    # ----------------------------------------------------------------
+    "thermodynamics", "electromagnetic", "semiconductor",
+    "photovoltaic", "fuel cell", "electric vehicle",
+    "autonomous vehicle", "piezoelectric", "photonic", "optical",
+    "mechatronics", "computational fluid dynamics",
+    "digital twin",
+    # ----------------------------------------------------------------
+    # Kimia / Material Sains (PKM-RE)
+    # ----------------------------------------------------------------
+    "solvent", "catalyst", "monomer", "polymer", "biopolymer",
+    "nanoparticle", "nanomaterial", "graphene", "biodegradable",
+    "composite", "hydrogel", "scaffolding", "biocompatibility",
+    # ----------------------------------------------------------------
+    # Epidemiologi / Public Health (PKM-RE, PM)
+    # ----------------------------------------------------------------
+    "chronic", "acute", "comorbid", "multimorbidity",
+    "incidence", "prevalence", "mortality", "morbidity",
+    "risk factor", "protective factor",
+    "epidemiology", "public health",
+    "precision medicine", "personalized medicine",
+    "evidence-based medicine", "evidence based medicine",
+    # ----------------------------------------------------------------
+    # Pertanian / Pangan (PKM-K, PM, PI)
+    # ----------------------------------------------------------------
+    "postharvest", "post-harvest", "food safety",
+    "traceability", "agribusiness", "agroforestry",
+    "integrated pest management",
+    "soil fertility", "crop rotation", "aquaculture",
+    # ----------------------------------------------------------------
+    # Energi / Lingkungan (PKM-RE, PI)
+    # ----------------------------------------------------------------
+    "greenhouse gas", "carbon emission", "carbon neutral",
+    "net zero", "climate change",
+    "mitigation", "adaptation", "life cycle assessment",
+    "circular economy", "green technology",
+    # ----------------------------------------------------------------
+    # Pendidikan — addendum (PKM-PM, RSH)
+    # ----------------------------------------------------------------
+    "gamification", "microlearning", "edtech",
+    "lifelong learning", "soft skills", "hard skills",
+    "upskilling", "reskilling",
+    "competency-based", "learning outcome",
+    "stem", "steam",
+    # ----------------------------------------------------------------
+    # Statistik — addendum (PKM-RE, RSH)
+    # ----------------------------------------------------------------
+    "bootstrap", "monte carlo", "sensitivity analysis",
+    "robustness check", "multicollinearity",
+    "heteroscedasticity", "autocorrelation",
+    "variance", "covariance", "dispersion",
+    # ----------------------------------------------------------------
+    # Bisnis — addendum (PKM-K)
+    # ----------------------------------------------------------------
+    "workflow", "pipeline", "roadmap", "blueprint",
+    "niche", "segmentation", "positioning", "value chain",
+    "gig economy", "sharing economy",
+    "go-to-market", "user persona", "customer persona",
 }
 
 # Caption gambar/tabel (sering center / bukan justify). Hanya pola awal baris
@@ -368,26 +506,34 @@ class FormatChecker:
 
         last_occurrence=True: kembalikan kemunculan terakhir. Berguna untuk heading
         yang juga muncul di TOC (halaman awal) — kemunculan terakhir = lokasi asli.
+
+        Whitespace dinormalisasi (collapse multi-space → single) di kedua sisi karena
+        LibreOffice PDF render kadang menambah multi-space untuk justified layout.
         """
         if not self._pdf_sheet_texts or not text or len(text) < 20:
             return None
-        search = text[:60].strip()
+        # Cache normalized sheet text on first use
+        if not hasattr(self, "_pdf_sheet_texts_norm") or self._pdf_sheet_texts_norm is None:
+            self._pdf_sheet_texts_norm = [re.sub(r"\s+", " ", s) for s in self._pdf_sheet_texts]
+        search = re.sub(r"\s+", " ", text[:60]).strip()
         if last_occurrence:
             found = None
-            for i, sheet_text in enumerate(self._pdf_sheet_texts):
+            for i, sheet_text in enumerate(self._pdf_sheet_texts_norm):
                 if search in sheet_text:
                     found = i + 1
             return found
-        for i, sheet_text in enumerate(self._pdf_sheet_texts):
+        for i, sheet_text in enumerate(self._pdf_sheet_texts_norm):
             if search in sheet_text:
                 return i + 1
         return None
 
     def _format_para_location(self, paragraph_index: int) -> str:
-        # Coba PDF text search dulu (akurat)
+        # Coba PDF text search dulu (akurat).
+        # last_occurrence=True menghindari false-match dari entry di Daftar Isi /
+        # Daftar Gambar / Daftar Tabel di halaman awal (TOC).
         if self._pdf_sheet_texts and 0 <= paragraph_index < len(self.parser.paragraphs):
             para_text = self.parser.paragraphs[paragraph_index].text.strip()
-            pdf_page = self._pdf_page_for_text(para_text)
+            pdf_page = self._pdf_page_for_text(para_text, last_occurrence=True)
             if pdf_page is not None:
                 return f"Halaman {pdf_page}"
         # Fallback: DOCX estimator (perkiraan)

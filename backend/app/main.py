@@ -11,15 +11,15 @@ from app.db import get_cursor
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Preload easyocr model saat server start agar request pertama tidak lelet
+    # Preload Google Cloud Vision client.
     try:
         import asyncio
         from app.services.biodata_date_checker import preload_ocr_model
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, preload_ocr_model)
-        print("[startup] EasyOCR model loaded.")
+        print("[startup] OCR engine ready (Google Vision).")
     except Exception as e:
-        print(f"[startup] EasyOCR preload skipped: {e}")
+        print(f"[startup] OCR preload skipped: {e}")
     yield
 
 

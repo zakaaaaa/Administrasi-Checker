@@ -69,7 +69,8 @@ def test_dkk_detected():
     assert _dp_has_dkk("No abbreviation here 2021.") is False
 
 
-def test_intext_et_al_format_issue(schema):
+def test_intext_et_al_allowed(schema):
+    """Sitasi in-text dengan 'et al.' DIPERBOLEHKAN — tidak boleh ke-flag."""
     paras = [
         _heading(0, "BAB 1. PENDAHULUAN"),
         _body(1, "Menurut (Revis et al, 2020) hal ini penting."),
@@ -85,10 +86,11 @@ def test_intext_et_al_format_issue(schema):
     intext_fail = [
         f for f in r.format_issues if f.entry_index == -1 and "et al" in f.issue.lower()
     ]
-    assert len(intext_fail) >= 1
+    assert intext_fail == []
 
 
-def test_intext_dkk_format_issue(schema):
+def test_intext_dkk_allowed(schema):
+    """Sitasi in-text dengan 'dkk.' DIPERBOLEHKAN — tidak boleh ke-flag."""
     paras = [
         _heading(0, "BAB 1. X"),
         _body(1, "Lihat (Astuti dkk., 2012)."),
@@ -101,7 +103,10 @@ def test_intext_dkk_format_issue(schema):
     ]
     parser = _fake_parser(paras)
     r = ReferenceValidator(parser, schema, current_year=2026).check()
-    assert any(f.entry_index == -1 and "dkk" in f.issue.lower() for f in r.format_issues)
+    intext_fail = [
+        f for f in r.format_issues if f.entry_index == -1 and "dkk" in f.issue.lower()
+    ]
+    assert intext_fail == []
 
 
 def test_balance_typo_hint_same_year(schema):

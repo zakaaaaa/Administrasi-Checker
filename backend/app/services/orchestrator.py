@@ -13,8 +13,19 @@ from pathlib import Path
 from typing import Any, Optional
 
 from app.services.docx_parser import DocxParser
-from app.services.schema_rules import get_pkm_kc_proposal_rules, get_pkm_ai_proposal_rules, get_pkm_vgk_proposal_rules
-from app.services.budget_rules import get_pkm_kc_budget_rules, get_pkm_vgk_budget_rules
+from app.services.schema_rules import (
+    get_pkm_kc_proposal_rules,
+    get_pkm_ai_proposal_rules,
+    get_pkm_vgk_proposal_rules,
+    get_pkm_re_proposal_rules,
+    get_pkm_rsh_proposal_rules,
+)
+from app.services.budget_rules import (
+    get_pkm_kc_budget_rules,
+    get_pkm_vgk_budget_rules,
+    get_pkm_re_budget_rules,
+    get_pkm_rsh_budget_rules,
+)
 from app.services.structure_checker import StructureChecker
 from app.services.physical_sheet_counter import PhysicalSheetCounter, PhysicalSheetResult
 from app.services.format_checker import FormatChecker, get_pkm_ai_format_rules
@@ -45,7 +56,7 @@ def _find_core_start_idx(structure_result) -> Optional[int]:
 
 
 def _load_pdf_sheet_texts(physical_result: PhysicalSheetResult) -> Optional[list[str]]:
-    """Baca teks per lembar dari PDF hasil konversi PhysicalSheetCounter."""
+    """Baca teks per lembar dari PDF (path di physical_result.pdf_path)."""
     if not physical_result.pdf_path:
         return None
     try:
@@ -60,6 +71,74 @@ def _load_pdf_sheet_texts(physical_result: PhysicalSheetResult) -> Optional[list
         return texts
     except Exception:
         return None
+
+
+def _render_pdf_for_format(docx_path: str) -> Optional[str]:
+    """
+    Render DOCX → PDF (via LibreOffice headless) untuk dipakai FormatChecker
+    sebagai ground-truth pemetaan halaman. Graceful fallback: kalau LibreOffice
+    tidak ada / konversi gagal, return None — FormatChecker akan jatuh ke
+    estimator DOCX (kurang akurat).
+    """
+    try:
+        from app.services.pdf_converter import PdfConverter
+        import tempfile
+        out_dir = tempfile.mkdtemp(prefix="format-pdf-")
+        return str(PdfConverter().convert(docx_path, output_dir=out_dir))
+    except Exception as e:
+        _log.info(f"[format] skip PDF render: {e}")
+        return None
+
+
+def _move_similarity_undetected_to_lampiran(
+    results: dict[str, Any], statuses: list[str]
+) -> None:
+    """
+    Kalau similarity check tidak bisa mendeteksi persentase ('tidak terdeteksi'),
+    pesan tsb dipindah ke section Lampiran sebagai 'Tidak ditemukan "Uji similaritas"
+    pada halaman lampiran'. Bagian similarity dibersihkan (pass + tanpa warning),
+    bagian lampiran ditambah fail.
+
+    Statuses list ikut di-update agar overall_status mencerminkan kondisi baru.
+    """
+    sim = results.get("similarity")
+    lamp = results.get("lampiran")
+    if not isinstance(sim, dict) or not isinstance(lamp, dict):
+        return
+    sim_msgs = sim.get("messages", []) or []
+    has_undetected = any(
+        "tidak terdeteksi" in (m.get("text", "") or "").lower() for m in sim_msgs
+    )
+    if not has_undetected:
+        return
+
+    remaining = [
+        m for m in sim_msgs if "tidak terdeteksi" not in (m.get("text", "") or "").lower()
+    ]
+    if remaining:
+        sim["messages"] = remaining
+    else:
+        sim["messages"] = []
+        sim["status"] = "pass"
+
+    # Buang pass-level message lampiran ("Kelengkapan ... sesuai") agar tidak
+    # bertabrakan dengan fail baru yang kita tambahkan.
+    lamp["messages"] = [
+        m for m in lamp.get("messages", []) if (m.get("level") or "").lower() != "pass"
+    ]
+    lamp["messages"].append({
+        "level": "fail",
+        "text": 'Tidak ditemukan "Uji similaritas" pada halaman lampiran',
+    })
+    lamp["status"] = "fail"
+
+    # Aggregate ulang statuses dari semua modul agar overall_status konsisten
+    # (similarity yang berubah ke pass, lampiran yang berubah ke fail).
+    statuses[:] = [
+        v.get("status", "pass")
+        for k, v in results.items()
+        if isinstance(v, dict) and "status" in v and k != "overall_status"
+    ]
 
 
 def _module_error_payload(exc: BaseException) -> dict[str, Any]:
@@ -115,12 +194,18 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
         return _run_pkm_kc(parser)
     elif key == ("PKM", "PROPOSAL", "PKM-VGK"):
         return _run_pkm_vgk(parser)
+    elif key == ("PKM", "PROPOSAL", "PKM-RE"):
+        return _run_pkm_re(parser)
+    elif key == ("PKM", "PROPOSAL", "PKM-RSH"):
+        return _run_pkm_rsh(parser)
     elif key == ("PKM", "SCIENTIFIC_ARTICLE", "PKM-AI"):
         return _run_pkm_ai(parser)
     else:
         raise UnsupportedSchemaError(
             f"Belum di-support: {req.competition}/{req.report_type}/{req.schema_code}. "
-            "Skema yang tersedia: PKM/PROPOSAL/PKM-KC, PKM/PROPOSAL/PKM-VGK, PKM/SCIENTIFIC_ARTICLE/PKM-AI."
+            "Skema yang tersedia: PKM/PROPOSAL/PKM-KC, PKM/PROPOSAL/PKM-VGK, "
+            "PKM/PROPOSAL/PKM-RE, PKM/PROPOSAL/PKM-RSH, "
+            "PKM/SCIENTIFIC_ARTICLE/PKM-AI."
         )
 
 
@@ -130,8 +215,51 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
 
 
 def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
-    schema = get_pkm_kc_proposal_rules()
-    budget_rules = get_pkm_kc_budget_rules()
+    """PKM-KC runner — delegasi ke helper bersama (sama dengan PKM-RE/RSH)."""
+    return _run_pkm_kc_like(
+        parser,
+        schema=get_pkm_kc_proposal_rules(),
+        budget_rules=get_pkm_kc_budget_rules(),
+        schema_suffix="kc",
+        log_label="PKM-KC",
+    )
+
+
+def _run_pkm_re(parser: DocxParser) -> dict[str, Any]:
+    """PKM-RE runner — pipeline sama dengan PKM-KC."""
+    return _run_pkm_kc_like(
+        parser,
+        schema=get_pkm_re_proposal_rules(),
+        budget_rules=get_pkm_re_budget_rules(),
+        schema_suffix="re",
+        log_label="PKM-RE",
+    )
+
+
+def _run_pkm_rsh(parser: DocxParser) -> dict[str, Any]:
+    """PKM-RSH runner — pipeline sama dengan PKM-KC."""
+    return _run_pkm_kc_like(
+        parser,
+        schema=get_pkm_rsh_proposal_rules(),
+        budget_rules=get_pkm_rsh_budget_rules(),
+        schema_suffix="rsh",
+        log_label="PKM-RSH",
+    )
+
+
+def _run_pkm_kc_like(
+    parser: DocxParser,
+    *,
+    schema: Any,
+    budget_rules: Any,
+    schema_suffix: str,
+    log_label: str,
+) -> dict[str, Any]:
+    """
+    Pipeline 11-step yang dipakai bersama PKM-KC, PKM-RE, dan PKM-RSH.
+    schema_suffix dipakai untuk pilih factory: for_pkm_{suffix}.
+    """
+    s = schema_suffix.lower()
     results: dict[str, Any] = {}
     statuses: list[str] = []
     timings: dict[str, float] = {}
@@ -163,6 +291,8 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
     # 3. Format (bagian inti: Bab 1 s.d. sebelum Lampiran)
     _t0 = time.perf_counter()
     try:
+        if _physical_result and not _physical_result.pdf_path:
+            _physical_result.pdf_path = _render_pdf_for_format(str(parser.file_path))
         _pdf_texts = _load_pdf_sheet_texts(_physical_result) if _physical_result else None
         r = FormatChecker(parser, schema=schema, pdf_sheet_texts=_pdf_texts).check(
             start_para_idx=_find_core_start_idx(structure_result)
@@ -207,10 +337,10 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
         statuses.append("error")
     _log_timing("reference", _t0, timings)
 
-    # 7. Luaran (khusus PKM-KC)
+    # 7. Luaran
     _t0 = time.perf_counter()
     try:
-        r = LuaranChecker.for_pkm_kc(parser).check()
+        r = getattr(LuaranChecker, f"for_pkm_{s}")(parser).check()
         results["luaran"] = r.to_dict()
         statuses.append(_extract_status(results["luaran"]))
     except Exception as e:
@@ -222,10 +352,10 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
     # (tiap gambar di-OCR maksimal sekali untuk kedua checker).
     lampiran_index = LampiranOcrIndex(parser)
 
-    # 8. Lampiran (khusus PKM-KC) — OCR scoped (segment belum teridentifikasi)
+    # 8. Lampiran — OCR scoped (segment belum teridentifikasi)
     _t0 = time.perf_counter()
     try:
-        r = LampiranChecker.for_pkm_kc(parser).check(index=lampiran_index)
+        r = getattr(LampiranChecker, f"for_pkm_{s}")(parser).check(index=lampiran_index)
         results["lampiran"] = r.to_dict()
         statuses.append(_extract_status(results["lampiran"]))
     except Exception as e:
@@ -233,10 +363,10 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
         statuses.append("error")
     _log_timing("lampiran", _t0, timings)
 
-    # 9. Tanggal biodata (khusus PKM-KC) — OCR scoped (biodata + surat pernyataan), reuse cache
+    # 9. Tanggal biodata — OCR scoped (biodata + surat pernyataan), reuse cache
     _t0 = time.perf_counter()
     try:
-        r = BiodataDateChecker.for_pkm_kc(parser).check(index=lampiran_index)
+        r = getattr(BiodataDateChecker, f"for_pkm_{s}")(parser).check(index=lampiran_index)
         results["biodata_date"] = r.to_dict()
         statuses.append(_extract_status(results["biodata_date"]))
     except Exception as e:
@@ -244,10 +374,10 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
         statuses.append("error")
     _log_timing("biodata_date", _t0, timings)
 
-    # 10. Jadwal kegiatan (khusus PKM-KC)
+    # 10. Jadwal kegiatan
     _t0 = time.perf_counter()
     try:
-        r = ScheduleChecker.for_pkm_kc(parser).check()
+        r = getattr(ScheduleChecker, f"for_pkm_{s}")(parser).check()
         results["schedule"] = r.to_dict()
         statuses.append(_extract_status(results["schedule"]))
     except Exception as e:
@@ -255,10 +385,10 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
         statuses.append("error")
     _log_timing("schedule", _t0, timings)
 
-    # 11. Hasil uji similaritas ≤ 25% (khusus PKM-KC) — OCR gambar similaritas
+    # 11. Hasil uji similaritas ≤ 25% — OCR gambar similaritas
     _t0 = time.perf_counter()
     try:
-        r = SimilarityChecker.for_pkm_kc(parser).check()
+        r = getattr(SimilarityChecker, f"for_pkm_{s}")(parser).check()
         results["similarity"] = r.to_dict()
         statuses.append(_extract_status(results["similarity"]))
     except Exception as e:
@@ -266,9 +396,13 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
         statuses.append("error")
     _log_timing("similarity", _t0, timings)
 
+    # Kalau % similaritas tak bisa terdeteksi (gambar tak ada / OCR tak baca angka),
+    # pindahkan ke bagian Lampiran sebagai "Tidak ditemukan 'Uji similaritas'".
+    _move_similarity_undetected_to_lampiran(results, statuses)
+
     results["_timings"] = {**timings, "total": round(sum(timings.values()), 3)}
     if _TIMING_ENABLED:
-        print(f"[timing] TOTAL PKM-KC: {results['_timings']['total']:.2f}s", flush=True)
+        print(f"[timing] TOTAL {log_label}: {results['_timings']['total']:.2f}s", flush=True)
     results["overall_status"] = _aggregate_status(statuses)
     return results
 
@@ -306,6 +440,8 @@ def _run_pkm_vgk(parser: DocxParser) -> dict[str, Any]:
 
     # 3. Format (bagian inti: Bab 1 s.d. sebelum Lampiran)
     try:
+        if _physical_result and not _physical_result.pdf_path:
+            _physical_result.pdf_path = _render_pdf_for_format(str(parser.file_path))
         _pdf_texts = _load_pdf_sheet_texts(_physical_result) if _physical_result else None
         r = FormatChecker(parser, schema=schema, pdf_sheet_texts=_pdf_texts).check(
             start_para_idx=_find_core_start_idx(structure_result)
@@ -350,6 +486,16 @@ def _run_pkm_vgk(parser: DocxParser) -> dict[str, Any]:
         statuses.append(_extract_status(results["luaran"]))
     except Exception as e:
         results["luaran"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 8. Lampiran (khusus PKM-VGK) — text scan + OCR fallback Vision pada gambar
+    lampiran_index = LampiranOcrIndex(parser)
+    try:
+        r = LampiranChecker.for_pkm_vgk(parser).check(index=lampiran_index)
+        results["lampiran"] = r.to_dict()
+        statuses.append(_extract_status(results["lampiran"]))
+    except Exception as e:
+        results["lampiran"] = _module_error_payload(e)
         statuses.append("error")
 
     results["overall_status"] = _aggregate_status(statuses)
@@ -404,6 +550,8 @@ def _run_pkm_ai(parser: DocxParser) -> dict[str, Any]:
             (p.index for p in parser.paragraphs if _pendahuluan_re.match(p.text.strip())),
             None,
         )
+        if _physical_result and not _physical_result.pdf_path:
+            _physical_result.pdf_path = _render_pdf_for_format(str(parser.file_path))
         _pdf_texts = _load_pdf_sheet_texts(_physical_result) if _physical_result else None
         r = FormatChecker(parser, rules=get_pkm_ai_format_rules(), schema=schema, pdf_sheet_texts=_pdf_texts).check(start_para_idx=bab1_idx)
         results["format"] = r.to_dict()

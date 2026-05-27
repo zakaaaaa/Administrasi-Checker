@@ -6,9 +6,9 @@ A. Format strict Harvard (pengecekan dasar — bukan parser Harvard penuh):
    - Ada tahun di entry
    - Tidak terlalu pendek (entry minimal punya nama + tahun + judul)
 
-B. LARANGAN STRICT (Daftar Pustaka + sitasi in-text):
-   - Tidak boleh "et al." / "dkk." di Daftar Pustaka
-   - Tidak boleh "et al." / "dkk." di bagian penulis sitasi in-text (…, tahun)
+B. LARANGAN STRICT (Daftar Pustaka):
+   - Tidak boleh "et al." / "dkk." di Daftar Pustaka — wajib tulis semua nama
+   - Di sitasi in-text "et al." / "dkk." DIPERBOLEHKAN.
 
 C. Pengecekan keseimbangan sitasi (anti-referensi-bodong):
    1. In-text → DP: tiap sitasi (Author, Year) di body teks WAJIB ada di DP
@@ -24,7 +24,7 @@ E. Rekomendasi kualitas: jumlah referensi mutakhir (< 10 tahun)
 Catatan desain:
 - Format Harvard strict yang penuh (penulis dengan inisial, italic untuk judul,
   format jurnal vs buku) sangat rapuh untuk regex. Kita HANYA validasi yang
-  jelas: ada tahun, tidak ada et al./dkk. (DP & in-text), balance check.
+  jelas: ada tahun, tidak ada et al./dkk. di DP, balance check.
 - Pencocokan sitasi pakai nama pertama (last name) dari entry DP. Variasi
   penulisan (typo kecil) → dicoba deteksi dengan jarak edit; typo besar tetap
   mismatch fail.
@@ -110,9 +110,6 @@ def _dp_has_dkk(text: str) -> bool:
     return bool(_DKK_RE.search(text))
 
 
-def _intext_forbidden_in_author_part(author_part: str) -> tuple[bool, bool]:
-    """True jika bagian penulis sitasi mengandung et al. / dkk. (batas kata)."""
-    return _dp_has_et_al(author_part), _dp_has_dkk(author_part)
 # Data class
 # ============================================================================
 
@@ -322,12 +319,9 @@ class ReferenceValidator:
         ])
 
         # Step 3: ekstrak sitasi in-text
+        # Catatan: et al./dkk. di sitasi in-text DIPERBOLEHKAN (Harvard standar
+        # mengizinkan singkatan untuk 3+ penulis). Yang dilarang hanya di DP.
         result.in_text_citations = self._extract_in_text_citations()
-        result.format_issues.extend(
-            self._intext_forbidden_issues(result.in_text_citations)
-        )
-
-        # et al./dkk. di sitasi in-text dilarang untuk mode Harvard strict.
 
         # Step 4: balance check (in-text ↔ DP)
         result.balance_findings = self._balance_check(
@@ -618,48 +612,6 @@ class ReferenceValidator:
                 )
         return citations
 
-    def _intext_forbidden_issues(
-        self, citations: list[InTextCitation]
-    ) -> list[FormatIssue]:
-        """FormatIssue untuk sitasi in-text yang melanggar larangan et al./dkk."""
-        issues: list[FormatIssue] = []
-        seen: set[tuple[int, str, str]] = set()
-        for c in citations:
-            has_etal, has_dkk = _intext_forbidden_in_author_part(c.author_raw)
-            key_base = (c.paragraph_index, c.raw_text)
-            if has_etal:
-                k = (*key_base, "etal")
-                if k not in seen:
-                    seen.add(k)
-                    issues.append(
-                        FormatIssue(
-                            entry_index=-1,
-                            text_preview=c.raw_text[: self.PREVIEW_CHARS],
-                            severity="fail",
-                            issue=(
-                                "Sitasi in-text mengandung 'et al.' — Harvard strict "
-                                "melarang. Tulis nama penulis lengkap sebelum tahun."
-                            ),
-                            paragraph_index=c.paragraph_index,
-                        )
-                    )
-            if has_dkk:
-                k = (*key_base, "dkk")
-                if k not in seen:
-                    seen.add(k)
-                    issues.append(
-                        FormatIssue(
-                            entry_index=-1,
-                            text_preview=c.raw_text[: self.PREVIEW_CHARS],
-                            severity="fail",
-                            issue=(
-                                "Sitasi in-text mengandung 'dkk.' — Harvard strict "
-                                "melarang. Tulis nama penulis lengkap sebelum tahun."
-                            ),
-                            paragraph_index=c.paragraph_index,
-                        )
-                    )
-        return issues
     @staticmethod
     def _extract_first_author_from_citation(author_text: str) -> Optional[str]:
         """

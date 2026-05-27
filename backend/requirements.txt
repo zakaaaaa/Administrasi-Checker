@@ -16,9 +16,9 @@ passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 python-dotenv==1.2.2
 
-# OCR (lampiran checker)
-pytesseract==0.3.13
+# OCR — Google Cloud Vision (set GOOGLE_APPLICATION_CREDENTIALS=/path/ke/service-account.json)
 Pillow>=10.0.0
+google-cloud-vision>=3.7,<4
 
 # Dev/testing
 pytest==8.3.0

@@ -415,6 +415,159 @@ def get_pkm_vgk_proposal_rules() -> SchemaRules:
 
 
 # ============================================================================
+# HARDCODED RULES — PKM-RE & PKM-RSH Proposal 2026
+# ============================================================================
+#
+# PKM-RE  : Riset Eksakta
+# PKM-RSH : Riset Sosial Humaniora
+#
+# Struktur sama (4 BAB), beda hanya pada nama skema (label & schema_code):
+#   1. BAB 1. PENDAHULUAN
+#   2. BAB 2. TINJAUAN PUSTAKA
+#   3. BAB 3. METODE PENELITIAN
+#   4. BAB 4. BIAYA DAN JADWAL KEGIATAN
+#   5. DAFTAR PUSTAKA
+#   6. LAMPIRAN
+# ============================================================================
+
+
+def _build_pkm_riset_sections() -> list[SectionRule]:
+    """Section list bersama untuk PKM-RE & PKM-RSH (struktur identik)."""
+    return [
+        SectionRule(
+            name="DAFTAR ISI",
+            required=True,
+            order=1,
+        ),
+        SectionRule(
+            name="DAFTAR LAMPIRAN",
+            aliases=["DAFTAR LAMPIRAN-LAMPIRAN"],
+            required=True,
+            order=4,
+        ),
+        SectionRule(
+            name="BAB 1. PENDAHULUAN",
+            aliases=[
+                "BAB I. PENDAHULUAN",
+                "BAB 1 PENDAHULUAN",
+                "BAB I PENDAHULUAN",
+            ],
+            required=True,
+            is_core=True,
+            order=5,
+        ),
+        SectionRule(
+            name="BAB 2. TINJAUAN PUSTAKA",
+            aliases=[
+                "BAB II. TINJAUAN PUSTAKA",
+                "BAB 2 TINJAUAN PUSTAKA",
+                "BAB II TINJAUAN PUSTAKA",
+            ],
+            required=True,
+            is_core=True,
+            order=6,
+        ),
+        SectionRule(
+            name="BAB 3. METODE PENELITIAN",
+            aliases=[
+                "BAB III. METODE PENELITIAN",
+                "BAB 3 METODE PENELITIAN",
+                "BAB III METODE PENELITIAN",
+                "BAB 3. METODE",
+                "BAB III. METODE",
+            ],
+            required=True,
+            is_core=True,
+            order=7,
+        ),
+        SectionRule(
+            name="BAB 4. BIAYA DAN JADWAL KEGIATAN",
+            aliases=[
+                "BAB IV. BIAYA DAN JADWAL KEGIATAN",
+                "BAB 4 BIAYA DAN JADWAL KEGIATAN",
+                "BAB IV BIAYA DAN JADWAL KEGIATAN",
+                "BAB 4. BIAYA DAN JADWAL",
+                "BAB IV. BIAYA DAN JADWAL",
+            ],
+            required=True,
+            is_core=True,
+            order=8,
+        ),
+        SectionRule(
+            name="DAFTAR PUSTAKA",
+            required=True,
+            is_core=True,
+            order=9,
+        ),
+        SectionRule(
+            name="LAMPIRAN",
+            aliases=[
+                "LAMPIRAN 1",
+                "LAMPIRAN 1.",
+                "LAMPIRAN-LAMPIRAN",
+            ],
+            required=True,
+            order=10,
+        ),
+        # --- OPSIONAL ---
+        SectionRule(name="DAFTAR GAMBAR", required=False, order=2),
+        SectionRule(name="DAFTAR TABEL", required=False, order=3),
+        # --- TERLARANG ---
+        SectionRule(
+            name="HALAMAN SAMPUL",
+            aliases=[
+                "COVER",
+                "SAMPUL",
+                "PROPOSAL PKM",
+                "PROPOSAL PKM-RE",
+                "PROPOSAL PKM-RSH",
+                "PROPOSAL PROGRAM KREATIVITAS MAHASISWA",
+            ],
+            forbidden=True,
+        ),
+        SectionRule(
+            name="HALAMAN PENGESAHAN",
+            aliases=[
+                "LEMBAR PENGESAHAN",
+                "PENGESAHAN PROPOSAL",
+                "PENGESAHAN PKM",
+                "PENGESAHAN USULAN",
+            ],
+            forbidden=True,
+        ),
+        SectionRule(
+            name="RINGKASAN",
+            aliases=["ABSTRAK", "ABSTRACT"],
+            forbidden=True,
+        ),
+    ]
+
+
+def get_pkm_re_proposal_rules() -> SchemaRules:
+    """Aturan PKM-RE (Riset Eksakta) Proposal 2026."""
+    return SchemaRules(
+        competition_code="PKM",
+        schema_code="RE",
+        report_type_code="PROPOSAL",
+        schema_name="Riset Eksakta",
+        year=2026,
+        sections=_build_pkm_riset_sections(),
+    )
+
+
+def get_pkm_rsh_proposal_rules() -> SchemaRules:
+    """Aturan PKM-RSH (Riset Sosial Humaniora) Proposal 2026."""
+    return SchemaRules(
+        competition_code="PKM",
+        schema_code="RSH",
+        report_type_code="PROPOSAL",
+        schema_name="Riset Sosial Humaniora",
+        year=2026,
+        sections=_build_pkm_riset_sections(),
+    )
+
+
+# ============================================================================
 # HARDCODED RULES — PKM-AI Proposal 2026
 # ============================================================================
 #

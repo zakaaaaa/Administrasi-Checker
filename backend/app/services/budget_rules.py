@@ -207,3 +207,17 @@ def get_pkm_vgk_budget_rules() -> BudgetRules:
     rules = get_pkm_kc_budget_rules()
     rules.schema_code = "VGK"
     return rules
+
+
+def get_pkm_re_budget_rules() -> BudgetRules:
+    """Aturan anggaran PKM-RE 2026 — identik dengan PKM-KC."""
+    rules = get_pkm_kc_budget_rules()
+    rules.schema_code = "RE"
+    return rules
+
+
+def get_pkm_rsh_budget_rules() -> BudgetRules:
+    """Aturan anggaran PKM-RSH 2026 — identik dengan PKM-KC."""
+    rules = get_pkm_kc_budget_rules()
+    rules.schema_code = "RSH"
+    return rules

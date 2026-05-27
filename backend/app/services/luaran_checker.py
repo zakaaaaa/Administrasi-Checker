@@ -41,6 +41,14 @@ _PKM_VGK_REQUIRED: list[tuple[str, re.Pattern]] = [
     ("akun media sosial", re.compile(r"akun\s+media\s+sosial",     re.IGNORECASE)),
 ]
 
+# PKM-RE & PKM-RSH luaran wajib (sama): artikel ilmiah menggantikan prototipe/video.
+_PKM_RISET_REQUIRED: list[tuple[str, re.Pattern]] = [
+    ("laporan kemajuan",  re.compile(r"laporan\s+kemajuan",        re.IGNORECASE)),
+    ("laporan akhir",     re.compile(r"laporan\s+akhir",           re.IGNORECASE)),
+    ("artikel ilmiah",    re.compile(r"artikel\s+ilmiah",          re.IGNORECASE)),
+    ("akun media sosial", re.compile(r"akun\s+media\s+sosial",     re.IGNORECASE)),
+]
+
 _LUARAN_LABEL_RE = re.compile(r"\bluaran\b", re.IGNORECASE)
 _TOC_LINE_RE = re.compile(r"\.{3,}|\t\s*\d+\s*$")
 _NUMBERED_ITEM_RE = re.compile(r"\(\s*(\d+)\s*\)")
@@ -106,6 +114,14 @@ class LuaranChecker:
     @classmethod
     def for_pkm_vgk(cls, parser: DocxParser) -> "LuaranChecker":
         return cls(parser, _PKM_VGK_REQUIRED, "PKM-VGK")
+
+    @classmethod
+    def for_pkm_re(cls, parser: DocxParser) -> "LuaranChecker":
+        return cls(parser, _PKM_RISET_REQUIRED, "PKM-RE")
+
+    @classmethod
+    def for_pkm_rsh(cls, parser: DocxParser) -> "LuaranChecker":
+        return cls(parser, _PKM_RISET_REQUIRED, "PKM-RSH")
 
     # --- public ---
 
@@ -234,14 +250,17 @@ class LuaranChecker:
 
 
 def _is_next_section(para: ParagraphInfo) -> bool:
-    if para.is_heading:
-        return True
+    """
+    Stop collection kalau paragraf jelas bertanda "section heading berikutnya".
+    Sengaja TIDAK pakai `is_heading` saja sebagai sinyal — banyak dokumen meng-style
+    item luaran (Laporan kemajuan, dst) dengan style heading yang sama, sehingga
+    collection berhenti di item pertama dan luaran tidak terbaca.
+
+    Sinyal jelas yang dipakai: pola struktural (BAB X / X.Y / ALL-CAPS) di teks.
+    """
     text = para.text.strip()
     if not text or len(text) > 80:
         return False
     if _NEXT_HEADING_RE.match(text):
         return True
-    if len(text) <= 60 and para.runs:
-        if all(r.bold is True for r in para.runs if r.text.strip()):
-            return True
     return False

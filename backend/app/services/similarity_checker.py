@@ -28,6 +28,8 @@ from app.services.similarity_rules import (
     SimilarityRules,
     get_pkm_kc_similarity_rules,
     get_pkm_vgk_similarity_rules,
+    get_pkm_re_similarity_rules,
+    get_pkm_rsh_similarity_rules,
 )
 from app.services.biodata_date_checker import (
     _load_image_rels,
@@ -100,6 +102,14 @@ class SimilarityChecker:
     @classmethod
     def for_pkm_vgk(cls, parser: DocxParser) -> "SimilarityChecker":
         return cls(parser, get_pkm_vgk_similarity_rules())
+
+    @classmethod
+    def for_pkm_re(cls, parser: DocxParser) -> "SimilarityChecker":
+        return cls(parser, get_pkm_re_similarity_rules())
+
+    @classmethod
+    def for_pkm_rsh(cls, parser: DocxParser) -> "SimilarityChecker":
+        return cls(parser, get_pkm_rsh_similarity_rules())
 
     # ------------------------------------------------------------------ public
 
