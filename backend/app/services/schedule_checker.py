@@ -30,6 +30,10 @@ from app.services.schedule_rules import (
     get_pkm_vgk_schedule_rules,
     get_pkm_re_schedule_rules,
     get_pkm_rsh_schedule_rules,
+    get_pkm_k_schedule_rules,
+    get_pkm_ki_schedule_rules,
+    get_pkm_pi_schedule_rules,
+    get_pkm_pm_schedule_rules,
 )
 
 
@@ -99,6 +103,22 @@ class ScheduleChecker:
     @classmethod
     def for_pkm_rsh(cls, parser: DocxParser) -> "ScheduleChecker":
         return cls(parser, get_pkm_rsh_schedule_rules())
+
+    @classmethod
+    def for_pkm_k(cls, parser: DocxParser) -> "ScheduleChecker":
+        return cls(parser, get_pkm_k_schedule_rules())
+
+    @classmethod
+    def for_pkm_ki(cls, parser: DocxParser) -> "ScheduleChecker":
+        return cls(parser, get_pkm_ki_schedule_rules())
+
+    @classmethod
+    def for_pkm_pi(cls, parser: DocxParser) -> "ScheduleChecker":
+        return cls(parser, get_pkm_pi_schedule_rules())
+
+    @classmethod
+    def for_pkm_pm(cls, parser: DocxParser) -> "ScheduleChecker":
+        return cls(parser, get_pkm_pm_schedule_rules())
 
     # --- public ---
 

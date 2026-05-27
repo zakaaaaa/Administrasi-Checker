@@ -568,6 +568,205 @@ def get_pkm_rsh_proposal_rules() -> SchemaRules:
 
 
 # ============================================================================
+# HARDCODED RULES — PKM-K / PKM-KI / PKM-PI / PKM-PM Proposal 2026
+# ============================================================================
+#
+# Keempat skema ini bergaya "KC-like": 4 BAB + Daftar Pustaka + Lampiran,
+# section terlarang sama (sampul/pengesahan/ringkasan DILARANG). Yang berbeda
+# antarskema hanya judul BAB 2 & BAB 3:
+#
+#   Skema    | BAB 2                          | BAB 3
+#   ---------|--------------------------------|--------------------
+#   PKM-K    | GAMBARAN UMUM RENCANA USAHA     | METODE PELAKSANAAN
+#   PKM-KI   | TINJAUAN PUSTAKA                | TAHAP PELAKSANAAN
+#   PKM-PI   | TINJAUAN PUSTAKA                | METODE PELAKSANAAN
+#   PKM-PM   | GAMBARAN UMUM MASYARAKAT MITRA  | METODE PELAKSANAAN
+# ============================================================================
+
+
+def _build_pkm_kc_like_sections(
+    schema_label: str,
+    bab2_title: str,
+    bab3_title: str,
+    bab3_extra_aliases: tuple[str, ...] = (),
+) -> list[SectionRule]:
+    """Section list untuk skema PKM 4-BAB bergaya KC (PKM-K/KI/PI/PM).
+
+    BAB 1 PENDAHULUAN & BAB 4 BIAYA DAN JADWAL KEGIATAN identik antarskema;
+    hanya BAB 2 & BAB 3 yang berbeda judul. `schema_label` dipakai untuk alias
+    forbidden "PROPOSAL PKM-XX". `bab3_extra_aliases` untuk variasi judul BAB 3
+    yang lazim tertukar di dokumen lapangan (mis. "METODE" / "METODE PELAKSANAAN").
+    """
+    return [
+        # --- SECTION WAJIB ---
+        SectionRule(name="DAFTAR ISI", required=True, order=1),
+        SectionRule(
+            name="DAFTAR LAMPIRAN",
+            aliases=["DAFTAR LAMPIRAN-LAMPIRAN"],
+            required=True,
+            order=4,
+        ),
+        SectionRule(
+            name="BAB 1. PENDAHULUAN",
+            aliases=[
+                "BAB I. PENDAHULUAN",
+                "BAB 1 PENDAHULUAN",
+                "BAB I PENDAHULUAN",
+            ],
+            required=True,
+            is_core=True,
+            order=5,
+        ),
+        SectionRule(
+            name=f"BAB 2. {bab2_title}",
+            aliases=[
+                f"BAB II. {bab2_title}",
+                f"BAB 2 {bab2_title}",
+                f"BAB II {bab2_title}",
+            ],
+            required=True,
+            is_core=True,
+            order=6,
+        ),
+        SectionRule(
+            name=f"BAB 3. {bab3_title}",
+            aliases=[
+                f"BAB III. {bab3_title}",
+                f"BAB 3 {bab3_title}",
+                f"BAB III {bab3_title}",
+                *bab3_extra_aliases,
+            ],
+            required=True,
+            is_core=True,
+            order=7,
+        ),
+        SectionRule(
+            name="BAB 4. BIAYA DAN JADWAL KEGIATAN",
+            aliases=[
+                "BAB IV. BIAYA DAN JADWAL KEGIATAN",
+                "BAB 4 BIAYA DAN JADWAL KEGIATAN",
+                "BAB IV BIAYA DAN JADWAL KEGIATAN",
+                "BAB 4. BIAYA DAN JADWAL",
+                "BAB IV. BIAYA DAN JADWAL",
+            ],
+            required=True,
+            is_core=True,
+            order=8,
+        ),
+        SectionRule(name="DAFTAR PUSTAKA", required=True, is_core=True, order=9),
+        SectionRule(
+            name="LAMPIRAN",
+            aliases=["LAMPIRAN 1", "LAMPIRAN 1.", "LAMPIRAN-LAMPIRAN"],
+            required=True,
+            order=10,
+        ),
+        # --- SECTION OPSIONAL ---
+        SectionRule(name="DAFTAR GAMBAR", required=False, order=2),
+        SectionRule(name="DAFTAR TABEL", required=False, order=3),
+        # --- SECTION TERLARANG ---
+        SectionRule(
+            name="HALAMAN SAMPUL",
+            aliases=[
+                "COVER",
+                "SAMPUL",
+                "PROPOSAL PKM",
+                f"PROPOSAL {schema_label}",
+                "PROPOSAL PROGRAM KREATIVITAS MAHASISWA",
+            ],
+            forbidden=True,
+        ),
+        SectionRule(
+            name="HALAMAN PENGESAHAN",
+            aliases=[
+                "LEMBAR PENGESAHAN",
+                "PENGESAHAN PROPOSAL",
+                "PENGESAHAN PKM",
+                "PENGESAHAN USULAN",
+            ],
+            forbidden=True,
+        ),
+        SectionRule(
+            name="RINGKASAN",
+            aliases=["ABSTRAK", "ABSTRACT"],
+            forbidden=True,
+        ),
+    ]
+
+
+def get_pkm_k_proposal_rules() -> SchemaRules:
+    """Aturan PKM-K (Kewirausahaan) Proposal 2026."""
+    return SchemaRules(
+        competition_code="PKM",
+        schema_code="K",
+        report_type_code="PROPOSAL",
+        schema_name="Kewirausahaan",
+        year=2026,
+        sections=_build_pkm_kc_like_sections(
+            schema_label="PKM-K",
+            bab2_title="GAMBARAN UMUM RENCANA USAHA",
+            bab3_title="METODE PELAKSANAAN",
+            bab3_extra_aliases=("BAB 3. METODE", "BAB III. METODE"),
+        ),
+    )
+
+
+def get_pkm_ki_proposal_rules() -> SchemaRules:
+    """Aturan PKM-KI (Karya Inovatif) Proposal 2026."""
+    return SchemaRules(
+        competition_code="PKM",
+        schema_code="KI",
+        report_type_code="PROPOSAL",
+        schema_name="Karya Inovatif",
+        year=2026,
+        sections=_build_pkm_kc_like_sections(
+            schema_label="PKM-KI",
+            bab2_title="TINJAUAN PUSTAKA",
+            bab3_title="TAHAP PELAKSANAAN",
+            bab3_extra_aliases=(
+                "BAB 3. METODE PELAKSANAAN",
+                "BAB III. METODE PELAKSANAAN",
+                "BAB 3. METODE",
+                "BAB III. METODE",
+            ),
+        ),
+    )
+
+
+def get_pkm_pi_proposal_rules() -> SchemaRules:
+    """Aturan PKM-PI (Penerapan IPTEK) Proposal 2026."""
+    return SchemaRules(
+        competition_code="PKM",
+        schema_code="PI",
+        report_type_code="PROPOSAL",
+        schema_name="Penerapan IPTEK",
+        year=2026,
+        sections=_build_pkm_kc_like_sections(
+            schema_label="PKM-PI",
+            bab2_title="TINJAUAN PUSTAKA",
+            bab3_title="METODE PELAKSANAAN",
+            bab3_extra_aliases=("BAB 3. METODE", "BAB III. METODE"),
+        ),
+    )
+
+
+def get_pkm_pm_proposal_rules() -> SchemaRules:
+    """Aturan PKM-PM (Pengabdian kepada Masyarakat) Proposal 2026."""
+    return SchemaRules(
+        competition_code="PKM",
+        schema_code="PM",
+        report_type_code="PROPOSAL",
+        schema_name="Pengabdian kepada Masyarakat",
+        year=2026,
+        sections=_build_pkm_kc_like_sections(
+            schema_label="PKM-PM",
+            bab2_title="GAMBARAN UMUM MASYARAKAT MITRA",
+            bab3_title="METODE PELAKSANAAN",
+            bab3_extra_aliases=("BAB 3. METODE", "BAB III. METODE"),
+        ),
+    )
+
+
+# ============================================================================
 # HARDCODED RULES — PKM-AI Proposal 2026
 # ============================================================================
 #

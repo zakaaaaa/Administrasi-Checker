@@ -49,6 +49,34 @@ _PKM_RISET_REQUIRED: list[tuple[str, re.Pattern]] = [
     ("akun media sosial", re.compile(r"akun\s+media\s+sosial",     re.IGNORECASE)),
 ]
 
+# Regex "akun media sosial" yang toleran urutan kata: PKM-PI menulis
+# "Akun Sosial Media" (terbalik), skema lain "Akun Media Sosial".
+_AKUN_MEDSOS_RE = re.compile(r"akun\s+(?:media\s+sosial|sosial\s+media)", re.IGNORECASE)
+
+# PKM-K: luaran ke-3 = Katalog Produk/Jasa.
+_PKM_K_REQUIRED: list[tuple[str, re.Pattern]] = [
+    ("laporan kemajuan",     re.compile(r"laporan\s+kemajuan",  re.IGNORECASE)),
+    ("laporan akhir",        re.compile(r"laporan\s+akhir",     re.IGNORECASE)),
+    ("katalog produk/jasa",  re.compile(r"katalog\s+produk",    re.IGNORECASE)),
+    ("akun media sosial",    _AKUN_MEDSOS_RE),
+]
+
+# PKM-KI: luaran ke-3 = Produk inovatif skala penuh + Dokumen Teknis.
+_PKM_KI_REQUIRED: list[tuple[str, re.Pattern]] = [
+    ("laporan kemajuan",  re.compile(r"laporan\s+kemajuan",   re.IGNORECASE)),
+    ("laporan akhir",     re.compile(r"laporan\s+akhir",      re.IGNORECASE)),
+    ("produk inovatif",   re.compile(r"produk\s+inovatif",    re.IGNORECASE)),
+    ("akun media sosial", _AKUN_MEDSOS_RE),
+]
+
+# PKM-PI & PKM-PM (sama): luaran ke-3 = Buku Pedoman Mitra.
+_PKM_MITRA_REQUIRED: list[tuple[str, re.Pattern]] = [
+    ("laporan kemajuan",    re.compile(r"laporan\s+kemajuan",         re.IGNORECASE)),
+    ("laporan akhir",       re.compile(r"laporan\s+akhir",            re.IGNORECASE)),
+    ("buku pedoman mitra",  re.compile(r"buku\s+pedoman\s+mitra",     re.IGNORECASE)),
+    ("akun media sosial",   _AKUN_MEDSOS_RE),
+]
+
 _LUARAN_LABEL_RE = re.compile(r"\bluaran\b", re.IGNORECASE)
 _TOC_LINE_RE = re.compile(r"\.{3,}|\t\s*\d+\s*$")
 _NUMBERED_ITEM_RE = re.compile(r"\(\s*(\d+)\s*\)")
@@ -122,6 +150,23 @@ class LuaranChecker:
     @classmethod
     def for_pkm_rsh(cls, parser: DocxParser) -> "LuaranChecker":
         return cls(parser, _PKM_RISET_REQUIRED, "PKM-RSH")
+
+    @classmethod
+    def for_pkm_k(cls, parser: DocxParser) -> "LuaranChecker":
+        return cls(parser, _PKM_K_REQUIRED, "PKM-K")
+
+    @classmethod
+    def for_pkm_ki(cls, parser: DocxParser) -> "LuaranChecker":
+        return cls(parser, _PKM_KI_REQUIRED, "PKM-KI")
+
+    @classmethod
+    def for_pkm_pi(cls, parser: DocxParser) -> "LuaranChecker":
+        # PKM-PI & PKM-PM punya daftar luaran wajib yang SAMA (Buku Pedoman Mitra).
+        return cls(parser, _PKM_MITRA_REQUIRED, "PKM-PI")
+
+    @classmethod
+    def for_pkm_pm(cls, parser: DocxParser) -> "LuaranChecker":
+        return cls(parser, _PKM_MITRA_REQUIRED, "PKM-PM")
 
     # --- public ---
 

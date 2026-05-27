@@ -221,3 +221,31 @@ def get_pkm_rsh_budget_rules() -> BudgetRules:
     rules = get_pkm_kc_budget_rules()
     rules.schema_code = "RSH"
     return rules
+
+
+def get_pkm_k_budget_rules() -> BudgetRules:
+    """Aturan anggaran PKM-K 2026 — identik dengan PKM-KC (6–8jt, 80/20, Tabel 2 sama)."""
+    rules = get_pkm_kc_budget_rules()
+    rules.schema_code = "K"
+    return rules
+
+
+def get_pkm_ki_budget_rules() -> BudgetRules:
+    """Aturan anggaran PKM-KI 2026 — identik dengan PKM-KC."""
+    rules = get_pkm_kc_budget_rules()
+    rules.schema_code = "KI"
+    return rules
+
+
+def get_pkm_pi_budget_rules() -> BudgetRules:
+    """Aturan anggaran PKM-PI 2026 — identik dengan PKM-KC."""
+    rules = get_pkm_kc_budget_rules()
+    rules.schema_code = "PI"
+    return rules
+
+
+def get_pkm_pm_budget_rules() -> BudgetRules:
+    """Aturan anggaran PKM-PM 2026 — identik dengan PKM-KC."""
+    rules = get_pkm_kc_budget_rules()
+    rules.schema_code = "PM"
+    return rules

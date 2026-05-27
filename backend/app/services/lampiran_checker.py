@@ -61,6 +61,43 @@ _REQUIRED_LAMPIRAN_VGK: list[tuple[int, list[str], str]] = [
     (5, ["uji", "similar"],                              "Hasil Uji Periksa Similaritas Proposal"),
 ]
 
+# PKM-K: struktur lampiran IDENTIK dengan PKM-VGK (5 lampiran, biodata digabung).
+# → tidak perlu list terpisah; factory for_pkm_k me-reuse _REQUIRED_LAMPIRAN_VGK.
+
+# PKM-KI (6 lampiran): VGK + "Gambaran Konsep Karya Inovatif" sebelum uji similaritas.
+_REQUIRED_LAMPIRAN_KI: list[tuple[int, list[str], str]] = [
+    (1, ["biodata", "ketua", "dosen"],                   "Biodata Ketua dan Anggota, serta Dosen Pendamping"),
+    (2, ["justifikasi", "anggaran"],                     "Justifikasi Anggaran Kegiatan"),
+    (3, ["susunan", "tim", "pengusul", "pembagian"],     "Susunan Tim Pengusul dan Pembagian Tugas"),
+    (4, ["pernyataan", "ketua"],                         "Surat Pernyataan Ketua Tim Pengusul"),
+    (5, ["konsep", "karya", "inovatif"],                 "Gambaran Konsep Karya Inovatif yang akan Dihasilkan"),
+    (6, ["uji", "similar"],                              "Hasil Uji Periksa Similaritas Proposal"),
+]
+
+# PKM-PI (8 lampiran): + Surat Pernyataan Kesediaan Mitra, Gambaran IPTEK,
+# Denah Lokasi Mitra.
+_REQUIRED_LAMPIRAN_PI: list[tuple[int, list[str], str]] = [
+    (1, ["biodata", "ketua", "dosen"],                   "Biodata Ketua dan Anggota, serta Dosen Pendamping"),
+    (2, ["justifikasi", "anggaran"],                     "Justifikasi Anggaran Kegiatan"),
+    (3, ["susunan", "tim", "pengusul", "pembagian"],     "Susunan Tim Pengusul dan Pembagian Tugas"),
+    (4, ["pernyataan", "ketua"],                         "Surat Pernyataan Ketua Tim Pengusul"),
+    (5, ["kesediaan", "mitra"],                          "Surat Pernyataan Kesediaan Bekerjasama dari Mitra"),
+    (6, ["gambaran", "iptek"],                           "Gambaran IPTEK yang akan Diterapkan"),
+    (7, ["denah", "lokasi", "mitra"],                    "Denah Detail Lokasi Mitra Program"),
+    (8, ["uji", "similar"],                              "Hasil Uji Periksa Similaritas Proposal"),
+]
+
+# PKM-PM (7 lampiran): + Surat Pernyataan Kesediaan Mitra, Denah Lokasi Mitra.
+_REQUIRED_LAMPIRAN_PM: list[tuple[int, list[str], str]] = [
+    (1, ["biodata", "ketua", "dosen"],                   "Biodata Ketua dan Anggota, serta Dosen Pendamping"),
+    (2, ["justifikasi", "anggaran"],                     "Justifikasi Anggaran Kegiatan"),
+    (3, ["susunan", "tim", "pengusul", "pembagian"],     "Susunan Tim Pengusul dan Pembagian Tugas"),
+    (4, ["pernyataan", "ketua"],                         "Surat Pernyataan Ketua Tim Pengusul"),
+    (5, ["kesediaan", "mitra"],                          "Surat Pernyataan Kesediaan Bekerja Sama dari Mitra"),
+    (6, ["denah", "lokasi", "mitra"],                    "Denah Detail Lokasi Mitra Program"),
+    (7, ["uji", "similar"],                              "Hasil Uji Periksa Similaritas Proposal"),
+]
+
 
 # =============================================================================
 # Regex
@@ -130,6 +167,23 @@ class LampiranChecker:
     def for_pkm_rsh(cls, parser: DocxParser) -> "LampiranChecker":
         # PKM-RSH pakai daftar lampiran wajib yang SAMA dengan PKM-KC.
         return cls(parser, _REQUIRED_LAMPIRAN_KC, "PKM-RSH")
+
+    @classmethod
+    def for_pkm_k(cls, parser: DocxParser) -> "LampiranChecker":
+        # PKM-K pakai daftar lampiran wajib yang SAMA dengan PKM-VGK (5 lampiran).
+        return cls(parser, _REQUIRED_LAMPIRAN_VGK, "PKM-K")
+
+    @classmethod
+    def for_pkm_ki(cls, parser: DocxParser) -> "LampiranChecker":
+        return cls(parser, _REQUIRED_LAMPIRAN_KI, "PKM-KI")
+
+    @classmethod
+    def for_pkm_pi(cls, parser: DocxParser) -> "LampiranChecker":
+        return cls(parser, _REQUIRED_LAMPIRAN_PI, "PKM-PI")
+
+    @classmethod
+    def for_pkm_pm(cls, parser: DocxParser) -> "LampiranChecker":
+        return cls(parser, _REQUIRED_LAMPIRAN_PM, "PKM-PM")
 
     # -------------------------------------------------------------------------
     # Public

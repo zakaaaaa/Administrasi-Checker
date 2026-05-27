@@ -59,3 +59,31 @@ def get_pkm_rsh_schedule_rules() -> ScheduleTableRules:
     rules = get_pkm_kc_schedule_rules()
     rules.schema_label = "PKM-RSH"
     return rules
+
+
+def get_pkm_k_schedule_rules() -> ScheduleTableRules:
+    """Aturan tabel jadwal kegiatan PKM-K — sama dengan PKM-KC."""
+    rules = get_pkm_kc_schedule_rules()
+    rules.schema_label = "PKM-K"
+    return rules
+
+
+def get_pkm_ki_schedule_rules() -> ScheduleTableRules:
+    """Aturan tabel jadwal kegiatan PKM-KI — sama dengan PKM-KC."""
+    rules = get_pkm_kc_schedule_rules()
+    rules.schema_label = "PKM-KI"
+    return rules
+
+
+def get_pkm_pi_schedule_rules() -> ScheduleTableRules:
+    """Aturan tabel jadwal kegiatan PKM-PI — sama dengan PKM-KC."""
+    rules = get_pkm_kc_schedule_rules()
+    rules.schema_label = "PKM-PI"
+    return rules
+
+
+def get_pkm_pm_schedule_rules() -> ScheduleTableRules:
+    """Aturan tabel jadwal kegiatan PKM-PM — sama dengan PKM-KC."""
+    rules = get_pkm_kc_schedule_rules()
+    rules.schema_label = "PKM-PM"
+    return rules

@@ -19,12 +19,20 @@ from app.services.schema_rules import (
     get_pkm_vgk_proposal_rules,
     get_pkm_re_proposal_rules,
     get_pkm_rsh_proposal_rules,
+    get_pkm_k_proposal_rules,
+    get_pkm_ki_proposal_rules,
+    get_pkm_pi_proposal_rules,
+    get_pkm_pm_proposal_rules,
 )
 from app.services.budget_rules import (
     get_pkm_kc_budget_rules,
     get_pkm_vgk_budget_rules,
     get_pkm_re_budget_rules,
     get_pkm_rsh_budget_rules,
+    get_pkm_k_budget_rules,
+    get_pkm_ki_budget_rules,
+    get_pkm_pi_budget_rules,
+    get_pkm_pm_budget_rules,
 )
 from app.services.structure_checker import StructureChecker
 from app.services.physical_sheet_counter import PhysicalSheetCounter, PhysicalSheetResult
@@ -198,6 +206,14 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
         return _run_pkm_re(parser)
     elif key == ("PKM", "PROPOSAL", "PKM-RSH"):
         return _run_pkm_rsh(parser)
+    elif key == ("PKM", "PROPOSAL", "PKM-K"):
+        return _run_pkm_k(parser)
+    elif key == ("PKM", "PROPOSAL", "PKM-KI"):
+        return _run_pkm_ki(parser)
+    elif key == ("PKM", "PROPOSAL", "PKM-PI"):
+        return _run_pkm_pi(parser)
+    elif key == ("PKM", "PROPOSAL", "PKM-PM"):
+        return _run_pkm_pm(parser)
     elif key == ("PKM", "SCIENTIFIC_ARTICLE", "PKM-AI"):
         return _run_pkm_ai(parser)
     else:
@@ -205,6 +221,8 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
             f"Belum di-support: {req.competition}/{req.report_type}/{req.schema_code}. "
             "Skema yang tersedia: PKM/PROPOSAL/PKM-KC, PKM/PROPOSAL/PKM-VGK, "
             "PKM/PROPOSAL/PKM-RE, PKM/PROPOSAL/PKM-RSH, "
+            "PKM/PROPOSAL/PKM-K, PKM/PROPOSAL/PKM-KI, "
+            "PKM/PROPOSAL/PKM-PI, PKM/PROPOSAL/PKM-PM, "
             "PKM/SCIENTIFIC_ARTICLE/PKM-AI."
         )
 
@@ -244,6 +262,50 @@ def _run_pkm_rsh(parser: DocxParser) -> dict[str, Any]:
         budget_rules=get_pkm_rsh_budget_rules(),
         schema_suffix="rsh",
         log_label="PKM-RSH",
+    )
+
+
+def _run_pkm_k(parser: DocxParser) -> dict[str, Any]:
+    """PKM-K runner — pipeline sama dengan PKM-KC."""
+    return _run_pkm_kc_like(
+        parser,
+        schema=get_pkm_k_proposal_rules(),
+        budget_rules=get_pkm_k_budget_rules(),
+        schema_suffix="k",
+        log_label="PKM-K",
+    )
+
+
+def _run_pkm_ki(parser: DocxParser) -> dict[str, Any]:
+    """PKM-KI runner — pipeline sama dengan PKM-KC."""
+    return _run_pkm_kc_like(
+        parser,
+        schema=get_pkm_ki_proposal_rules(),
+        budget_rules=get_pkm_ki_budget_rules(),
+        schema_suffix="ki",
+        log_label="PKM-KI",
+    )
+
+
+def _run_pkm_pi(parser: DocxParser) -> dict[str, Any]:
+    """PKM-PI runner — pipeline sama dengan PKM-KC."""
+    return _run_pkm_kc_like(
+        parser,
+        schema=get_pkm_pi_proposal_rules(),
+        budget_rules=get_pkm_pi_budget_rules(),
+        schema_suffix="pi",
+        log_label="PKM-PI",
+    )
+
+
+def _run_pkm_pm(parser: DocxParser) -> dict[str, Any]:
+    """PKM-PM runner — pipeline sama dengan PKM-KC."""
+    return _run_pkm_kc_like(
+        parser,
+        schema=get_pkm_pm_proposal_rules(),
+        budget_rules=get_pkm_pm_budget_rules(),
+        schema_suffix="pm",
+        log_label="PKM-PM",
     )
 
 
