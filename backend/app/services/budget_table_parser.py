@@ -139,6 +139,12 @@ class Bab4ParseResult:
     categories: list[BudgetCategoryTotal] = field(default_factory=list)
     grand_total_rp: Optional[int] = None
     raw_header: list[str] = field(default_factory=list)
+    # Rekap Sumber Dana (blok di bagian bawah tabel Bab 4)
+    rekap_belmawa_rp: Optional[int] = None
+    rekap_university_rp: Optional[int] = None
+    rekap_external_rp: Optional[int] = None
+    rekap_total_rp: Optional[int] = None
+    rekap_rows: dict = field(default_factory=dict)  # source_key -> row_index (estimasi halaman)
 
 
 @dataclass
@@ -207,6 +213,26 @@ def is_lampiran2_table(table: TableInfo) -> bool:
 
 _SUBTOTAL_KEYWORDS = ("SUB TOTAL", "SUBTOTAL", "JUMLAH", "TOTAL")
 
+# Pola sumber dana di blok "Rekap Sumber Dana" tabel Bab 4.
+_REKAP_SOURCE_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("belmawa",    re.compile(r"belmawa", re.IGNORECASE)),
+    ("university", re.compile(r"perguruan\s+tinggi", re.IGNORECASE)),
+    ("external",   re.compile(r"instansi\s+lain|institusi\s+lain", re.IGNORECASE)),
+    ("total",      re.compile(r"^\s*(?:jumlah|total)\s*$", re.IGNORECASE)),
+]
+
+
+def _match_rekap_source(row_cells) -> Optional[str]:
+    """Tentukan baris rekap ini untuk sumber dana yang mana (belmawa/university/external/total)."""
+    for c in row_cells:
+        text = c.text.strip()
+        if not text:
+            continue
+        for key, pat in _REKAP_SOURCE_PATTERNS:
+            if pat.search(text):
+                return key
+    return None
+
 
 def _is_total_label(text: str) -> bool:
     """
@@ -262,6 +288,18 @@ def parse_bab4_table(table: TableInfo) -> Bab4ParseResult:
         upper_name = name_text.upper()
         is_grand_total = _is_total_label(upper_name)
         if "REKAP SUMBER DANA" in upper_name:
+            # Blok rekap di bawah tabel: simpan nominal per sumber dana.
+            source_key = _match_rekap_source(row_cells)
+            if source_key is not None and value_int is not None:
+                if source_key == "belmawa":
+                    result.rekap_belmawa_rp = value_int
+                elif source_key == "university":
+                    result.rekap_university_rp = value_int
+                elif source_key == "external":
+                    result.rekap_external_rp = value_int
+                elif source_key == "total":
+                    result.rekap_total_rp = value_int
+                result.rekap_rows[source_key] = r_idx
             continue
 
         if is_grand_total:

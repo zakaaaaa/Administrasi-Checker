@@ -308,24 +308,27 @@ class PhysicalSheetCounter:
     ):
         self.parser = parser
         self.rules = rules
-        self.pdf_converter = pdf_converter or PdfConverter()
+        # PdfConverter (LibreOffice) tidak lagi dipakai: jumlah lembar inti kini
+        # dihitung dari marker lastRenderedPageBreak di DOCX (lihat check()).
+        # Param dipertahankan untuk kompatibilitas pemanggil/test lama.
+        self.pdf_converter = pdf_converter
+
+    # Heading "BAB 1" asli (bukan entri Daftar Isi yang berakhiran dot leader).
+    _CORE_BAB1_RE = re.compile(r"^\s*bab\s*1\.?\s+[a-z]", re.IGNORECASE)
 
     def check(self, pdf_path: Optional[str | Path] = None) -> PhysicalSheetResult:
         """
-        Args:
-            pdf_path: kalau di-supply, skip konversi DOCX→PDF (untuk testing/cache).
-                     Kalau None, otomatis konversi.
-        """
-        # 1. Dapatkan PDF
-        if pdf_path is None:
-            pdf_path = self.pdf_converter.convert(self.parser.file_path)
-        else:
-            pdf_path = Path(pdf_path)
+        Hitung jumlah lembar inti (BAB 1 s.d. halaman sebelum LAMPIRAN) langsung
+        dari DOCX via marker ``lastRenderedPageBreak`` (cache layout Word) —
+        TANPA konversi LibreOffice. Lihat docx_parser.estimate_physical_page.
 
-        # 2. Buat result skeleton dengan rule info
+        Args:
+            pdf_path: diabaikan (dipertahankan untuk kompatibilitas signature).
+        """
         min_sheets, max_sheets = get_sheet_count_rule(self.rules)
         result = PhysicalSheetResult(
             status="pass",
+            method="docx_lastrendered_pagebreak",
             rule={
                 "schema": f"{self.rules.competition_code}-{self.rules.schema_code}",
                 "min_sheets": min_sheets,
@@ -333,48 +336,44 @@ class PhysicalSheetCounter:
             },
         )
 
-        # 3. Baca PDF, hitung lembar
-        result.pdf_path = str(pdf_path)
-        reader = PdfReader(str(pdf_path))
-        result.total_physical_sheets = len(reader.pages)
+        # Total lembar fisik: pakai docProps/app.xml <Pages> (hitungan Word) bila
+        # ada, jika tidak estimasi dari paragraf terakhir.
+        result.total_physical_sheets = self._read_app_pages() or self._estimate_total_pages()
 
-        # 4. Ekstrak teks per lembar (sekali, dipakai banyak step)
-        sheet_texts: list[str] = []
-        for page in reader.pages:
-            try:
-                sheet_texts.append(page.extract_text() or "")
-            except Exception:
-                sheet_texts.append("")
-
-        # 5. Identifikasi rentang bagian inti
-        core_first, core_last = self._locate_core_range(sheet_texts)
-        result.core_first_sheet = core_first
-        result.core_last_sheet = core_last
-        if core_first is not None and core_last is not None:
-            result.core_physical_sheets = core_last - core_first + 1
-
-        # 6. Ekstrak nomor halaman per lembar
-        result.page_numbers = self._extract_page_numbers(sheet_texts)
-
-        # 7. Deteksi anomali penomoran (hanya di rentang bagian inti)
-        if core_first is not None and core_last is not None:
-            result.anomalies = self._detect_anomalies(
-                result.page_numbers, core_first, core_last
+        # Lokasi bagian inti via paragraf body (index sejajar estimate_physical_page).
+        bab1_idx, lampiran_idx = self._locate_core_paragraphs()
+        if bab1_idx is None:
+            result.status = "fail"
+            result.messages.append(
+                CheckMessage(
+                    level="fail",
+                    text=(
+                        "Bagian inti dokumen tidak teridentifikasi: heading 'BAB 1' "
+                        "tidak ditemukan. Pastikan dokumen memuat 'BAB 1' sebagai heading."
+                    ),
+                )
             )
+            return result
 
-        # 8. Validasi jumlah lembar inti vs aturan skema
-        sheet_count_msgs = self._validate_sheet_count(result, min_sheets, max_sheets)
-        result.messages.extend(sheet_count_msgs)
+        bab1_page = self.parser.estimate_physical_page(bab1_idx) or 1
+        if lampiran_idx is not None:
+            lampiran_page = self.parser.estimate_physical_page(lampiran_idx) or bab1_page
+            core_last = max(bab1_page, lampiran_page - 1)
+        else:
+            # Tidak ada LAMPIRAN → inti sampai akhir dokumen.
+            core_last = max(bab1_page, result.total_physical_sheets or bab1_page)
 
-        # 8b. Validasi struktur halaman pertama
-        first_page_msgs = self._check_first_page_structure(sheet_texts)
-        result.messages.extend(first_page_msgs)
+        result.core_first_sheet = bab1_page
+        result.core_last_sheet = core_last
+        result.core_physical_sheets = core_last - bab1_page + 1
 
-        # 9. Tambah message untuk anomali
-        for a in result.anomalies:
-            result.messages.append(CheckMessage(level=a.severity, text=a.message))
+        # Validasi jumlah lembar inti vs aturan skema.
+        result.messages.extend(self._validate_sheet_count(result, min_sheets, max_sheets))
 
-        # 10. Tentukan status overall
+        # Validasi struktur halaman pertama (Daftar Isi / Abstrak) dari teks DOCX.
+        result.messages.extend(self._check_first_page_structure_docx())
+
+        # Tentukan status overall.
         has_fail = any(m.level == "fail" for m in result.messages)
         has_warn = any(m.level == "warning" for m in result.messages)
         if has_fail:
@@ -388,15 +387,98 @@ class PhysicalSheetCounter:
                 CheckMessage(
                     level="pass",
                     text=(
-                        f"Bagian inti {result.core_physical_sheets} lembar fisik — "
-                        f"sesuai batas ({min_sheets or '-'}–{max_sheets} lembar) untuk "
-                        f"{self.rules.competition_code}-{self.rules.schema_code}. "
-                        f"Tidak ada anomali penomoran terdeteksi."
+                        f"Bagian inti {result.core_physical_sheets} halaman (BAB 1 s.d. "
+                        f"sebelum Lampiran) — sesuai batas ({min_sheets or '-'}–{max_sheets} "
+                        f"halaman) untuk {self.rules.competition_code}-{self.rules.schema_code}."
                     ),
                 ),
             )
 
         return result
+
+    # ------------------------------------------------------------------------
+    # Lokasi bagian inti & total halaman dari DOCX
+    # ------------------------------------------------------------------------
+
+    def _locate_core_paragraphs(self) -> tuple[Optional[int], Optional[int]]:
+        """Return (index_BAB1, index_LAMPIRAN) di self.parser.paragraphs.
+
+        BAB1 = heading 'BAB 1 ...' pertama yang bukan entri Daftar Isi.
+        LAMPIRAN = heading 'LAMPIRAN' polos pertama SETELAH BAB1 (entri front
+        matter seperti 'DAFTAR LAMPIRAN' / 'Lampiran 2. ...' tidak cocok)."""
+        paras = self.parser.paragraphs
+        bab1 = None
+        for para in paras:
+            t = para.text.strip()
+            if not t:
+                continue
+            if self._CORE_BAB1_RE.match(t) and not re.search(r"\.{3,}", t):
+                bab1 = para.index
+                break
+        if bab1 is None and self.rules.schema_code == "AI":
+            # PKM-AI: naskah mulai dari paragraf pertama (tanpa heading BAB).
+            bab1 = paras[0].index if paras else None
+
+        lampiran = None
+        if bab1 is not None:
+            for para in paras:
+                if para.index <= bab1:
+                    continue
+                if para.text.strip().lower() == "lampiran":
+                    lampiran = para.index
+                    break
+        return bab1, lampiran
+
+    def _read_app_pages(self) -> Optional[int]:
+        """Baca docProps/app.xml <Pages> (jumlah halaman versi Word)."""
+        import zipfile
+
+        try:
+            with zipfile.ZipFile(self.parser.file_path) as z:
+                if "docProps/app.xml" not in z.namelist():
+                    return None
+                xml = z.read("docProps/app.xml").decode("utf-8", "replace")
+            m = re.search(r"<Pages>(\d+)</Pages>", xml)
+            return int(m.group(1)) if m else None
+        except Exception:
+            return None
+
+    def _estimate_total_pages(self) -> int:
+        paras = self.parser.paragraphs
+        if not paras:
+            return 0
+        return self.parser.estimate_physical_page(paras[-1].index) or 0
+
+    def _check_first_page_structure_docx(self) -> list[CheckMessage]:
+        """Versi DOCX dari validasi halaman pertama (Daftar Isi / Abstrak),
+        memakai gabungan teks paragraf yang diestimasi berada di halaman fisik 1."""
+        page1 = "\n".join(
+            para.text
+            for para in self.parser.paragraphs
+            if self.parser.estimate_physical_page(para.index) == 1
+        )
+        msgs: list[CheckMessage] = []
+        if self.rules.schema_code == "AI":
+            if not self._ABSTRAK_RE.search(page1):
+                msgs.append(CheckMessage(
+                    level="fail",
+                    text=(
+                        "Halaman pertama tidak memuat heading 'Abstrak' atau 'Abstract'. "
+                        "Pastikan lembar pertama dokumen PKM-AI adalah naskah artikel "
+                        "(bukan halaman sampul terpisah)."
+                    ),
+                ))
+        else:
+            if not self._DAFTAR_ISI_RE.search(page1):
+                msgs.append(CheckMessage(
+                    level="fail",
+                    text=(
+                        "Halaman pertama tidak memuat 'Daftar Isi'. "
+                        "Pastikan halaman pertama dokumen adalah Daftar Isi, "
+                        "bukan halaman sampul atau halaman lain."
+                    ),
+                ))
+        return msgs
 
     # ------------------------------------------------------------------------
     # Step: locate rentang bagian inti

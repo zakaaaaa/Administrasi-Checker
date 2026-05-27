@@ -120,6 +120,7 @@ class BudgetAuditResult:
     status: str  # 'pass' | 'warning' | 'fail'
     total_input_funding_rp: int = 0
     funding_validation: list[FundingValidationResult] = field(default_factory=list)
+    rekap_validation: list[FundingValidationResult] = field(default_factory=list)
     table_integrity_status: str = "pass"  # 'pass' | 'fail'
     table_integrity_missing: list[str] = field(default_factory=list)
     categories: list[CategoryAllocationResult] = field(default_factory=list)
@@ -147,6 +148,18 @@ class BudgetAuditResult:
                     "message": fv.message,
                 }
                 for fv in self.funding_validation
+            ],
+            "rekap_validation": [
+                {
+                    "name": fv.name,
+                    "display_name": fv.display_name,
+                    "input_rp": fv.input_rp,
+                    "min_rp": fv.min_rp,
+                    "max_rp": fv.max_rp,
+                    "status": fv.status,
+                    "message": fv.message,
+                }
+                for fv in self.rekap_validation
             ],
             "table_integrity": {
                 "status": self.table_integrity_status,
@@ -270,6 +283,9 @@ class BudgetAuditor:
         if lamp2:
             result.lampiran2_grand_total_rp = lamp2.grand_total_rp
 
+        # Lapis 1b: Validasi Rekap Sumber Dana di tabel Bab 4
+        self._validate_rekap_sumber_dana(result, bab4)
+
         # Lapis 2: Integritas tabel (semua kategori wajib ada)
         self._check_table_integrity(result, bab4)
 
@@ -375,6 +391,83 @@ class BudgetAuditor:
                     ),
                 )
             result.funding_validation.append(fv)
+
+    # ------------------------------------------------------------------------
+    # Lapis 1b: Validasi Rekap Sumber Dana (dari tabel Bab 4)
+    # ------------------------------------------------------------------------
+
+    def _validate_rekap_sumber_dana(
+        self,
+        result: BudgetAuditResult,
+        bab4: Optional[Bab4ParseResult],
+    ) -> None:
+        """
+        Validasi nominal pada blok 'Rekap Sumber Dana' di tabel Bab 4:
+        - Belmawa wajib di rentang Rp6.000.000 — Rp8.000.000.
+        - Perguruan Tinggi wajib > Rp0 dan maksimal Rp2.000.000.
+        - Instansi Lain maksimal Rp1.000.000.
+        Hanya nominal yang berhasil terbaca yang divalidasi.
+        """
+        if bab4 is None:
+            return
+
+        def _page(source_key: str) -> Optional[int]:
+            row = bab4.rekap_rows.get(source_key)
+            if row is None or bab4.table_index < 0:
+                return None
+            return self.parser.estimate_page_for_table_cell(bab4.table_index, row, 0)
+
+        def _loc(source_key: str) -> str:
+            p = _page(source_key)
+            return f"[Halaman ~{p}] " if p is not None else ""
+
+        # Belmawa: 6jt — 8jt
+        v = bab4.rekap_belmawa_rp
+        if v is not None and not (6_000_000 <= v <= 8_000_000):
+            result.rekap_validation.append(FundingValidationResult(
+                name="belmawa",
+                display_name="Belmawa",
+                input_rp=v,
+                min_rp=6_000_000,
+                max_rp=8_000_000,
+                status="fail",
+                message=(
+                    f"{_loc('belmawa')}Rekap Sumber Dana Belmawa Rp{v:,} tidak sesuai "
+                    f"— wajib di rentang Rp6.000.000 s.d. Rp8.000.000."
+                ),
+            ))
+
+        # Perguruan Tinggi: > 0 dan <= 2jt
+        v = bab4.rekap_university_rp
+        if v is not None and (v <= 0 or v > 2_000_000):
+            result.rekap_validation.append(FundingValidationResult(
+                name="university",
+                display_name="Perguruan Tinggi",
+                input_rp=v,
+                min_rp=1,
+                max_rp=2_000_000,
+                status="fail",
+                message=(
+                    f"{_loc('university')}Rekap Sumber Dana Perguruan Tinggi Rp{v:,} tidak sesuai "
+                    f"— wajib lebih dari Rp0 dan maksimal Rp2.000.000."
+                ),
+            ))
+
+        # Instansi Lain: <= 1jt
+        v = bab4.rekap_external_rp
+        if v is not None and v > 1_000_000:
+            result.rekap_validation.append(FundingValidationResult(
+                name="external",
+                display_name="Instansi Lain",
+                input_rp=v,
+                min_rp=0,
+                max_rp=1_000_000,
+                status="fail",
+                message=(
+                    f"{_loc('external')}Rekap Sumber Dana Instansi Lain Rp{v:,} tidak sesuai "
+                    f"— maksimal Rp1.000.000."
+                ),
+            ))
 
     # ------------------------------------------------------------------------
     # Parse tabel
@@ -701,6 +794,12 @@ class BudgetAuditor:
                 result.messages.append(CheckMessage(level="fail", text=fv.message))
             else:
                 result.messages.append(CheckMessage(level="pass", text=fv.message))
+
+        # Rekap Sumber Dana (dari tabel Bab 4) — hanya emit yang gagal
+        for fv in result.rekap_validation:
+            if fv.status == "fail":
+                has_fail = True
+                result.messages.append(CheckMessage(level="fail", text=fv.message))
 
         # Table integrity
         if result.table_integrity_status == "fail":

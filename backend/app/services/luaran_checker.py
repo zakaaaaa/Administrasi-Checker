@@ -146,8 +146,8 @@ class LuaranChecker:
             ))
 
         if item_count is not None and item_count != 4:
-            result.status = "fail"
             if item_count > 4:
+                result.status = "fail"
                 result.messages.append(CheckMessage(
                     level="fail",
                     text=(
@@ -156,7 +156,10 @@ class LuaranChecker:
                         f"{', '.join(l for l, _ in self.required)}."
                     ),
                 ))
-            else:
+            elif not missing:
+                # item_count < 4: jika sudah ada luaran yang tidak ditemukan,
+                # pesan "tidak lengkap" sudah mewakili — pesan jumlah ini redundan.
+                result.status = "fail"
                 result.messages.append(CheckMessage(
                     level="fail",
                     text=(

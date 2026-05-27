@@ -10,6 +10,7 @@ const MODULES = [
   { key: 'budget', label: 'Audit Anggaran' },
   { key: 'reference', label: 'Daftar Pustaka' },
   { key: 'schedule', label: 'Jadwal Kegiatan' },
+  { key: 'similarity', label: 'Similaritas' },
 ] as const;
 
 export function exportCheckResultPdf(result: CheckResults) {

@@ -415,5 +415,95 @@ class TestNoTablesEdgeCase(unittest.TestCase):
         self.assertEqual(len(result.table_integrity_missing), 4)
 
 
+# ============================================================================
+# Test: Rekap Sumber Dana (tabel Bab 4)
+# ============================================================================
+
+
+def _make_bab4_table_with_rekap(belmawa, pt, external, total):
+    """Bangun TableInfo minimal meniru blok Rekap Sumber Dana di tabel Bab 4."""
+    from app.services.docx_parser import TableInfo, TableCellInfo
+
+    rows = [
+        ["No", "Jenis Pengeluaran", "Sumber Dana", "Besaran Dana (Rp)"],
+        ["1", "Bahan habis pakai", "Belmawa", "4.640.000"],
+        ["Jumlah", "Jumlah", "Jumlah", total],
+        ["Rekap Sumber Dana", "Rekap Sumber Dana", "Belmawa", belmawa],
+        ["Rekap Sumber Dana", "Rekap Sumber Dana", "Perguruan Tinggi", pt],
+        ["Rekap Sumber Dana", "Rekap Sumber Dana", "Instansi Lain", external],
+        ["Rekap Sumber Dana", "Rekap Sumber Dana", "Jumlah", total],
+    ]
+    cells = [
+        TableCellInfo(row=r, col=c, text=str(val))
+        for r, row in enumerate(rows)
+        for c, val in enumerate(row)
+    ]
+    return TableInfo(
+        index=0, rows=len(rows), cols=4, cells=cells, header_texts=rows[0]
+    )
+
+
+class TestRekapSumberDanaParsing(unittest.TestCase):
+    def test_parses_each_source(self):
+        t = _make_bab4_table_with_rekap("8.000.000", "2.000.000", "0", "10.000.000")
+        r = parse_bab4_table(t)
+        self.assertEqual(r.rekap_belmawa_rp, 8_000_000)
+        self.assertEqual(r.rekap_university_rp, 2_000_000)
+        self.assertEqual(r.rekap_external_rp, 0)
+        self.assertEqual(r.rekap_total_rp, 10_000_000)
+
+    def test_rekap_rows_recorded(self):
+        t = _make_bab4_table_with_rekap("8.000.000", "2.000.000", "0", "10.000.000")
+        r = parse_bab4_table(t)
+        # Baris rekap tercatat untuk estimasi halaman
+        self.assertIn("belmawa", r.rekap_rows)
+        self.assertIn("university", r.rekap_rows)
+
+
+class TestRekapSumberDanaValidation(unittest.TestCase):
+    def _validate(self, belmawa, pt, external):
+        from app.services.budget_table_parser import Bab4ParseResult
+
+        aud = BudgetAuditor(parser=None, rules=get_pkm_kc_budget_rules())
+        result = BudgetAuditResult(status="pass")
+        bab4 = Bab4ParseResult(
+            found=True,
+            table_index=-1,  # -1 → lewati estimasi halaman (parser tidak diakses)
+            rekap_belmawa_rp=belmawa,
+            rekap_university_rp=pt,
+            rekap_external_rp=external,
+        )
+        aud._validate_rekap_sumber_dana(result, bab4)
+        return {fv.name: fv for fv in result.rekap_validation}
+
+    def test_all_valid_no_fail(self):
+        self.assertEqual(self._validate(8_000_000, 2_000_000, 0), {})
+
+    def test_belmawa_below_range_fails(self):
+        self.assertIn("belmawa", self._validate(5_000_000, 1_000_000, 0))
+
+    def test_belmawa_above_range_fails(self):
+        self.assertIn("belmawa", self._validate(9_000_000, 1_000_000, 0))
+
+    def test_pt_zero_fails(self):
+        self.assertIn("university", self._validate(7_000_000, 0, 0))
+
+    def test_pt_above_max_fails(self):
+        self.assertIn("university", self._validate(7_000_000, 3_000_000, 0))
+
+    def test_pt_at_max_passes(self):
+        self.assertNotIn("university", self._validate(7_000_000, 2_000_000, 0))
+
+    def test_external_above_max_fails(self):
+        self.assertIn("external", self._validate(7_000_000, 1_000_000, 2_000_000))
+
+    def test_external_at_max_passes(self):
+        self.assertNotIn("external", self._validate(7_000_000, 1_000_000, 1_000_000))
+
+    def test_missing_values_skipped(self):
+        # Tabel tanpa blok rekap (format lama) → tidak ada validasi rekap
+        self.assertEqual(self._validate(None, None, None), {})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

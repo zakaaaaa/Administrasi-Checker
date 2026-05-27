@@ -557,6 +557,7 @@ def submit_check(
             "lampiran": results.get("lampiran"),
             "biodata_date": results.get("biodata_date"),
             "schedule": results.get("schedule"),
+            "similarity": results.get("similarity"),
         },
     }
 
@@ -662,5 +663,6 @@ def reviewer_check(
             "lampiran": results.get("lampiran"),
             "biodata_date": results.get("biodata_date"),
             "schedule": results.get("schedule"),
+            "similarity": results.get("similarity"),
         },
     }

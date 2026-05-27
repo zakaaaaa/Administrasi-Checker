@@ -5,6 +5,9 @@ Sementara hanya support PKM-KC Proposal. Skema lain → raise UnsupportedSchemaE
 """
 from __future__ import annotations
 
+import logging
+import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -23,6 +26,8 @@ from app.services.luaran_checker import LuaranChecker
 from app.services.lampiran_checker import LampiranChecker
 from app.services.biodata_date_checker import BiodataDateChecker
 from app.services.schedule_checker import ScheduleChecker
+from app.services.similarity_checker import SimilarityChecker
+from app.services.lampiran_index import LampiranOcrIndex
 
 
 class UnsupportedSchemaError(ValueError):
@@ -65,6 +70,21 @@ def _module_error_payload(exc: BaseException) -> dict[str, Any]:
         "message": msg,
         "messages": [{"level": "error", "text": msg}],
     }
+
+
+_log = logging.getLogger(__name__)
+_TIMING_ENABLED = os.environ.get("CHECK_TIMING", "1").lower() not in ("0", "false", "no", "")
+
+
+def _log_timing(key: str, t0: float, sink: dict[str, float] | None = None) -> None:
+    """Catat & log durasi satu checker (instrumentasi Fase 0). Aktif kecuali CHECK_TIMING=0."""
+    dt = time.perf_counter() - t0
+    if sink is not None:
+        sink[key] = round(dt, 3)
+    if _TIMING_ENABLED:
+        msg = f"[timing] {key}: {dt:.2f}s"
+        _log.info(msg)
+        print(msg, flush=True)
 
 
 @dataclass
@@ -114,9 +134,11 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
     budget_rules = get_pkm_kc_budget_rules()
     results: dict[str, Any] = {}
     statuses: list[str] = []
+    timings: dict[str, float] = {}
 
     # 1. Structure
     structure_result = None
+    _t0 = time.perf_counter()
     try:
         structure_result = StructureChecker(parser, schema).check()
         results["structure"] = structure_result.to_dict()
@@ -124,9 +146,11 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
     except Exception as e:
         results["structure"] = _module_error_payload(e)
         statuses.append("error")
+    _log_timing("structure", _t0, timings)
 
-    # 2. Physical Sheet
+    # 2. Physical Sheet (termasuk konversi docx→PDF via LibreOffice)
     _physical_result = None
+    _t0 = time.perf_counter()
     try:
         _physical_result = PhysicalSheetCounter(parser, schema).check()
         results["physical_sheet"] = _physical_result.to_dict()
@@ -134,8 +158,10 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
     except Exception as e:
         results["physical_sheet"] = _module_error_payload(e)
         statuses.append("error")
+    _log_timing("physical_sheet", _t0, timings)
 
     # 3. Format (bagian inti: Bab 1 s.d. sebelum Lampiran)
+    _t0 = time.perf_counter()
     try:
         _pdf_texts = _load_pdf_sheet_texts(_physical_result) if _physical_result else None
         r = FormatChecker(parser, schema=schema, pdf_sheet_texts=_pdf_texts).check(
@@ -146,8 +172,10 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
     except Exception as e:
         results["format"] = _module_error_payload(e)
         statuses.append("error")
+    _log_timing("format", _t0, timings)
 
     # 4. Page Numbering
+    _t0 = time.perf_counter()
     try:
         r = PageNumberingChecker(parser, schema).check()
         results["page_numbering"] = r.to_dict()
@@ -155,8 +183,10 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
     except Exception as e:
         results["page_numbering"] = _module_error_payload(e)
         statuses.append("error")
+    _log_timing("page_numbering", _t0, timings)
 
     # 5. Budget
+    _t0 = time.perf_counter()
     try:
         r = BudgetAuditor(parser, budget_rules).check()
         results["budget"] = r.to_dict()
@@ -164,8 +194,10 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
     except Exception as e:
         results["budget"] = _module_error_payload(e)
         statuses.append("error")
+    _log_timing("budget", _t0, timings)
 
     # 6. Reference
+    _t0 = time.perf_counter()
     try:
         r = ReferenceValidator(parser, schema).check()
         results["reference"] = r.to_dict()
@@ -173,8 +205,10 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
     except Exception as e:
         results["reference"] = _module_error_payload(e)
         statuses.append("error")
+    _log_timing("reference", _t0, timings)
 
     # 7. Luaran (khusus PKM-KC)
+    _t0 = time.perf_counter()
     try:
         r = LuaranChecker.for_pkm_kc(parser).check()
         results["luaran"] = r.to_dict()
@@ -182,26 +216,36 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
     except Exception as e:
         results["luaran"] = _module_error_payload(e)
         statuses.append("error")
+    _log_timing("luaran", _t0, timings)
 
-    # 8. Lampiran (khusus PKM-KC)
+    # Index Lampiran bersama: cache OCR per-gambar dipakai lampiran + biodata_date
+    # (tiap gambar di-OCR maksimal sekali untuk kedua checker).
+    lampiran_index = LampiranOcrIndex(parser)
+
+    # 8. Lampiran (khusus PKM-KC) — OCR scoped (segment belum teridentifikasi)
+    _t0 = time.perf_counter()
     try:
-        r = LampiranChecker.for_pkm_kc(parser).check()
+        r = LampiranChecker.for_pkm_kc(parser).check(index=lampiran_index)
         results["lampiran"] = r.to_dict()
         statuses.append(_extract_status(results["lampiran"]))
     except Exception as e:
         results["lampiran"] = _module_error_payload(e)
         statuses.append("error")
+    _log_timing("lampiran", _t0, timings)
 
-    # 9. Tanggal biodata (khusus PKM-KC)
+    # 9. Tanggal biodata (khusus PKM-KC) — OCR scoped (biodata + surat pernyataan), reuse cache
+    _t0 = time.perf_counter()
     try:
-        r = BiodataDateChecker.for_pkm_kc(parser).check()
+        r = BiodataDateChecker.for_pkm_kc(parser).check(index=lampiran_index)
         results["biodata_date"] = r.to_dict()
         statuses.append(_extract_status(results["biodata_date"]))
     except Exception as e:
         results["biodata_date"] = _module_error_payload(e)
         statuses.append("error")
+    _log_timing("biodata_date", _t0, timings)
 
     # 10. Jadwal kegiatan (khusus PKM-KC)
+    _t0 = time.perf_counter()
     try:
         r = ScheduleChecker.for_pkm_kc(parser).check()
         results["schedule"] = r.to_dict()
@@ -209,7 +253,22 @@ def _run_pkm_kc(parser: DocxParser) -> dict[str, Any]:
     except Exception as e:
         results["schedule"] = _module_error_payload(e)
         statuses.append("error")
+    _log_timing("schedule", _t0, timings)
 
+    # 11. Hasil uji similaritas ≤ 25% (khusus PKM-KC) — OCR gambar similaritas
+    _t0 = time.perf_counter()
+    try:
+        r = SimilarityChecker.for_pkm_kc(parser).check()
+        results["similarity"] = r.to_dict()
+        statuses.append(_extract_status(results["similarity"]))
+    except Exception as e:
+        results["similarity"] = _module_error_payload(e)
+        statuses.append("error")
+    _log_timing("similarity", _t0, timings)
+
+    results["_timings"] = {**timings, "total": round(sum(timings.values()), 3)}
+    if _TIMING_ENABLED:
+        print(f"[timing] TOTAL PKM-KC: {results['_timings']['total']:.2f}s", flush=True)
     results["overall_status"] = _aggregate_status(statuses)
     return results
 

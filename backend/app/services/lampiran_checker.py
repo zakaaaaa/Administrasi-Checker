@@ -45,6 +45,9 @@ _REQUIRED_LAMPIRAN: list[tuple[int, list[str], str]] = [
 # Heading LAMPIRAN (batas awal section lampiran di dokumen)
 _LAMPIRAN_SECTION_RE = re.compile(r"^\s*LAMPIRAN\s*$", re.IGNORECASE)
 
+# Heading "DAFTAR LAMPIRAN" (daftar di depan dokumen)
+_DAFTAR_LAMPIRAN_RE = re.compile(r"^\s*daftar\s+lampiran\s*$", re.IGNORECASE)
+
 # Pattern "Lampiran N" — N bisa angka atau romawi
 _LAMPIRAN_N_RE = re.compile(r"\blampiran\s+(\d+|[IVXLC]+)\b", re.IGNORECASE)
 
@@ -116,40 +119,39 @@ class LampiranChecker:
     # Public
     # -------------------------------------------------------------------------
 
-    def check(self) -> LampiranCheckResult:
+    def check(self, index=None) -> LampiranCheckResult:
+        """
+        Deteksi kelengkapan lampiran MURNI dari teks: gabungan **Daftar Lampiran**
+        (depan) + heading **bagian Lampiran** (body). TIDAK ada OCR — pada proposal
+        rapi heading lampiran selalu diketik, dan Daftar Lampiran adalah deklarasi
+        penulis sendiri. Lampiran wajib yang tak tercantum → dilaporkan + diarahkan
+        cek manual (tanpa membuang waktu OCR semua gambar).
+
+        `index` diterima demi kompatibilitas pemanggilan orchestrator, tidak dipakai.
+        """
         result = LampiranCheckResult(status="pass")
 
-        # 1. Kumpulkan teks dari section Lampiran
-        lampiran_section_idx = self._find_lampiran_section_start()
-        text_corpus = self._collect_text_from_lampiran(lampiran_section_idx)
+        text_corpus = self._collect_lampiran_text_corpus()
 
-        # 2. Cek tiap lampiran wajib via teks
-        missing_via_text: list[tuple[int, list[str], str]] = []
+        missing: list[tuple[int, list[str], str]] = []
         for num, keywords, label in self.required:
             if not self._lampiran_found_in_text(num, keywords, text_corpus):
-                missing_via_text.append((num, keywords, label))
+                missing.append((num, keywords, label))
 
-        # 3. Jika ada yang tidak ketemu via teks → coba OCR gambar di section Lampiran
-        if missing_via_text:
-            ocr_text = self._ocr_lampiran_images(lampiran_section_idx)
-            still_missing: list[tuple[int, list[str], str]] = []
-            for num, keywords, label in missing_via_text:
-                if not self._lampiran_found_in_text(num, keywords, ocr_text):
-                    still_missing.append((num, keywords, label))
-        else:
-            still_missing = []
-
-        # 4. Bangun messages
-        if still_missing:
+        if missing:
             result.status = "fail"
-            for num, keywords, label in still_missing:
-                result.messages.append(CheckMessage(
-                    level="fail",
-                    text=(
-                        f"Lampiran {num} ({label}) tidak ditemukan di dokumen {self.schema_label}. "
-                        f"Pastikan heading 'Lampiran {num}. {label}' ada di bagian Lampiran."
-                    ),
-                ))
+            labels = [label for _, _, label in missing]
+            daftar = "\n".join(f"{i}. {lbl}" for i, lbl in enumerate(labels, 1))
+            acuan = "lampiran tersebut" if len(labels) == 1 else "lampiran-lampiran tersebut"
+            result.messages.append(CheckMessage(
+                level="fail",
+                text=(
+                    f"{len(labels)} lampiran wajib tidak terdapat di Daftar Lampiran "
+                    f"dokumen {self.schema_label}:\n{daftar}\n"
+                    f"Cek juga halaman Lampiran secara manual untuk memastikan {acuan} "
+                    f"benar-benar ada."
+                ),
+            ))
         else:
             result.messages.append(CheckMessage(
                 level="pass",
@@ -160,6 +162,40 @@ class LampiranChecker:
             ))
 
         return result
+
+    def _collect_lampiran_text_corpus(self) -> str:
+        """
+        Korpus teks untuk deteksi: blok 'DAFTAR LAMPIRAN' (depan) + bagian Lampiran
+        di body. Sengaja TIDAK menyertakan prosa Bab 1–5 supaya 'Lampiran N' yang
+        disebut sambil lalu di teks utama tidak memicu false-positive.
+        """
+        paras = self.parser.paragraphs
+        parts: list[str] = []
+
+        # (a) Blok Daftar Lampiran di depan: heading + entri sampai heading section lain.
+        daftar_idx = next(
+            (p.index for p in paras if _DAFTAR_LAMPIRAN_RE.match(p.text.strip())),
+            None,
+        )
+        if daftar_idx is not None:
+            for p in paras:
+                if p.index <= daftar_idx:
+                    continue
+                t = p.text.strip()
+                if not t:
+                    continue
+                if p.is_heading and not _LAMPIRAN_N_RE.search(t):
+                    break  # sudah keluar dari blok Daftar Lampiran
+                parts.append(p.text)
+
+        # (b) Bagian Lampiran di body (heading 'LAMPIRAN' → akhir dokumen).
+        body_start = self._find_lampiran_section_start()
+        if body_start is not None:
+            for p in paras:
+                if p.index >= body_start and p.text.strip():
+                    parts.append(p.text)
+
+        return " ".join(parts)
 
     # -------------------------------------------------------------------------
     # Step 1 & 2: Deteksi teks
@@ -199,86 +235,8 @@ class LampiranChecker:
                 return True
         return False
 
-    # -------------------------------------------------------------------------
-    # Step 3: OCR gambar di section Lampiran
-    # -------------------------------------------------------------------------
-
-    def _ocr_lampiran_images(self, lampiran_section_idx: Optional[int]) -> str:
-        """
-        Ekstrak gambar embedded dari section Lampiran di docx, lalu OCR.
-        Return teks gabungan hasil OCR.
-        """
-        import logging
-        log = logging.getLogger(__name__)
-
-        try:
-            from PIL import Image
-        except ImportError as e:
-            log.warning(f"[lampiran] PIL not available: {e}")
-            return ""
-
-        docx_path = str(self.parser.file_path)
-        ocr_parts: list[str] = []
-
-        try:
-            with zipfile.ZipFile(docx_path, "r") as zf:
-                # Muat relationship map: rId → image path
-                rel_map = _load_image_rels(zf)
-                if not rel_map:
-                    return ""
-
-                # Muat XML dokumen
-                with zf.open("word/document.xml") as f:
-                    doc_xml = ET.parse(f).getroot()
-
-                # Cari paragraph elemen di section Lampiran
-                body = doc_xml.find(f"{{{_W_NS}}}body")
-                if body is None:
-                    return ""
-
-                # Kumpulkan rId gambar dari paragraf setelah section Lampiran
-                image_rids = _collect_image_rids_after(
-                    body, lampiran_section_idx, self.parser.paragraphs
-                )
-                log.info(f"[lampiran] Found {len(image_rids)} images in lampiran section")
-                print(f"[lampiran] Found {len(image_rids)} images in lampiran section", flush=True)
-                if not image_rids:
-                    return ""
-
-                images: list = []
-                for rid in image_rids:
-                    img_path = rel_map.get(rid)
-                    if not img_path:
-                        continue
-                    full_img_path = f"word/{img_path}" if not img_path.startswith("word/") else img_path
-                    try:
-                        img_bytes = zf.read(full_img_path)
-                        images.append(Image.open(io.BytesIO(img_bytes)))
-                    except Exception as e:
-                        log.warning(f"[lampiran] Failed to open image {full_img_path}: {e}")
-                        continue
-
-                if not images:
-                    return ""
-
-                # Pakai EasyOCR yang sama dengan BiodataDateChecker, sehingga
-                # model yang sudah di-preload saat startup benar-benar terpakai.
-                from app.services.biodata_date_checker import _run_ocr
-                log.info(f"[lampiran] Loaded {len(images)} images, running OCR...")
-                print(f"[lampiran] Loaded {len(images)} images, running OCR...", flush=True)
-                ocr_parts = _run_ocr(images)
-                log.info(f"[lampiran] OCR done, total chars: {sum(len(t) for t in ocr_parts)}")
-                print(f"[lampiran] OCR done, total chars: {sum(len(t) for t in ocr_parts)}", flush=True)
-
-        except Exception as e:
-            log.error(f"[lampiran] OCR failed: {e}", exc_info=True)
-            return ""
-
-        return " ".join(ocr_parts)
-
-
 # =============================================================================
-# Helpers OOXML
+# Helpers OOXML (tidak lagi dipakai lampiran — disisakan untuk util internal)
 # =============================================================================
 
 

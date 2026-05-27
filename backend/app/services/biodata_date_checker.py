@@ -52,6 +52,22 @@ _DATE_RE = re.compile(
 
 _LAMPIRAN_SECTION_RE = re.compile(r"^\s*LAMPIRAN\s*$", re.IGNORECASE)
 
+# Sub-lampiran yang MUNGKIN memuat tanggal tanda tangan (positive include):
+# biodata (ketua/anggota/dosen) + surat pernyataan ketua.
+_DATE_SEGMENT_KEYWORDS: list[list[str]] = [
+    ["biodata"],
+    ["pernyataan", "ketua"],
+]
+
+# Sub-lampiran yang JELAS tidak memuat tanggal tanda tangan (dipakai hanya di
+# fallback aman bila tak ada segment biodata/surat terdeteksi via teks).
+# (similaritas ditangani terpisah via is_similarity_segment)
+_NON_DATE_LAMPIRAN_KEYWORDS: list[list[str]] = [
+    ["jadwal", "kegiatan"],
+    ["justifikasi", "anggaran"],
+    ["susunan", "tim", "pengusul"],
+]
+
 # OOXML namespaces
 _W_NS  = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _R_NS  = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -107,16 +123,19 @@ class BiodataDateChecker:
     # Public
     # -------------------------------------------------------------------------
 
-    def check(self) -> BiodataDateResult:
+    def check(self, index=None) -> BiodataDateResult:
+        """`index` = LampiranOcrIndex bersama (opsional). Jika None, dibuat sendiri."""
         result = BiodataDateResult(status="pass")
 
         lamp_start = self._find_lampiran_section_start()
 
-        # 1. Teks dari section Lampiran
+        # 1. Teks dari section Lampiran (tetap penuh — gratis, tak ubah hasil)
         text_corpus = self._collect_lampiran_text(lamp_start)
 
-        # 2. OCR gambar di section Lampiran
-        ocr_text = self._ocr_lampiran_images(lamp_start)
+        # 2. OCR — hanya segment yang relevan untuk tanggal tanda tangan
+        #    (biodata + surat pernyataan), lewati jadwal/justifikasi/susunan/similaritas.
+        #    Pakai cache bersama agar gambar yang sudah di-OCR lampiran tak diulang.
+        ocr_text = self._ocr_date_segments(lamp_start, index)
 
         combined = text_corpus + " " + ocr_text
 
@@ -180,6 +199,54 @@ class BiodataDateChecker:
             if p.text.strip():
                 parts.append(p.text)
         return " ".join(parts)
+
+    def _ocr_date_segments(self, lamp_start: Optional[int], index=None) -> str:
+        """
+        OCR gambar HANYA pada sub-lampiran biodata + surat pernyataan (positive
+        include) — di situlah tanggal tanda tangan berada. Sub-lampiran lain
+        (jadwal/justifikasi/susunan/gambaran teknologi/similaritas dll) dilewati.
+        Pakai cache OCR bersama (index) agar gambar tak di-OCR ulang antar checker.
+
+        Safety fallback: kalau tak ada segment biodata/surat yang terdeteksi via
+        teks (mis. heading-nya berupa gambar), pakai cakupan lama (semua kecuali
+        yang jelas bukan-tanggal) supaya tanggal tidak terlewat.
+        """
+        from app.services.lampiran_index import LampiranOcrIndex
+
+        if index is None:
+            index = LampiranOcrIndex(self.parser)
+
+        seg_start = index.find_section_start()
+        if seg_start is None:
+            seg_start = lamp_start
+
+        segs = index.segments(seg_start)
+        if not segs:
+            # Tak ada segment terdeteksi → perilaku lama: OCR semua gambar dari lamp_start.
+            return index.ocr_text_for_rids(index.rids_in_range(lamp_start))
+
+        # Positive include: segment yang teksnya cocok biodata / surat pernyataan.
+        included_rids: list[str] = []
+        for seg in segs:
+            if index.is_similarity_segment(seg):
+                continue
+            sl = (seg.seg_text or "").lower()
+            if any(all(k in sl for k in kws) for kws in _DATE_SEGMENT_KEYWORDS):
+                included_rids.extend(seg.image_rids)
+
+        if included_rids:
+            return index.ocr_text_for_rids(included_rids)
+
+        # Fallback aman: tak ada segment biodata/surat via teks → cakupan lama.
+        fallback_rids: list[str] = []
+        for seg in segs:
+            if index.is_similarity_segment(seg):
+                continue
+            sl = (seg.seg_text or "").lower()
+            if any(all(k in sl for k in kws) for kws in _NON_DATE_LAMPIRAN_KEYWORDS):
+                continue
+            fallback_rids.extend(seg.image_rids)
+        return index.ocr_text_for_rids(fallback_rids)
 
     def _ocr_lampiran_images(self, lampiran_section_idx: Optional[int]) -> str:
         import logging
@@ -285,28 +352,74 @@ def _fix_ocr_months(text: str) -> str:
     return _MONTH_FIX_RE.sub(_replace, text)
 
 
-_ROTATION_SCORE_THRESHOLD = 15  # kata bermakna cukup → skip rotasi lain
+_ROTATION_SCORE_THRESHOLD = 15  # skor tinggi → orientasi pasti benar, stop
+_ROTATION_FAST_ACCEPT = 3       # skor minimal di 0° untuk terima tanpa coba rotasi lain
+_OCR_MAX_DIM = 1500             # downscale sisi terpanjang sebelum OCR (waktu easyocr ∝ piksel)
+
+# "Sudah ada tanggal / persen" → jika 0° memuat ini, orientasi sudah benar, tak perlu rotasi.
+_ANY_DATE_RE = re.compile(
+    r"\d{1,2}\s+(?:Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus"
+    r"|September|Oktober|November|Desember)\s+\d{4}",
+    re.IGNORECASE,
+)
+_ANY_PERCENT_RE = re.compile(r"\d{1,3}\s*%")
+
+
+def _downscale_for_ocr(img):
+    """Kecilkan gambar besar (jaga rasio) agar OCR lebih cepat. No-op jika sudah kecil."""
+    w, h = img.size
+    longest = max(w, h)
+    if longest <= _OCR_MAX_DIM:
+        return img
+    scale = _OCR_MAX_DIM / float(longest)
+    return img.resize((max(1, int(w * scale)), max(1, int(h * scale))))
+
+
+def _rotation_score(text: str) -> int:
+    return sum(1 for w in text.split() if w.isalpha() and len(w) > 3)
+
+
+def _ocr_arr(arr, reader) -> str:
+    return " ".join(reader.readtext(arr, detail=0, paragraph=True))
 
 
 def _best_rotation_text(img, reader) -> str:
-    """Coba rotasi gambar, berhenti lebih awal jika orientasi sudah bagus (lazy)."""
+    """
+    OCR satu gambar dengan auto-rotate hemat:
+      - downscale dulu (waktu ∝ piksel),
+      - OCR 0° dulu; terima langsung jika skor cukup (≥3) ATAU sudah memuat
+        pola tanggal/persen — gambar tegak (mayoritas) cukup 1× OCR,
+      - hanya jika 0° nyaris kosong baru coba 90/180/270° dan pilih terbaik
+        (early-stop bila skor sangat tinggi).
+    """
     import numpy as np
-    best_text = ""
-    best_score = -1
-    for angle in [0, 90, 180, 270]:
-        rotated = img.rotate(angle, expand=True)
-        arr = np.array(rotated.convert("RGB"))
+    img = _downscale_for_ocr(img)
+
+    try:
+        text0 = _ocr_arr(np.array(img.convert("RGB")), reader)
+    except Exception:
+        text0 = ""
+    score0 = _rotation_score(text0)
+    if (
+        score0 >= _ROTATION_FAST_ACCEPT
+        or _ANY_DATE_RE.search(text0)
+        or _ANY_PERCENT_RE.search(text0)
+    ):
+        return text0
+
+    # 0° nyaris kosong → kemungkinan gambar miring; coba orientasi lain.
+    best_text, best_score = text0, score0
+    for angle in (90, 180, 270):
         try:
-            detections = reader.readtext(arr, detail=0, paragraph=True)
-            text = " ".join(detections)
-            score = sum(1 for w in text.split() if w.isalpha() and len(w) > 3)
-            if score > best_score:
-                best_score = score
-                best_text = text
-            if score >= _ROTATION_SCORE_THRESHOLD:
-                break  # orientasi sudah bagus, tidak perlu coba rotasi lain
+            arr = np.array(img.rotate(angle, expand=True).convert("RGB"))
+            text = _ocr_arr(arr, reader)
         except Exception:
             continue
+        score = _rotation_score(text)
+        if score > best_score:
+            best_score, best_text = score, text
+        if score >= _ROTATION_SCORE_THRESHOLD:
+            break
     return best_text
 
 
@@ -449,6 +562,8 @@ def _extract_dates(text: str) -> list[tuple[date, str]]:
         except ValueError:
             continue
 
-        results.append((d, m.group(0)))
+        # Simpan hanya bagian tanggalnya (tanpa prefix kota/tempat) untuk pesan.
+        date_only = f"{m.group(1)} {m.group(2)} {year_str}"
+        results.append((d, date_only))
 
     return results

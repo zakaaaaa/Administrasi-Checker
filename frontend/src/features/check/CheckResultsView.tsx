@@ -23,6 +23,7 @@ const MODULES = [
   { key: 'lampiran', label: 'Lampiran' },
   { key: 'biodata_date', label: 'Tanggal Biodata' },
   { key: 'schedule', label: 'Jadwal Kegiatan' },
+  { key: 'similarity', label: 'Similaritas' },
 ];
 
 function getMessages(mod: ModuleData): Message[] {
@@ -139,9 +140,7 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
       if (/ukuran kertas|bukan a4/.test(m))
         return 'Kesalahan ukuran kertas bukan A4';
       if (/ukuran font(?! keterangan)|bukan 12/.test(m)) {
-        const snippetMatch = masalah.match(/"([^"]+)"/);
-        const snippet = snippetMatch ? ` — "${snippetMatch[1]}"` : '';
-        return `Kesalahan ukuran huruf tidak 12${snippet}`;
+        return 'Kesalahan ukuran huruf tidak 12';
       }
       if (/ukuran font keterangan/.test(m)) {
         const snippetMatch = masalah.match(/"([^"]+)"/);
@@ -279,7 +278,7 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
       if (/tidak valid/i.test(m)) {
         const dateMatch = masalah.match(/'([^']+)'/);
         const tgl = dateMatch ? dateMatch[1] : '';
-        return `Kesalahan tanggal/bulan/tahun${tgl ? ` '${tgl}'` : ''} di lampiran biodata tidak antara 9 Maret s.d. 9 April 2026`;
+        return `Kesalahan tanggal/bulan/tahun${tgl ? ` '${tgl}'` : ''} di lampiran biodata, harus antara 9 Maret s.d. 9 April 2026`;
       }
       return masalah;
     }
@@ -287,10 +286,9 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
     case 'schedule': {
       if (/tidak terdeteksi/i.test(m))
         return 'Tabel jadwal kegiatan tidak terdeteksi — periksa manual (kolom: No, Jadwal Kegiatan, Bulan, Penanggung Jawab)';
-      if (/header kolom|tidak ditemukan di tabel jadwal/i.test(m)) {
-        const colMatch = masalah.match(/"([^"]+)"/);
-        const col = colMatch ? ` "${colMatch[1]}"` : '';
-        return `Kesalahan penulisan header kolom tabel jadwal${col} (wajib persis: No, Jadwal Kegiatan, Bulan, Penanggung Jawab)`;
+      if (/header kolom tabel jadwal tidak sesuai/i.test(m)) {
+        // Pesan backend sudah lengkap (Tertulis vs Wajib) — tampilkan apa adanya.
+        return `Kesalahan ${masalah.charAt(0).toLowerCase()}${masalah.slice(1)}`;
       }
       if (/jumlah bulan|rentang bulan|melebihi batas/i.test(m)) {
         const cntMatch = masalah.match(/jumlah bulan pada tabel jadwal (\d+)/i);
@@ -301,6 +299,17 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
         const noMatch = masalah.match(/nomor (\d+)/i);
         const no = noMatch ? ` (kegiatan nomor ${noMatch[1]})` : '';
         return `Kolom Penanggung Jawab pada tabel jadwal belum terisi${no}`;
+      }
+      return masalah;
+    }
+
+    case 'similarity': {
+      if (/tidak terdeteksi/i.test(m))
+        return 'Persentase hasil uji similaritas tidak terdeteksi — periksa manual (maksimal 25%)';
+      if (/melebihi/i.test(m)) {
+        const pm = masalah.match(/similaritas\s+(\d+)\s*%/i);
+        const pct = pm ? ` (${pm[1]}%)` : '';
+        return `Kesalahan hasil uji similaritas melebihi 25%${pct}`;
       }
       return masalah;
     }
@@ -322,6 +331,21 @@ function formatReferenceMessage(masalah: string): string {
 
 // Reformat pesan cross-check anggaran ke kalimat yang lebih deskriptif
 function formatBudgetMessage(masalah: string): string {
+  // Rekap Sumber Dana (tabel Bab 4): "Rekap Sumber Dana <Sumber> RpX tidak sesuai — ..."
+  const rekap = masalah.match(
+    /Rekap Sumber Dana\s+(Belmawa|Perguruan Tinggi|Instansi Lain)\s+(Rp[\d.,]+)/i
+  );
+  if (rekap) {
+    const [, src, valRaw] = rekap;
+    const val = valRaw.replace(/,/g, '.'); // Rp3,000,000 → Rp3.000.000 (format Indonesia)
+    if (/belmawa/i.test(src))
+      return `Kesalahan nominal Belmawa pada Rekap Sumber Dana BAB 4 (terdeteksi ${val}, harus 6–8 juta)`;
+    if (/perguruan tinggi/i.test(src))
+      return `Kesalahan nominal Perguruan Tinggi pada Rekap Sumber Dana BAB 4 (terdeteksi ${val}, harus lebih dari 0 dan maksimal 2 juta)`;
+    if (/instansi lain/i.test(src))
+      return `Kesalahan nominal Instansi Lain pada Rekap Sumber Dana BAB 4 (terdeteksi ${val}, maksimal 1 juta)`;
+  }
+
   // Cross-check: "Cross-check Bab 4 ↔ Lampiran 2 untuk 'Category': Bab 4 = RpX, Lampiran 2 = RpY, selisih RpZ"
   const crossCheck = masalah.match(
     /untuk\s+'([^']+)'[^:]*:\s*Bab\s+4\s+=\s+(Rp[\d.,]+).*?Lampiran\s+2\s+=\s+(Rp[\d.,]+)/i
@@ -449,9 +473,52 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
       }
     }
 
+    // Gabungkan kesalahan margin (kiri/kanan/atas/bawah) yang berada di halaman
+    // yang sama menjadi satu output. Jika hanya satu sisi, biarkan apa adanya.
+    const MARGIN_ORDER = ['atas', 'bawah', 'kiri', 'kanan'];
+    const isMarginItem = (it: ErrorItem) =>
+      it.module === 'format' &&
+      /^Kesalahan margin\s+(kiri|kanan|atas|bawah)\b/i.test(it.masalah);
+
+    const marginByPage = new Map<string, ErrorItem[]>();
+    const nonMargin: ErrorItem[] = [];
+    for (const it of flat) {
+      if (isMarginItem(it)) {
+        const k = String(it.page);
+        const arr = marginByPage.get(k);
+        if (arr) arr.push(it);
+        else marginByPage.set(k, [it]);
+      } else {
+        nonMargin.push(it);
+      }
+    }
+
+    const mergedMargins: ErrorItem[] = [];
+    for (const items of marginByPage.values()) {
+      const details = [
+        ...new Set(items.map(it => it.masalah.replace(/^Kesalahan margin\s+/i, '').trim())),
+      ].sort(
+        (a, b) =>
+          MARGIN_ORDER.findIndex(s => a.startsWith(s)) -
+          MARGIN_ORDER.findIndex(s => b.startsWith(s)),
+      );
+      const base = items[0];
+      const masalah =
+        details.length === 1
+          ? `Kesalahan margin ${details[0]}`
+          : `Kesalahan margin tidak sesuai aturan PKM (${details.join(', ')})`;
+      mergedMargins.push({
+        ...base,
+        level: items.some(it => it.level === 'fail' || it.level === 'error') ? 'fail' : base.level,
+        masalah,
+      });
+    }
+
+    const flatMerged = [...nonMargin, ...mergedMargins];
+
     // Deduplikasi: pesan identik dengan halaman yang sama (atau keduanya null) hanya tampil sekali
     const seenKeys = new Set<string>();
-    const dedupedFlat = flat.filter(item => {
+    const dedupedFlat = flatMerged.filter(item => {
       const key = `${item.module}|${item.masalah}|${item.page}`;
       if (seenKeys.has(key)) return false;
       seenKeys.add(key);
@@ -517,9 +584,9 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
         </div>
       )}
 
-      {/* Audit Anggaran */}
+      {/* Audit Anggaran — tanpa kolom halaman */}
       {budgetItems.length > 0 && (
-        <GroupedSection label="Audit Anggaran" items={budgetItems} showPage />
+        <GroupedSection label="Audit Anggaran" items={budgetItems} />
       )}
 
       {/* Daftar Pustaka */}
@@ -551,7 +618,7 @@ function ErrorRow({ item, showPage = false }: { item: ErrorItem; showPage?: bool
           {item.page !== null ? `Hal. ${item.page}` : ''}
         </span>
       )}
-      <p className={`flex-1 text-base font-medium leading-relaxed ${textCls}`}>{item.masalah}</p>
+      <p className={`flex-1 whitespace-pre-line text-base font-medium leading-relaxed ${textCls}`}>{item.masalah}</p>
       <span className={`shrink-0 rounded px-2 py-0.5 font-mono text-xs font-semibold ${tagCls}`}>
         {item.moduleLabel}
       </span>

@@ -17,5 +17,6 @@ export type CheckResults = {
     reference: ModuleResult;
     ai_front_matter?: ModuleResult;
     schedule?: ModuleResult;
+    similarity?: ModuleResult;
   };
 };

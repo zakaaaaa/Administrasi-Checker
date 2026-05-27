@@ -163,34 +163,28 @@ class ScheduleChecker:
     # -------------------------------------------------------------------------
 
     def _check_headers(self, table: TableInfo, grid: dict) -> list[CheckMessage]:
-        out: list[CheckMessage] = []
         logical = _dedup_consecutive(self._row_cells(table, grid, 0))
         expected = self.rules.expected_headers
         expected_norm = {_norm(e) for e in expected}
         logical_norm = {_norm(g) for g in logical}
-        expected_join = ", ".join(expected)
 
-        # Header yang ditulis tapi tidak termasuk header resmi (mis. "PIC")
-        for got in logical:
-            if _norm(got) not in expected_norm:
-                out.append(CheckMessage(
-                    level="fail",
-                    text=(
-                        f"Penulisan header kolom \"{got}\" pada tabel jadwal tidak sesuai. "
-                        f"Header wajib ditulis persis: {expected_join}."
-                    ),
-                ))
-        # Header resmi yang hilang (mis. "Penanggung Jawab" karena ditulis "PIC")
-        for exp in expected:
-            if _norm(exp) not in logical_norm:
-                out.append(CheckMessage(
-                    level="fail",
-                    text=(
-                        f"Kolom \"{exp}\" tidak ditemukan di tabel jadwal kegiatan. "
-                        f"Header wajib: {expected_join}."
-                    ),
-                ))
-        return out
+        # Header sudah sesuai (cocok sebagai himpunan) → tidak ada masalah.
+        if logical_norm == expected_norm:
+            return []
+
+        # Satu pesan ringkas: tunjukkan header yang TERTULIS vs yang WAJIB, supaya
+        # jelas bedanya (mis. dokumen menulis "Jenis Kegiatan", wajibnya
+        # "Jadwal Kegiatan") tanpa pesan terpisah yang membingungkan.
+        written_join = ", ".join(logical) if logical else "(tidak terbaca)"
+        expected_join = ", ".join(expected)
+        return [CheckMessage(
+            level="fail",
+            text=(
+                "Penulisan header kolom tabel jadwal tidak sesuai.\n"
+                f"Tertulis: {written_join}\n"
+                f"Wajib ditulis persis: {expected_join}"
+            ),
+        )]
 
     # -------------------------------------------------------------------------
     # 2. Rentang bulan

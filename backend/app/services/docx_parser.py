@@ -189,6 +189,7 @@ class DocxParser:
         self._numbering_xml: Optional[etree._Element] = None
         self._paragraph_page_estimates: Optional[list[int]] = None
         self._paragraph_index_in_page: Optional[list[int]] = None
+        self._has_lrpb: Optional[bool] = None
 
     # ------------------------------------------------------------------------
     # Akses dokumen via python-docx (high-level)
@@ -319,25 +320,63 @@ class DocxParser:
             return None
         return self._paragraph_index_in_page[paragraph_index]
 
-    def _delta_pages_after_paragraph_element(self, p_el: etree._Element) -> int:
+    def _document_has_lrpb(self) -> bool:
+        """True jika dokumen punya marker w:lastRenderedPageBreak (ciri dokumen
+        yang terakhir di-render/disimpan oleh MS Word). Marker ini = cache layout
+        Word; jika ada, ia sudah merekam SEMUA page break (manual & section)."""
+        if self._has_lrpb is None:
+            body = self.doc.element.body
+            self._has_lrpb = (
+                body.find(".//w:lastRenderedPageBreak", namespaces=NSMAP) is not None
+            )
+        return self._has_lrpb
+
+    def _element_break_delta(self, el: etree._Element) -> int:
         """
-        Tambahan nomor halaman setelah me-render satu elemen <w:p>
-        (sama dengan logika _build_page_estimates untuk body paragraf).
+        Pertambahan halaman akibat satu elemen body (paragraf / tabel / sdt).
+
+        - Mode Word (ada lastRenderedPageBreak): hitung lastRenderedPageBreak SAJA.
+          Word sudah mencatat setiap page break (termasuk break manual & section)
+          sebagai lastRenderedPageBreak, jadi menambah break manual/section lagi =
+          double-count (inilah penyebab over-count lama).
+        - Mode non-Word (tanpa lastRenderedPageBreak): fallback ke break manual +
+          section break non-continuous — perkiraan terbaik tanpa cache layout Word.
         """
-        delta = 0
-        delta += len(
-            p_el.findall(".//w:br[@w:type='page']", namespaces=NSMAP)
-        )
-        delta += len(
-            p_el.findall(".//w:lastRenderedPageBreak", namespaces=NSMAP)
-        )
-        sect_pr = p_el.find(".//w:pPr/w:sectPr", namespaces=NSMAP)
-        if sect_pr is not None:
+        if self._document_has_lrpb():
+            return len(el.findall(".//w:lastRenderedPageBreak", namespaces=NSMAP))
+        delta = len(el.findall(".//w:br[@w:type='page']", namespaces=NSMAP))
+        for sect_pr in el.findall(".//w:pPr/w:sectPr", namespaces=NSMAP):
             sect_type = sect_pr.find("w:type", namespaces=NSMAP)
             val = sect_type.get(qn("w:val")) if sect_type is not None else None
             if val is None or str(val).lower() != "continuous":
                 delta += 1
         return delta
+
+    def _split_lrpb_around_text(self, p_el: etree._Element) -> tuple[int, int]:
+        """Pisah lastRenderedPageBreak sebuah paragraf menjadi (lead, rest):
+        - lead  = break SEBELUM teks pertama → paragraf ini mulai di halaman baru.
+        - rest  = break SETELAH teks → mempengaruhi konten sesudahnya saja.
+        Dipakai agar paragraf yang diawali page break tercatat di halaman yang benar."""
+        lead = rest = 0
+        seen_text = False
+        lrpb_tag = qn("w:lastRenderedPageBreak")
+        t_tag = qn("w:t")
+        for el in p_el.iter():
+            if el.tag == lrpb_tag:
+                if seen_text:
+                    rest += 1
+                else:
+                    lead += 1
+            elif el.tag == t_tag and (el.text or "").strip():
+                seen_text = True
+        return lead, rest
+
+    def _delta_pages_after_paragraph_element(self, p_el: etree._Element) -> int:
+        """
+        Tambahan nomor halaman setelah me-render satu elemen <w:p>
+        (sama dengan logika _build_page_estimates untuk body paragraf).
+        """
+        return self._element_break_delta(p_el)
 
     def estimate_page_for_table_cell(
         self, table_index: int, row: int, col: int = 0
@@ -522,31 +561,33 @@ class DocxParser:
         return result
 
     def _build_page_estimates(self) -> list[int]:
+        """Estimasi halaman fisik per paragraf body (index sejajar self.paragraphs).
+
+        Menyusuri anak-LANGSUNG <w:body> berurutan (bukan hanya self.doc.paragraphs)
+        supaya page break di dalam <w:tbl>/<w:sdt> — mis. bibliografi dalam content
+        control — ikut menggeser halaman. Setiap <w:p> anak-langsung body sejajar
+        1:1 dengan self.doc.paragraphs, sehingga index tetap sinkron.
+
+        Mode Word: hitung lastRenderedPageBreak saja, dan letakkan leading break
+        (sebelum teks paragraf) agar paragraf yang mengawali halaman tercatat benar.
+        """
+        use_lrpb = self._document_has_lrpb()
         page = 1
         estimates: list[int] = []
-        for para in self.doc.paragraphs:
-            estimates.append(page)
-            # Explicit page break di run.
-            page += len(
-                para._element.findall(
-                    ".//w:br[@w:type='page']",
-                    namespaces=NSMAP,
-                )
-            )
-            # Last rendered page break (umum pada dokumen dari Word).
-            page += len(
-                para._element.findall(
-                    ".//w:lastRenderedPageBreak",
-                    namespaces=NSMAP,
-                )
-            )
-            # Section break default = next page (kecuali continuous).
-            sect_pr = para._element.find(".//w:pPr/w:sectPr", namespaces=NSMAP)
-            if sect_pr is not None:
-                sect_type = sect_pr.find("w:type", namespaces=NSMAP)
-                val = sect_type.get(qn("w:val")) if sect_type is not None else None
-                if val is None or str(val).lower() != "continuous":
-                    page += 1
+        for child in self.doc.element.body:
+            if child.tag == qn("w:p"):
+                if use_lrpb:
+                    lead, rest = self._split_lrpb_around_text(child)
+                    page += lead
+                    estimates.append(page)
+                    page += rest
+                else:
+                    estimates.append(page)
+                    page += self._element_break_delta(child)
+            else:
+                # tabel / sdt / elemen body lain: tidak masuk self.paragraphs,
+                # tapi break di dalamnya tetap menggeser halaman paragraf berikutnya.
+                page += self._element_break_delta(child)
         return estimates
 
     def _build_paragraph_index_in_page(self) -> list[int]:
