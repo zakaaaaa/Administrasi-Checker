@@ -1021,7 +1021,7 @@ class FormatChecker:
                     sec.issues.append(
                         FormatIssue(
                             check_name="caption_line_spacing",
-                            severity="warning",
+                            severity="fail",
                             location=self._format_para_location(para.index),
                             issue=f"Line spacing keterangan gambar/tabel bukan 1 — \"{snippet}\"",
                             found=str(ls),
@@ -1039,7 +1039,10 @@ class FormatChecker:
                         expected=str(self.rules.line_spacing),
                     )
                 )
-        if sec.issues:
+        # Caption spacing = fail (merah); body line spacing tetap warning.
+        if any(i.severity == "fail" for i in sec.issues):
+            sec.status = "fail"
+        elif sec.issues:
             sec.status = "warning"
         sec.detail = {
             "expected": self.rules.line_spacing,

@@ -134,7 +134,7 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
       if (/ukuran font abstract.*english|abstract.*english.*11pt/i.test(m))
         return 'Kesalahan ukuran font Abstract English bukan 11pt';
       if (/abstract.*english.*italic|abstract.*english.*miring/i.test(m))
-        return 'Kesalahan Abstract English tidak dicetak miring (italic)';
+        return 'Kesalahan Abstract (EN) tidak dicetak miring (italic) sepenuhnya';
       // Spasi front matter
       if (/spasi baris front matter|front matter.*1\.0/i.test(m))
         return 'Kesalahan Judul Artikel, Nama Penulis, Alamat Institusi, Abstrak Tidak Menggunakan Spasi Baris 1.0';
@@ -153,9 +153,7 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
         return `Kesalahan ukuran huruf keterangan gambar/tabel bukan 11${snippet}`;
       }
       if (/^font bukan|font body bukan|bukan times new roman/.test(m)) {
-        const snippetMatch = masalah.match(/"([^"]+)"/);
-        const snippet = snippetMatch ? ` - "${snippetMatch[1]}"` : '';
-        return `Kesalahan tipe huruf tidak Times New Roman${snippet}`;
+        return 'Kesalahan tipe huruf tidak Times New Roman';
       }
       if (/margin/.test(m)) {
         if (/margin left|margin kiri/.test(m)) return 'Kesalahan margin kiri bukan 4cm';
@@ -320,6 +318,8 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
     }
 
     case 'similarity': {
+      if (/tidak terdapat lampiran/i.test(m))
+        return 'Kesalahan tidak terdapat Lampiran hasil uji similaritas';
       if (/tidak terdeteksi/i.test(m))
         return 'Persentase hasil uji similaritas tidak terdeteksi — periksa manual (maksimal 25%)';
       if (/melebihi/i.test(m)) {
@@ -465,6 +465,10 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
       for (const msg of getMessages(mod)) {
         if (msg.level !== 'fail' && msg.level !== 'error' && msg.level !== 'warning') continue;
         if (isSummaryLine(msg.text)) continue;
+        // Tekan pesan "Halaman pertama tidak memuat 'Daftar Isi'" dari modul
+        // Jumlah Lembar — redundan dengan temuan 'halaman sampul' di modul
+        // Struktur Dokumen (akar masalah sama: ada cover di halaman 1).
+        if (key === 'physical_sheet' && /Halaman pertama tidak memuat.*Daftar Isi/i.test(msg.text)) continue;
         const { lokasi, masalah } = parseMessage(msg.text);
         const isBudgetRelokasiWarning =
           key === 'budget' && /Saran relokasi/i.test(masalah);

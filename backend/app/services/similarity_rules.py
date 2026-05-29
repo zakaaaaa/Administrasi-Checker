@@ -15,7 +15,10 @@ from dataclasses import dataclass
 class SimilarityRules:
     schema_label: str
     max_percent: int = 25            # > max_percent → fail; tepat max_percent masih lolos
-    max_images_to_scan: int = 3      # OCR hanya beberapa gambar pertama lampiran similaritas
+    # OCR scan multiple gambar lampiran similaritas — overview Turnitin tidak
+    # selalu di gambar PERTAMA (kadang last page report). 20 cukup untuk cover
+    # semua kasus normal, dan OCR Vision paralel via ThreadPoolExecutor.
+    max_images_to_scan: int = 20
     crop_top_ratio: float = 0.35     # OCR cukup bagian atas gambar (tempat "XX% Overall Similarity")
 
 
@@ -70,4 +73,18 @@ def get_pkm_pm_similarity_rules() -> SimilarityRules:
     """Aturan similaritas PKM-PM — sama dengan PKM-KC (maks 25%)."""
     rules = get_pkm_kc_similarity_rules()
     rules.schema_label = "PKM-PM"
+    return rules
+
+
+def get_pkm_ai_similarity_rules() -> SimilarityRules:
+    """Aturan similaritas PKM-AI — sama dengan PKM-KC (maks 25%)."""
+    rules = get_pkm_kc_similarity_rules()
+    rules.schema_label = "PKM-AI"
+    return rules
+
+
+def get_pkm_gft_similarity_rules() -> SimilarityRules:
+    """Aturan similaritas PKM-GFT — sama dengan PKM-KC (maks 25%)."""
+    rules = get_pkm_kc_similarity_rules()
+    rules.schema_label = "PKM-GFT"
     return rules

@@ -4,7 +4,7 @@ PkmAiFormatChecker — checker format front matter PKM-AI.
 Yang dicek (sistematika halaman pertama PKM-AI):
 1. Judul      : TNR 12pt, tebal, huruf kapital semua, maks 20 kata
 2. Penulis    : TNR 10pt, tegak
-3. Abstrak ID : TNR 11pt, tegak, justified, maks 250 kata
+3. Abstrak ID : TNR 11pt, justified, maks 250 kata
 4. Abstract EN: TNR 11pt, miring, justified, maks 250 kata
 5. Spasi baris front matter: 1.0
 
@@ -44,6 +44,25 @@ class PkmAiFormatChecker:
     _ABSTRACT_EN_RE = re.compile(r"^\s*Abstract\s*$", re.IGNORECASE)
     _KATA_KUNCI_RE = re.compile(r"^\s*(?:Kata\s*[Kk]unci|Keywords?)\s*:", re.IGNORECASE)
 
+    # 7 heading section yang wajib TNR 12 cetak tebal (PDF panduan halaman 7–10).
+    _SECTION_HEADING_PATTERNS: list[tuple[str, re.Pattern]] = [
+        ("Pendahuluan",         re.compile(r"pendahuluan", re.IGNORECASE)),
+        ("Metode",              re.compile(r"metode(?:\s+(?:pelaksanaan|penelitian))?", re.IGNORECASE)),
+        ("Hasil dan Pembahasan", re.compile(r"hasil\s+dan\s+(?:pembahasan|diskusi)", re.IGNORECASE)),
+        ("Kesimpulan",          re.compile(r"(?:kesimpulan|simpulan)", re.IGNORECASE)),
+        ("Ucapan Terima Kasih", re.compile(r"ucapan\s+terima\s*kasih", re.IGNORECASE)),
+        ("Kontribusi Penulis",  re.compile(r"kontribusi\s+penulis", re.IGNORECASE)),
+        ("Daftar Pustaka",      re.compile(r"daftar\s+pustaka", re.IGNORECASE)),
+    ]
+    # Strip prefix nomor heading umum (mis. "1. Pendahuluan", "1) Metode")
+    _HEADING_NUM_PREFIX_RE = re.compile(r"^\s*\d+\s*[.)]\s*")
+
+    # Caption "Tabel N." dan "Gambar N." di awal paragraf (untuk cek posisi).
+    _TBL_CAPTION_RE = re.compile(r"^\s*Tabel\s+\d+[.:]?\s+", re.IGNORECASE)
+    _FIG_CAPTION_RE = re.compile(r"^\s*Gambar\s+\d+[.:]?\s+", re.IGNORECASE)
+    # Namespace WordprocessingML (untuk traversal body order)
+    _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
     MAX_ISSUES = 5  # per sub-check
 
     def __init__(self, parser: DocxParser, rules: SchemaRules):
@@ -64,6 +83,8 @@ class PkmAiFormatChecker:
         result.checks["abstract_id_format"] = self._check_abstract("id", bab1_idx)
         result.checks["abstract_en_format"] = self._check_abstract("en", bab1_idx)
         result.checks["front_matter_spacing"] = self._check_front_matter_spacing(bab1_idx)
+        result.checks["section_headings"] = self._check_section_headings(bab1_idx)
+        result.checks["caption_positions"] = self._check_caption_positions(bab1_idx)
 
         statuses = [s.status for s in result.checks.values()]
         if "fail" in statuses:
@@ -294,7 +315,7 @@ class PkmAiFormatChecker:
 
     def _check_abstract(self, lang: str, bab1_idx: Optional[int]) -> FormatCheckSection:
         """
-        lang='id': Abstrak Indonesia — TNR 11pt, tegak (tidak italic), ≤250 kata.
+        lang='id': Abstrak Indonesia — TNR 11pt, ≤250 kata.
         lang='en': Abstract English  — TNR 11pt, miring (italic), ≤250 kata.
         Kata-kata kunci juga wajib TNR 11pt (dicek terpisah dari word count).
         """
@@ -350,6 +371,25 @@ class PkmAiFormatChecker:
                 expected="Maksimal 250 kata",
             ))
 
+        # Justify: paragraf konten abstrak wajib rata kiri-kanan (PDF panduan §C.4).
+        # alignment None = inherit dari style — skip (tidak bisa pasti).
+        non_justify_align: Optional[str] = None
+        for para in content_paras:
+            if para.alignment is None:
+                continue
+            if para.alignment != "justify":
+                non_justify_align = para.alignment
+                break
+        if non_justify_align is not None:
+            sec.issues.append(FormatIssue(
+                check_name=f"abstract_{lang}_alignment",
+                severity="fail",
+                location=label,
+                issue=f"{label} harus rata kiri-kanan (justify).",
+                found=non_justify_align,
+                expected="justify",
+            ))
+
         # Font & italic — cek per run (run override > paragraph default)
         for para in content_paras:
             para_font = self.resolver.resolve_paragraph_font(para.index)
@@ -390,18 +430,28 @@ class PkmAiFormatChecker:
                 ))
                 break
 
-            has_italic = any(r.italic is True for r in para.runs if r.text.strip())
-            explicitly_not_italic = any(r.italic is False for r in para.runs if r.text.strip())
-            if not is_id and explicitly_not_italic and not has_italic:
-                sec.issues.append(FormatIssue(
-                    check_name="abstract_en_italic",
-                    severity="fail",
-                    location=label,
-                    issue="Abstract (English) harus dicetak miring (italic).",
-                    found="tidak italic",
-                    expected="italic",
-                ))
-                break
+        # Abstract EN wajib FULL italic: setiap run terlihat harus italic.
+        # Pakai italic ter-resolve dari style chain (tanpa pPr/rPr penanda paragraf)
+        # agar italic via style juga terbaca, bukan hanya per run.
+        if not is_id:
+            for para in content_paras:
+                non_italic_snippet: Optional[str] = None
+                for ri, run in enumerate(para.runs):
+                    if not run.text.strip():
+                        continue
+                    if self.resolver.resolve_run_italic(para.index, ri) is not True:
+                        non_italic_snippet = run.text.strip()[:60]
+                        break
+                if non_italic_snippet is not None:
+                    sec.issues.append(FormatIssue(
+                        check_name="abstract_en_italic",
+                        severity="fail",
+                        location=label,
+                        issue=f"Abstract (English) harus dicetak miring (italic) sepenuhnya — \"{non_italic_snippet}\"",
+                        found="ada teks tidak italic",
+                        expected="italic penuh",
+                    ))
+                    break
 
         # Font kata-kata kunci / keywords — wajib TNR 11pt
         for para in keyword_paras:
@@ -476,3 +526,223 @@ class PkmAiFormatChecker:
             sec.status = "fail"
 
         return sec
+
+    # ----------------------------------------------------------------
+    # Sub-check: heading 7 section wajib TNR 12 cetak tebal
+    # ----------------------------------------------------------------
+
+    def _check_section_headings(self, bab1_idx: Optional[int]) -> FormatCheckSection:
+        """
+        Aturan PKM-AI: heading Pendahuluan, Metode, Hasil dan Pembahasan,
+        Kesimpulan, Ucapan Terima Kasih, Kontribusi Penulis, Daftar Pustaka
+        wajib ditulis dengan Times New Roman 12 cetak tebal.
+
+        Strategi pencarian heading: fullmatch teks paragraf (setelah strip nomor
+        prefix opsional dan whitespace) ke pola — heading section selalu berdiri
+        sendiri, tidak akan match paragraf body yang berisi kalimat panjang.
+        """
+        sec = FormatCheckSection(name="section_headings", status="pass")
+        if bab1_idx is None:
+            return sec
+
+        found: dict[str, ParagraphInfo] = {}
+        for para in self.parser.paragraphs:
+            if para.index < bab1_idx:
+                continue
+            text = self._HEADING_NUM_PREFIX_RE.sub("", para.text.strip()).strip()
+            if not text or len(text) > 60:
+                continue
+            for canon, pat in self._SECTION_HEADING_PATTERNS:
+                if canon in found:
+                    continue
+                if pat.fullmatch(text):
+                    found[canon] = para
+                    break
+
+        for canon, para in found.items():
+            bad_bold = False
+            bad_font: Optional[str] = None
+            bad_size: Optional[float] = None
+            for ri, run in enumerate(para.runs):
+                if not run.text.strip():
+                    continue
+                if self.resolver.resolve_run_bold(para.index, ri) is not True:
+                    bad_bold = True
+                # Font/size lewat resolver lengkap (boleh inherit dari style)
+                rf = self.resolver.resolve_run_font(para.index, ri)
+                # Lewati run dengan karakter non-ASCII (substitusi font Word).
+                if any(ord(c) > 127 for c in run.text):
+                    continue
+                if rf.name and rf.name != "Times New Roman" and bad_font is None:
+                    bad_font = rf.name
+                if (
+                    rf.size_pt is not None
+                    and abs(rf.size_pt - 12.0) > 0.3
+                    and bad_size is None
+                ):
+                    bad_size = rf.size_pt
+
+            if bad_bold:
+                sec.issues.append(FormatIssue(
+                    check_name="heading_bold",
+                    severity="fail",
+                    location=f"Heading {canon}",
+                    issue=f"Heading '{canon}' wajib dicetak tebal (bold).",
+                    found="tidak bold",
+                    expected="bold",
+                ))
+            if bad_font:
+                sec.issues.append(FormatIssue(
+                    check_name="heading_font_name",
+                    severity="fail",
+                    location=f"Heading {canon}",
+                    issue=f"Font heading '{canon}' bukan Times New Roman.",
+                    found=bad_font,
+                    expected="Times New Roman",
+                ))
+            if bad_size is not None:
+                sec.issues.append(FormatIssue(
+                    check_name="heading_font_size",
+                    severity="fail",
+                    location=f"Heading {canon}",
+                    issue=f"Ukuran font heading '{canon}' bukan 12pt.",
+                    found=f"{bad_size}pt",
+                    expected="12pt",
+                ))
+            if len(sec.issues) >= self.MAX_ISSUES:
+                break
+
+        if sec.issues:
+            sec.status = "fail"
+        sec.detail = {"headings_found": list(found.keys())}
+        return sec
+
+    # ----------------------------------------------------------------
+    # Sub-check: posisi caption (Tabel di atas, Gambar di bawah)
+    # ----------------------------------------------------------------
+
+    def _check_caption_positions(self, bab1_idx: Optional[int]) -> FormatCheckSection:
+        """
+        PDF panduan §3 PKM-AI: keterangan tabel diletakkan di ATAS tabel,
+        keterangan gambar diletakkan di BAWAH gambar. Validasi berdasarkan
+        urutan blok body (<w:p> dan <w:tbl>), serta deteksi <w:drawing>/<w:pict>
+        di dalam paragraf gambar.
+        """
+        sec = FormatCheckSection(name="caption_positions", status="pass")
+        if bab1_idx is None:
+            return sec
+
+        blocks = self._iter_body_blocks()
+        if not blocks:
+            return sec
+
+        def is_meaningful(b: dict) -> bool:
+            if b["kind"] == "tbl":
+                return True
+            if b["kind"] == "p":
+                return bool(b["text"].strip()) or b["has_image"]
+            return False
+
+        def next_meaningful(i: int) -> Optional[int]:
+            for j in range(i + 1, min(len(blocks), i + 6)):
+                if is_meaningful(blocks[j]):
+                    return j
+            return None
+
+        def prev_meaningful(i: int) -> Optional[int]:
+            for j in range(i - 1, max(-1, i - 6), -1):
+                if is_meaningful(blocks[j]):
+                    return j
+            return None
+
+        for i, b in enumerate(blocks):
+            if b["kind"] != "p" or b["para_idx"] is None or b["para_idx"] < bab1_idx:
+                continue
+            text = b["text"].strip()
+            if not text:
+                continue
+            snippet = text[:60] + ("…" if len(text) > 60 else "")
+            if self._TBL_CAPTION_RE.match(text):
+                # Keterangan tabel WAJIB di atas tabel.
+                nxt = next_meaningful(i)
+                prv = prev_meaningful(i)
+                next_is_tbl = nxt is not None and blocks[nxt]["kind"] == "tbl"
+                prev_is_tbl = prv is not None and blocks[prv]["kind"] == "tbl"
+                if not next_is_tbl and prev_is_tbl:
+                    sec.issues.append(FormatIssue(
+                        check_name="caption_table_position",
+                        severity="fail",
+                        location=f"paragraf #{b['para_idx']}",
+                        issue=f"Keterangan tabel berada di bawah tabel — \"{snippet}\". Wajib di ATAS tabel.",
+                        found="di bawah tabel",
+                        expected="di atas tabel",
+                    ))
+            elif self._FIG_CAPTION_RE.match(text):
+                # Keterangan gambar WAJIB di bawah gambar.
+                nxt = next_meaningful(i)
+                prv = prev_meaningful(i)
+                prev_has_image = (
+                    prv is not None
+                    and blocks[prv]["kind"] == "p"
+                    and blocks[prv]["has_image"]
+                )
+                next_has_image = (
+                    nxt is not None
+                    and blocks[nxt]["kind"] == "p"
+                    and blocks[nxt]["has_image"]
+                )
+                if not prev_has_image and next_has_image:
+                    sec.issues.append(FormatIssue(
+                        check_name="caption_figure_position",
+                        severity="fail",
+                        location=f"paragraf #{b['para_idx']}",
+                        issue=f"Keterangan gambar berada di atas gambar — \"{snippet}\". Wajib di BAWAH gambar.",
+                        found="di atas gambar",
+                        expected="di bawah gambar",
+                    ))
+            if len(sec.issues) >= self.MAX_ISSUES:
+                break
+
+        if sec.issues:
+            sec.status = "fail"
+        return sec
+
+    def _iter_body_blocks(self) -> list[dict]:
+        """Walk anak-langsung <w:body> sesuai urutan dokumen. Sinkron dengan
+        konvensi indexing parser: paragraph_index hanya naik untuk <w:p>
+        anak-langsung body (tidak masuk paragraf dalam tabel)."""
+        body = self.parser.doc.element.body
+
+        def q(tag: str) -> str:
+            return f"{{{self._W_NS}}}{tag}"
+
+        blocks: list[dict] = []
+        para_counter = -1
+        tbl_counter = -1
+        for child in body:
+            tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if tag == "p":
+                para_counter += 1
+                text = "".join((t.text or "") for t in child.iter(q("t")))
+                has_image = (
+                    child.find(".//" + q("drawing")) is not None
+                    or child.find(".//" + q("pict")) is not None
+                )
+                blocks.append({
+                    "kind": "p", "para_idx": para_counter, "tbl_idx": None,
+                    "text": text, "has_image": has_image,
+                })
+            elif tag == "tbl":
+                tbl_counter += 1
+                blocks.append({
+                    "kind": "tbl", "para_idx": None, "tbl_idx": tbl_counter,
+                    "text": "", "has_image": False,
+                })
+            else:
+                # sdt, sectPr, lainnya — tetap masuk daftar agar urutan tidak hilang,
+                # tapi ditandai not meaningful untuk neighbor logic.
+                blocks.append({
+                    "kind": tag, "para_idx": None, "tbl_idx": None,
+                    "text": "", "has_image": False,
+                })
+        return blocks

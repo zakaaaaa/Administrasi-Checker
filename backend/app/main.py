@@ -1,4 +1,9 @@
 """FastAPI app entrypoint."""
+# Load .env PALING AWAL — sebelum import apapun yang butuh env var
+# (mis. Google Cloud Vision client yang baca GOOGLE_APPLICATION_CREDENTIALS).
+from dotenv import load_dotenv
+load_dotenv()
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Header

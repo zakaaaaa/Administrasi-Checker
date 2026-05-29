@@ -142,6 +142,14 @@ class BiodataDateChecker:
     def for_pkm_pm(cls, parser: DocxParser) -> "BiodataDateChecker":
         return cls(parser, "PKM-PM")
 
+    @classmethod
+    def for_pkm_vgk(cls, parser: DocxParser) -> "BiodataDateChecker":
+        return cls(parser, "PKM-VGK")
+
+    @classmethod
+    def for_pkm_gft(cls, parser: DocxParser) -> "BiodataDateChecker":
+        return cls(parser, "PKM-GFT")
+
     # -------------------------------------------------------------------------
     # Public
     # -------------------------------------------------------------------------

@@ -913,3 +913,138 @@ def get_pkm_ai_proposal_rules() -> SchemaRules:
             ),
         ],
     )
+
+
+# ============================================================================
+# HARDCODED RULES — PKM-GFT Proposal 2026
+# ============================================================================
+#
+# PKM-GFT (Gagasan Futuristik Tertulis) = PKM insentif TANPA pelaksanaan
+# kegiatan. Struktur lebih ringkas dibanding skema pendanaan: 3 BAB + Daftar
+# Pustaka + Lampiran, TIDAK ada BAB 4 Biaya & Jadwal Kegiatan.
+#
+# Sistematika sesuai PDF panduan §C halaman 6:
+#   DAFTAR ISI
+#   BAB 1. PENDAHULUAN
+#   BAB 2. GAGASAN
+#   BAB 3. KESIMPULAN
+#   DAFTAR PUSTAKA
+#   LAMPIRAN
+#
+# Catatan: PDF tidak menyebut "DAFTAR LAMPIRAN" sebagai section terpisah,
+# jadi tidak diwajibkan.
+#
+# Section TERLARANG (PDF halaman 5 paragraf akhir bagian A. Susunan Artikel):
+#   halaman sampul, halaman pengesahan, ringkasan / abstrak
+#   → "Jika isi utama proposal ada halaman sampul, lembar pengesahan,
+#      ringkasan atau abstrak, maka gagasan tersebut TIDAK LOLOS tahap 1."
+# ============================================================================
+
+
+def get_pkm_gft_proposal_rules() -> SchemaRules:
+    """
+    Aturan PKM-GFT (Gagasan Futuristik Tertulis) Proposal 2026.
+
+    Section yang diizinkan, urutannya:
+        1. DAFTAR ISI            (wajib)
+        2. DAFTAR GAMBAR         (opsional)
+        3. DAFTAR TABEL          (opsional)
+        4. BAB 1. PENDAHULUAN    (wajib, inti)
+        5. BAB 2. GAGASAN        (wajib, inti)
+        6. BAB 3. KESIMPULAN     (wajib, inti)
+        7. DAFTAR PUSTAKA        (wajib, inti)
+        8. LAMPIRAN              (wajib)
+
+    Section TERLARANG (red flag → tidak lolos tahap 1):
+        - Halaman Sampul / Cover
+        - Halaman Pengesahan / Lembar Pengesahan
+        - Ringkasan / Abstrak
+    """
+    return SchemaRules(
+        competition_code="PKM",
+        schema_code="GFT",
+        report_type_code="PROPOSAL",
+        schema_name="Gagasan Futuristik Tertulis",
+        year=2026,
+        sections=[
+            # --- SECTION WAJIB ---
+            SectionRule(name="DAFTAR ISI", required=True, order=1),
+            SectionRule(
+                name="BAB 1. PENDAHULUAN",
+                aliases=[
+                    "BAB I. PENDAHULUAN",
+                    "BAB 1 PENDAHULUAN",
+                    "BAB I PENDAHULUAN",
+                ],
+                required=True,
+                is_core=True,
+                order=4,
+            ),
+            SectionRule(
+                name="BAB 2. GAGASAN",
+                aliases=[
+                    "BAB II. GAGASAN",
+                    "BAB 2 GAGASAN",
+                    "BAB II GAGASAN",
+                ],
+                required=True,
+                is_core=True,
+                order=5,
+            ),
+            SectionRule(
+                name="BAB 3. KESIMPULAN",
+                aliases=[
+                    "BAB III. KESIMPULAN",
+                    "BAB 3 KESIMPULAN",
+                    "BAB III KESIMPULAN",
+                    "BAB 3. SIMPULAN",
+                    "BAB III. SIMPULAN",
+                ],
+                required=True,
+                is_core=True,
+                order=6,
+            ),
+            SectionRule(
+                name="DAFTAR PUSTAKA",
+                required=True,
+                is_core=True,
+                order=7,
+            ),
+            SectionRule(
+                name="LAMPIRAN",
+                aliases=["LAMPIRAN 1", "LAMPIRAN 1.", "LAMPIRAN-LAMPIRAN"],
+                required=True,
+                order=8,
+            ),
+            # --- SECTION OPSIONAL ---
+            SectionRule(name="DAFTAR GAMBAR", required=False, order=2),
+            SectionRule(name="DAFTAR TABEL", required=False, order=3),
+            # --- SECTION TERLARANG ---
+            SectionRule(
+                name="HALAMAN SAMPUL",
+                aliases=[
+                    "COVER",
+                    "SAMPUL",
+                    "PROPOSAL PKM",
+                    "PROPOSAL PKM-GFT",
+                    "PROPOSAL PROGRAM KREATIVITAS MAHASISWA",
+                ],
+                forbidden=True,
+            ),
+            SectionRule(
+                name="HALAMAN PENGESAHAN",
+                aliases=[
+                    "LEMBAR PENGESAHAN",
+                    "PENGESAHAN PROPOSAL",
+                    "PENGESAHAN PKM",
+                    "PENGESAHAN USULAN",
+                ],
+                forbidden=True,
+            ),
+            SectionRule(
+                name="RINGKASAN",
+                aliases=["ABSTRAK", "ABSTRACT"],
+                forbidden=True,
+            ),
+        ],
+    )

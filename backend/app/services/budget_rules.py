@@ -69,7 +69,18 @@ class BudgetRules:
     cross_check: CrossCheckRule = field(default_factory=CrossCheckRule)
     relocation_advisory: RelocationAdvisory = field(default_factory=RelocationAdvisory)
     prohibited_items: list[str] = field(default_factory=list)
-    # (Restriksi spesifik seperti "ads medsos ≤ 500rb" akan ditambah nanti)
+    # Batas iklan media sosial (semua skema pendanaan PKM 2026 = Rp500.000).
+    # 0 = nonaktif. Cek menyaring item Lampiran 2 yang aliasnya cocok dengan
+    # `ads_medsos_aliases` dan flag bila harga satuan melebihi `ads_medsos_max_rp`.
+    ads_medsos_max_rp: int = 500_000
+    ads_medsos_aliases: list[str] = field(default_factory=lambda: [
+        "iklan medsos", "iklan media sosial", "ads medsos", "ads media sosial",
+        "biaya iklan", "biaya ads", "promosi medsos", "promosi media sosial",
+        "instagram ads", "tiktok ads", "youtube ads", "facebook ads", "x ads",
+        "boost post", "boosted post", "paid promote",
+        # Variasi yang umum di proposal mahasiswa
+        "iklan instagram", "iklan tiktok", "iklan youtube", "iklan facebook",
+    ])
 
     def get_funding_source(self, name: str) -> Optional[FundingSourceRule]:
         """Lookup funding source rule by name (case-insensitive)."""

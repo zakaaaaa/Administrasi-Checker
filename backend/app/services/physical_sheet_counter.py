@@ -318,12 +318,18 @@ class PhysicalSheetCounter:
 
     def check(self, pdf_path: Optional[str | Path] = None) -> PhysicalSheetResult:
         """
-        Hitung jumlah lembar inti (BAB 1 s.d. halaman sebelum LAMPIRAN) langsung
-        dari DOCX via marker ``lastRenderedPageBreak`` (cache layout Word) —
-        TANPA konversi LibreOffice. Lihat docx_parser.estimate_physical_page.
+        Hitung jumlah lembar inti (BAB 1 s.d. halaman sebelum LAMPIRAN).
+
+        Strategi:
+        1. Mode Word (DOCX punya marker ``w:lastRenderedPageBreak``): hitung
+           langsung dari DOCX layout cache — cepat & akurat.
+        2. Mode non-Word (Google Docs / LibreOffice / WPS — tanpa cache layout):
+           fallback ke render LibreOffice PDF + hitung halaman dari PDF. Lebih
+           lambat tapi satu-satunya cara dapat ground-truth halaman.
 
         Args:
-            pdf_path: diabaikan (dipertahankan untuk kompatibilitas signature).
+            pdf_path: PDF yang sudah di-render caller. Kalau None & dokumen
+                non-Word, checker akan render sendiri.
         """
         min_sheets, max_sheets = get_sheet_count_rule(self.rules)
         result = PhysicalSheetResult(
@@ -336,11 +342,7 @@ class PhysicalSheetCounter:
             },
         )
 
-        # Total lembar fisik: pakai docProps/app.xml <Pages> (hitungan Word) bila
-        # ada, jika tidak estimasi dari paragraf terakhir.
-        result.total_physical_sheets = self._read_app_pages() or self._estimate_total_pages()
-
-        # Lokasi bagian inti via paragraf body (index sejajar estimate_physical_page).
+        # Lokasi BAB 1 & LAMPIRAN dari DOCX (dipakai di kedua mode).
         bab1_idx, lampiran_idx = self._locate_core_paragraphs()
         if bab1_idx is None:
             result.status = "fail"
@@ -355,17 +357,48 @@ class PhysicalSheetCounter:
             )
             return result
 
-        bab1_page = self.parser.estimate_physical_page(bab1_idx) or 1
-        if lampiran_idx is not None:
-            lampiran_page = self.parser.estimate_physical_page(lampiran_idx) or bab1_page
-            core_last = max(bab1_page, lampiran_page - 1)
-        else:
-            # Tidak ada LAMPIRAN → inti sampai akhir dokumen.
-            core_last = max(bab1_page, result.total_physical_sheets or bab1_page)
+        # Tentukan mode: Word (lastRenderedPageBreak ada) vs non-Word.
+        has_lrpb = self.parser._document_has_lrpb()
 
-        result.core_first_sheet = bab1_page
-        result.core_last_sheet = core_last
-        result.core_physical_sheets = core_last - bab1_page + 1
+        if has_lrpb:
+            # Mode Word — pakai layout cache (cepat).
+            result.total_physical_sheets = (
+                self._read_app_pages() or self._estimate_total_pages()
+            )
+            bab1_page = self.parser.estimate_physical_page(bab1_idx) or 1
+            if lampiran_idx is not None:
+                lampiran_page = self.parser.estimate_physical_page(lampiran_idx) or bab1_page
+                core_last = max(bab1_page, lampiran_page - 1)
+            else:
+                core_last = max(bab1_page, result.total_physical_sheets or bab1_page)
+            result.core_first_sheet = bab1_page
+            result.core_last_sheet = core_last
+            result.core_physical_sheets = core_last - bab1_page + 1
+            result.pdf_path = str(pdf_path) if pdf_path else None
+        else:
+            # Mode non-Word — fallback ke render PDF (LibreOffice).
+            pdf_computed = self._compute_via_pdf(pdf_path)
+            if pdf_computed is None:
+                result.status = "fail"
+                result.messages.append(
+                    CheckMessage(
+                        level="fail",
+                        text=(
+                            "Dokumen tidak punya cache layout Word (kemungkinan dibuat "
+                            "via Google Docs/LibreOffice). Konversi PDF gagal sehingga "
+                            "jumlah halaman tidak dapat dihitung. Buka & simpan ulang "
+                            "dokumen via MS Word, atau pastikan LibreOffice terinstal."
+                        ),
+                    )
+                )
+                return result
+            total, core_first, core_last, rendered_pdf = pdf_computed
+            result.method = "pdf_libreoffice_fallback"
+            result.total_physical_sheets = total
+            result.core_first_sheet = core_first
+            result.core_last_sheet = core_last
+            result.core_physical_sheets = core_last - core_first + 1
+            result.pdf_path = rendered_pdf
 
         # Validasi jumlah lembar inti vs aturan skema.
         result.messages.extend(self._validate_sheet_count(result, min_sheets, max_sheets))
@@ -395,6 +428,61 @@ class PhysicalSheetCounter:
             )
 
         return result
+
+    # ------------------------------------------------------------------------
+    # Fallback PDF: render via LibreOffice, hitung halaman dari PDF text
+    # ------------------------------------------------------------------------
+
+    def _compute_via_pdf(
+        self, pdf_path: Optional[str | Path] = None
+    ) -> Optional[tuple[int, int, int, str]]:
+        """
+        Render DOCX → PDF (LibreOffice), hitung total halaman + lokasi BAB 1 /
+        LAMPIRAN dari teks PDF per halaman.
+
+        Return (total_pages, core_first, core_last, pdf_path), atau None kalau
+        render gagal / locate gagal.
+        """
+        # 1. Dapatkan PDF: pakai yang sudah ada, kalau tidak render baru.
+        pdf_path_str = str(pdf_path) if pdf_path else None
+        if not pdf_path_str or not Path(pdf_path_str).exists():
+            try:
+                from app.services.pdf_converter import PdfConverter
+                import tempfile
+                out_dir = tempfile.mkdtemp(prefix="physical-pdf-")
+                pdf_path_str = str(
+                    PdfConverter().convert(self.parser.file_path, output_dir=out_dir)
+                )
+            except Exception:
+                return None
+
+        # 2. Baca teks per halaman.
+        try:
+            reader = PdfReader(pdf_path_str)
+            sheet_texts = []
+            for page in reader.pages:
+                try:
+                    sheet_texts.append(page.extract_text() or "")
+                except Exception:
+                    sheet_texts.append("")
+        except Exception:
+            return None
+
+        total = len(sheet_texts)
+        if total == 0:
+            return None
+
+        # 3. Pakai _locate_core_range existing (PDF-text based).
+        core_first, core_last = self._locate_core_range(sheet_texts)
+        if core_first is None or core_last is None:
+            # Fallback: kalau LAMPIRAN tidak ketemu di PDF, anggap inti sampai
+            # akhir dokumen.
+            if core_first is not None:
+                core_last = total
+            else:
+                return None
+
+        return total, core_first, core_last, pdf_path_str
 
     # ------------------------------------------------------------------------
     # Lokasi bagian inti & total halaman dari DOCX

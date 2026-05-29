@@ -134,6 +134,48 @@ class StyleResolver:
 
         return result
 
+    def resolve_run_italic(
+        self, paragraph_index: int, run_index: int
+    ) -> Optional[bool]:
+        """
+        Resolve italic SEPERTI cara run teks dirender Word: run rPr → paragraph
+        style chain. SENGAJA TIDAK memakai pPr/rPr — elemen itu memformat penanda
+        paragraf (¶), bukan default untuk run teks — maupun docDefaults (yang tidak
+        menyimpan italic). Dipakai untuk aturan Abstract EN yang wajib full italic:
+        run tanpa italic harus terdeteksi 'tidak italic' walau paragraf mark italic.
+
+        Return: True (italic), False (eksplisit non-italic), atau None (tidak di-set).
+        """
+        return self._resolve_run_emphasis(paragraph_index, run_index).italic
+
+    def resolve_run_bold(
+        self, paragraph_index: int, run_index: int
+    ) -> Optional[bool]:
+        """Resolve bold ala render run teks (run rPr → style chain, tanpa pPr/rPr).
+
+        Dipakai untuk aturan heading wajib bold (PKM-AI: judul section TNR 12 tebal).
+        Lihat docstring `resolve_run_italic` untuk alasan tidak memakai pPr/rPr.
+        """
+        return self._resolve_run_emphasis(paragraph_index, run_index).bold
+
+    def _resolve_run_emphasis(
+        self, paragraph_index: int, run_index: int
+    ) -> "ResolvedFont":
+        """Helper: resolve run properties via run rPr → style chain (tanpa pPr/rPr
+        & tanpa docDefaults). Dipakai resolve_run_italic & resolve_run_bold."""
+        para_xml = self._get_paragraph_xml(paragraph_index)
+        if para_xml is None:
+            return ResolvedFont()
+        result = ResolvedFont()
+        runs = para_xml.findall(_q("r"))
+        if 0 <= run_index < len(runs):
+            run_rpr = runs[run_index].find(_q("rPr"))
+            if run_rpr is not None:
+                self._fill_from_rpr(result, run_rpr, source="run")
+        style_id = self._get_paragraph_style_id(para_xml) or "Normal"
+        self._fill_from_style_chain(result, style_id)
+        return result
+
     # ------------------------------------------------------------------------
     # Internal: index styles
     # ------------------------------------------------------------------------

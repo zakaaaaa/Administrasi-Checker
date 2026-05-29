@@ -56,9 +56,13 @@ class TestExtractPercent(unittest.TestCase):
 # ============================================================================
 
 
-def _checker_returning(percent):
+def _checker_returning(percent, *, exists: bool = True):
+    """Bangun SimilarityChecker yang menanggap lampiran similaritas EXISTS
+    (default) dan _detect_percent return `percent`. Set exists=False untuk
+    simulate lampiran missing dari body."""
     parser = MagicMock()
     chk = SimilarityChecker(parser, get_pkm_kc_similarity_rules())
+    chk._lampiran_similarity_exists = lambda: exists
     chk._detect_percent = lambda: percent
     return chk
 
@@ -83,9 +87,18 @@ class TestThreshold(unittest.TestCase):
         self.assertEqual(res.status, "fail")
 
     def test_not_detected_warning(self):
-        res = _checker_returning(None).check()
+        """Lampiran ADA tapi OCR gagal baca % → warning kuning 'periksa manual'."""
+        res = _checker_returning(None, exists=True).check()
         self.assertEqual(res.status, "warning")
         self.assertTrue(any("tidak terdeteksi" in m.text.lower() for m in res.messages))
+
+    def test_lampiran_missing_fail(self):
+        """Lampiran similaritas TIDAK ADA di body → fail merah dengan pesan jelas."""
+        res = _checker_returning(None, exists=False).check()
+        self.assertEqual(res.status, "fail")
+        self.assertTrue(
+            any("tidak terdapat lampiran" in m.text.lower() for m in res.messages)
+        )
 
     def test_to_dict_serializable(self):
         d = _checker_returning(20).check().to_dict()

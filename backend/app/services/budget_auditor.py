@@ -110,6 +110,16 @@ class VolumeDurationViolation:
 
 
 @dataclass
+class AdsMedsosItem:
+    """Satu item yang ter-identifikasi sebagai biaya iklan media sosial."""
+    description: str
+    matched_keyword: str
+    total_rp: int
+    category: Optional[str] = None
+    approx_page: Optional[int] = None
+
+
+@dataclass
 class CheckMessage:
     level: str
     text: str
@@ -129,6 +139,8 @@ class BudgetAuditResult:
     relocation_items: list[RelocationItem] = field(default_factory=list)
     prohibited_items: list[ProhibitedItemFinding] = field(default_factory=list)
     volume_duration_violations: list[VolumeDurationViolation] = field(default_factory=list)
+    ads_medsos_items: list[AdsMedsosItem] = field(default_factory=list)
+    ads_medsos_total_rp: int = 0
     bab4_grand_total_rp: Optional[int] = None
     lampiran2_grand_total_rp: Optional[int] = None
     messages: list[CheckMessage] = field(default_factory=list)
@@ -225,6 +237,19 @@ class BudgetAuditResult:
                 }
                 for v in self.volume_duration_violations
             ],
+            "ads_medsos": {
+                "total_rp": self.ads_medsos_total_rp,
+                "items": [
+                    {
+                        "description": it.description,
+                        "matched_keyword": it.matched_keyword,
+                        "total_rp": it.total_rp,
+                        "category": it.category,
+                        "approx_page": it.approx_page,
+                    }
+                    for it in self.ads_medsos_items
+                ],
+            },
             "messages": [{"level": m.level, "text": m.text} for m in self.messages],
         }
 
@@ -307,6 +332,10 @@ class BudgetAuditor:
         # Lapis 7: Volume berjangka waktu melebihi batas
         if lamp2:
             self._scan_volume_duration(result, lamp2)
+
+        # Lapis 8: Iklan media sosial — total max Rp500.000
+        if lamp2 and self.rules.ads_medsos_max_rp > 0:
+            self._scan_ads_medsos(result, lamp2)
 
         # Aggregate status
         self._finalize_status(result)
@@ -779,6 +808,50 @@ class BudgetAuditor:
                 )
 
     # ------------------------------------------------------------------------
+    # Lapis 8: Iklan media sosial (ads medsos) ≤ Rp500.000
+    # ------------------------------------------------------------------------
+
+    def _scan_ads_medsos(
+        self, result: BudgetAuditResult, lamp2: Lampiran2ParseResult
+    ) -> None:
+        """
+        Aturan PKM 2026: total biaya iklan media sosial tidak boleh > Rp500.000.
+
+        Strategi: untuk tiap item Lampiran 2, cek apakah deskripsinya match salah
+        satu alias di `rules.ads_medsos_aliases`. Jumlahkan total_rp semua match.
+        Kalau total > ads_medsos_max_rp → fail.
+        """
+        aliases_lower = [a.lower() for a in self.rules.ads_medsos_aliases]
+        total = 0
+        for item in lamp2.items:
+            if item.total_rp is None or item.total_rp <= 0:
+                continue
+            desc_lower = item.description.lower()
+            matched: Optional[str] = None
+            for alias in aliases_lower:
+                if alias in desc_lower:
+                    matched = alias
+                    break
+            if matched is None:
+                continue
+            page: Optional[int] = None
+            if item.table_index >= 0 and item.row_index >= 0:
+                page = self.parser.estimate_page_for_table_cell(
+                    item.table_index, item.row_index, 0
+                )
+            result.ads_medsos_items.append(
+                AdsMedsosItem(
+                    description=item.description,
+                    matched_keyword=matched,
+                    total_rp=item.total_rp,
+                    category=item.category,
+                    approx_page=page,
+                )
+            )
+            total += item.total_rp
+        result.ads_medsos_total_rp = total
+
+    # ------------------------------------------------------------------------
     # Finalize status & messages
     # ------------------------------------------------------------------------
 
@@ -903,6 +976,32 @@ class BudgetAuditor:
                             f"{loc}Volume berjangka waktu melebihi batas: '{v.description}'{cat_txt} "
                             f"— volume '{v.volume}' ({v.months} bulan) melebihi maksimum "
                             f"{_MAX_DURATION_MONTHS} bulan yang diperbolehkan."
+                        ),
+                    )
+                )
+
+        # Iklan media sosial (ads medsos) ≤ Rp500.000 — total agregat.
+        if result.ads_medsos_items:
+            max_rp = self.rules.ads_medsos_max_rp
+            if result.ads_medsos_total_rp > max_rp:
+                has_fail = True
+                items_txt = "; ".join(
+                    f"'{it.description}' Rp{it.total_rp:,}"
+                    for it in result.ads_medsos_items[:3]
+                )
+                if len(result.ads_medsos_items) > 3:
+                    items_txt += f" (+ {len(result.ads_medsos_items) - 3} item lain)"
+                first_page = next(
+                    (it.approx_page for it in result.ads_medsos_items if it.approx_page is not None),
+                    None,
+                )
+                loc = f"[Halaman ~{first_page}] " if first_page is not None else ""
+                result.messages.append(
+                    CheckMessage(
+                        level="fail",
+                        text=(
+                            f"{loc}Biaya iklan media sosial total Rp{result.ads_medsos_total_rp:,} "
+                            f"melebihi batas maksimum Rp{max_rp:,}. Item terdeteksi: {items_txt}."
                         ),
                     )
                 )

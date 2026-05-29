@@ -23,6 +23,7 @@ from app.services.schema_rules import (
     get_pkm_ki_proposal_rules,
     get_pkm_pi_proposal_rules,
     get_pkm_pm_proposal_rules,
+    get_pkm_gft_proposal_rules,
 )
 from app.services.budget_rules import (
     get_pkm_kc_budget_rules,
@@ -103,9 +104,12 @@ def _move_similarity_undetected_to_lampiran(
 ) -> None:
     """
     Kalau similarity check tidak bisa mendeteksi persentase ('tidak terdeteksi'),
-    pesan tsb dipindah ke section Lampiran sebagai 'Tidak ditemukan "Uji similaritas"
-    pada halaman lampiran'. Bagian similarity dibersihkan (pass + tanpa warning),
-    bagian lampiran ditambah fail.
+    pindahkan pesan tsb ke section Lampiran sebagai 'Tidak ditemukan "Uji
+    similaritas" pada halaman lampiran' — TAPI HANYA jika lampiran_checker juga
+    melaporkan lampiran similaritas missing dari body. Kalau lampiran_checker
+    sudah konfirmasi lampiran ADA (cuma OCR gagal baca %), biarkan pesan
+    similarity sebagai warning ('periksa manual') — JANGAN salahkan user soal
+    lampiran missing yang sebenarnya tidak missing.
 
     Statuses list ikut di-update agar overall_status mencerminkan kondisi baru.
     """
@@ -120,6 +124,22 @@ def _move_similarity_undetected_to_lampiran(
     if not has_undetected:
         return
 
+    # Cek apakah lampiran_checker melaporkan lampiran similaritas missing.
+    # Pesan dari lampiran_checker format-nya:
+    #   'Tidak ditemukan Lampiran N "...Similaritas..." pada halaman lampiran'
+    lamp_msgs = lamp.get("messages", []) or []
+    lampiran_similaritas_missing = any(
+        "tidak ditemukan" in (m.get("text", "") or "").lower()
+        and "similar" in (m.get("text", "") or "").lower()
+        for m in lamp_msgs
+    )
+
+    if not lampiran_similaritas_missing:
+        # Lampiran ADA tapi OCR gagal baca % → biarkan pesan similarity sebagai
+        # warning "periksa manual". Tidak ada yang dipindahkan.
+        return
+
+    # Lampiran beneran missing → pindahkan undetected ke lampiran.
     remaining = [
         m for m in sim_msgs if "tidak terdeteksi" not in (m.get("text", "") or "").lower()
     ]
@@ -216,6 +236,8 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
         return _run_pkm_pm(parser)
     elif key == ("PKM", "SCIENTIFIC_ARTICLE", "PKM-AI"):
         return _run_pkm_ai(parser)
+    elif key == ("PKM", "PROPOSAL", "PKM-GFT"):
+        return _run_pkm_gft(parser)
     else:
         raise UnsupportedSchemaError(
             f"Belum di-support: {req.competition}/{req.report_type}/{req.schema_code}. "
@@ -223,7 +245,7 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
             "PKM/PROPOSAL/PKM-RE, PKM/PROPOSAL/PKM-RSH, "
             "PKM/PROPOSAL/PKM-K, PKM/PROPOSAL/PKM-KI, "
             "PKM/PROPOSAL/PKM-PI, PKM/PROPOSAL/PKM-PM, "
-            "PKM/SCIENTIFIC_ARTICLE/PKM-AI."
+            "PKM/PROPOSAL/PKM-GFT, PKM/SCIENTIFIC_ARTICLE/PKM-AI."
         )
 
 
@@ -560,6 +582,36 @@ def _run_pkm_vgk(parser: DocxParser) -> dict[str, Any]:
         results["lampiran"] = _module_error_payload(e)
         statuses.append("error")
 
+    # 9. Tanggal biodata — OCR scoped (biodata + surat pernyataan), reuse cache.
+    try:
+        r = BiodataDateChecker.for_pkm_vgk(parser).check(index=lampiran_index)
+        results["biodata_date"] = r.to_dict()
+        statuses.append(_extract_status(results["biodata_date"]))
+    except Exception as e:
+        results["biodata_date"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 10. Jadwal Kegiatan (Bar chart 3-4 bulan untuk PKM-VGK).
+    try:
+        r = ScheduleChecker.for_pkm_vgk(parser).check()
+        results["schedule"] = r.to_dict()
+        statuses.append(_extract_status(results["schedule"]))
+    except Exception as e:
+        results["schedule"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 11. Hasil uji similaritas ≤ 25% — OCR gambar similaritas.
+    try:
+        r = SimilarityChecker.for_pkm_vgk(parser).check()
+        results["similarity"] = r.to_dict()
+        statuses.append(_extract_status(results["similarity"]))
+    except Exception as e:
+        results["similarity"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # Pindahkan undetected similarity ke pesan lampiran (kalau lampiran missing).
+    _move_similarity_undetected_to_lampiran(results, statuses)
+
     results["overall_status"] = _aggregate_status(statuses)
     return results
 
@@ -638,7 +690,116 @@ def _run_pkm_ai(parser: DocxParser) -> dict[str, Any]:
     }
     statuses.append("pass")
 
-    # 6. Reference
+    # 6. Reference (PKM-AI: min 10 rujukan, maks 5 tahun ke belakang)
+    try:
+        r = ReferenceValidator(
+            parser,
+            schema,
+            recent_threshold_years=5,
+            minimum_recommended_recent=10,
+        ).check()
+        results["reference"] = r.to_dict()
+        statuses.append(_extract_status(results["reference"]))
+    except Exception as e:
+        results["reference"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 7. Lampiran PKM-AI (5 item, tanpa Daftar Lampiran)
+    lampiran_index = LampiranOcrIndex(parser)
+    try:
+        r = LampiranChecker.for_pkm_ai(parser).check(index=lampiran_index)
+        results["lampiran"] = r.to_dict()
+        statuses.append(_extract_status(results["lampiran"]))
+    except Exception as e:
+        results["lampiran"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 8. Uji Similaritas ≤ 25%
+    try:
+        r = SimilarityChecker.for_pkm_ai(parser).check()
+        results["similarity"] = r.to_dict()
+        statuses.append(_extract_status(results["similarity"]))
+    except Exception as e:
+        results["similarity"] = _module_error_payload(e)
+        statuses.append("error")
+
+    results["overall_status"] = _aggregate_status(statuses)
+    return results
+
+
+# ============================================================================
+# Runner PKM-GFT
+# ============================================================================
+#
+# PKM-GFT (Gagasan Futuristik Tertulis) = PKM insentif tanpa pelaksanaan.
+# Pipeline lebih ringkas dibanding skema pendanaan:
+#   1. Structure       — 3 BAB + DP + LAMPIRAN, forbidden sampul/pengesahan/ringkasan
+#   2. Physical Sheet  — 8–15 lembar inti
+#   3. Format          — TNR 12, spasi 1.15, justify, margin 4/3/3/3 (default PKM)
+#   4. Page Numbering  — roman bawah utk Daftar Isi, arab atas utk Bagian Inti
+#   5. Reference       — Harvard style (default ReferenceValidator)
+#   6. Lampiran        — 4 item, tanpa Daftar Lampiran (gabung di Daftar Isi)
+#   7. Biodata Date    — TT 9 Mar–9 Apr 2026 (sama skema lain)
+#   8. Similarity      — ≤ 25%
+# Modul yang SKIP: budget, schedule, luaran (PKM-GFT tanpa pelaksanaan & luaran).
+
+
+def _run_pkm_gft(parser: DocxParser) -> dict[str, Any]:
+    schema = get_pkm_gft_proposal_rules()
+    results: dict[str, Any] = {}
+    statuses: list[str] = []
+
+    # 1. Structure
+    structure_result = None
+    try:
+        structure_result = StructureChecker(parser, schema).check()
+        results["structure"] = structure_result.to_dict()
+        statuses.append(_extract_status(results["structure"]))
+    except Exception as e:
+        results["structure"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 2. Physical Sheet (8–15 halaman, ditangani via SHEET_COUNT_RULES)
+    _physical_result = None
+    try:
+        _physical_result = PhysicalSheetCounter(parser, schema).check()
+        results["physical_sheet"] = _physical_result.to_dict()
+        statuses.append(_extract_status(results["physical_sheet"]))
+    except Exception as e:
+        results["physical_sheet"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 3. Format (default PKM rules: TNR 12, spasi 1.15, justify, margin 4/3/3/3, A4)
+    try:
+        if _physical_result and not _physical_result.pdf_path:
+            _physical_result.pdf_path = _render_pdf_for_format(str(parser.file_path))
+        _pdf_texts = _load_pdf_sheet_texts(_physical_result) if _physical_result else None
+        r = FormatChecker(parser, schema=schema, pdf_sheet_texts=_pdf_texts).check(
+            start_para_idx=_find_core_start_idx(structure_result)
+        )
+        results["format"] = r.to_dict()
+        statuses.append(_extract_status(results["format"]))
+    except Exception as e:
+        results["format"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 4. Page Numbering (default PKM: roman bawah di front, arab atas di inti)
+    try:
+        r = PageNumberingChecker(parser, schema).check()
+        results["page_numbering"] = r.to_dict()
+        statuses.append(_extract_status(results["page_numbering"]))
+    except Exception as e:
+        results["page_numbering"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 5. Budget — tidak ada di PKM-GFT (PKM insentif tanpa pelaksanaan)
+    results["budget"] = {
+        "status": "pass",
+        "messages": [{"level": "pass", "text": "Anggaran biaya tidak diperlukan untuk PKM-GFT."}],
+    }
+    statuses.append("pass")
+
+    # 6. Reference (Harvard style, default threshold)
     try:
         r = ReferenceValidator(parser, schema).check()
         results["reference"] = r.to_dict()
@@ -646,6 +807,39 @@ def _run_pkm_ai(parser: DocxParser) -> dict[str, Any]:
     except Exception as e:
         results["reference"] = _module_error_payload(e)
         statuses.append("error")
+
+    # Index Lampiran bersama untuk Lampiran + Biodata Date (share OCR cache).
+    lampiran_index = LampiranOcrIndex(parser)
+
+    # 7. Lampiran PKM-GFT (4 item, tanpa Daftar Lampiran)
+    try:
+        r = LampiranChecker.for_pkm_gft(parser).check(index=lampiran_index)
+        results["lampiran"] = r.to_dict()
+        statuses.append(_extract_status(results["lampiran"]))
+    except Exception as e:
+        results["lampiran"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 8. Tanggal biodata — TT 9 Mar–9 Apr 2026
+    try:
+        r = BiodataDateChecker.for_pkm_gft(parser).check(index=lampiran_index)
+        results["biodata_date"] = r.to_dict()
+        statuses.append(_extract_status(results["biodata_date"]))
+    except Exception as e:
+        results["biodata_date"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 9. Uji Similaritas ≤ 25%
+    try:
+        r = SimilarityChecker.for_pkm_gft(parser).check()
+        results["similarity"] = r.to_dict()
+        statuses.append(_extract_status(results["similarity"]))
+    except Exception as e:
+        results["similarity"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # Pindahkan undetected similarity ke pesan lampiran (konsisten dengan KC-like).
+    _move_similarity_undetected_to_lampiran(results, statuses)
 
     results["overall_status"] = _aggregate_status(statuses)
     return results

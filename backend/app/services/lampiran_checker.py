@@ -43,14 +43,20 @@ from app.services.docx_parser import DocxParser
 # Kata kunci = daftar substring lower-case yang HARUS muncul di window 200 char
 # setelah anchor "Lampiran N" (untuk body text) / di blok daftar.
 
+# PKM-KC (6 lampiran sesuai panduan §C.Sistematika PKM-KC-2026):
+#   1. Biodata Ketua/Anggota+Dosen (gabungan, BUKAN dipecah)
+#   2. Justifikasi Anggaran Kegiatan
+#   3. Susunan Tim Pengusul & Pembagian Tugas
+#   4. Surat Pernyataan Ketua Tim Pengusul
+#   5. Gambaran Teknologi yang akan Dikembangkan  ← khas KC
+#   6. Hasil Uji Periksa Similaritas Proposal
 _REQUIRED_LAMPIRAN_KC: list[tuple[int, list[str], str]] = [
-    (1, ["jadwal", "kegiatan"],                          "Format Jadwal Kegiatan"),
-    (2, ["biodata", "ketua", "anggota"],                 "Biodata Ketua dan Anggota"),
-    (3, ["biodata", "dosen", "pendamping"],              "Biodata Dosen Pendamping"),
-    (4, ["justifikasi", "anggaran"],                     "Format Justifikasi Anggaran Kegiatan"),
-    (5, ["susunan", "tim", "pengusul", "pembagian"],     "Susunan Tim Pengusul dan Pembagian Tugas"),
-    (6, ["pernyataan", "ketua"],                         "Surat Pernyataan Ketua Tim Pengusul"),
-    (7, ["uji", "similar"],                              "Hasil Uji Periksa Similaritas Proposal"),
+    (1, ["biodata", "ketua", "dosen"],                   "Biodata Ketua dan Anggota, serta Dosen Pendamping"),
+    (2, ["justifikasi", "anggaran"],                     "Justifikasi Anggaran Kegiatan"),
+    (3, ["susunan", "tim", "pengusul", "pembagian"],     "Susunan Tim Pengusul dan Pembagian Tugas"),
+    (4, ["pernyataan", "ketua"],                         "Surat Pernyataan Ketua Tim Pengusul"),
+    (5, ["gambaran", "teknologi"],                       "Gambaran Teknologi yang akan Dikembangkan"),
+    (6, ["uji", "similar"],                              "Hasil Uji Periksa Similaritas Proposal"),
 ]
 
 _REQUIRED_LAMPIRAN_VGK: list[tuple[int, list[str], str]] = [
@@ -63,6 +69,33 @@ _REQUIRED_LAMPIRAN_VGK: list[tuple[int, list[str], str]] = [
 
 # PKM-K: struktur lampiran IDENTIK dengan PKM-VGK (5 lampiran, biodata digabung).
 # → tidak perlu list terpisah; factory for_pkm_k me-reuse _REQUIRED_LAMPIRAN_VGK.
+
+# PKM-RE (5 lampiran sesuai panduan §C.Sistematika PKM-RE-2026):
+#   1. Biodata Ketua/Anggota+Dosen (gabungan)
+#   2. Justifikasi Anggaran Kegiatan
+#   3. Susunan Tim Pengusul & Pembagian Tugas
+#   4. Surat Pernyataan Ketua Tim Pengusul
+#   5. Hasil Uji Periksa Similaritas Proposal
+# TIDAK ada "Gambaran Teknologi" (khas KC) atau "Kuisioner" (khas RSH).
+_REQUIRED_LAMPIRAN_RE: list[tuple[int, list[str], str]] = [
+    (1, ["biodata", "ketua", "dosen"],                   "Biodata Ketua dan Anggota, serta Dosen Pendamping"),
+    (2, ["justifikasi", "anggaran"],                     "Justifikasi Anggaran Kegiatan"),
+    (3, ["susunan", "tim", "pengusul", "pembagian"],     "Susunan Tim Pengusul dan Pembagian Tugas"),
+    (4, ["pernyataan", "ketua"],                         "Surat Pernyataan Ketua Tim Pengusul"),
+    (5, ["uji", "similar"],                              "Hasil Uji Periksa Similaritas Proposal"),
+]
+
+# PKM-RSH (6 lampiran sesuai panduan §C.Sistematika PKM-RSH-2026):
+# Sama dengan RE + tambahan Lampiran 5 "Kuisioner/Pedoman Wawancara yang digunakan".
+# Anchored keywords: "kuisi" (cover "Kuisioner"/"Kuesioner") + "wawancara".
+_REQUIRED_LAMPIRAN_RSH: list[tuple[int, list[str], str]] = [
+    (1, ["biodata", "ketua", "dosen"],                   "Biodata Ketua dan Anggota, serta Dosen Pendamping"),
+    (2, ["justifikasi", "anggaran"],                     "Justifikasi Anggaran Kegiatan"),
+    (3, ["susunan", "tim", "pengusul", "pembagian"],     "Susunan Tim Pengusul dan Pembagian Tugas"),
+    (4, ["pernyataan", "ketua"],                         "Surat Pernyataan Ketua Tim Pengusul"),
+    (5, ["kuisi", "wawancara"],                          "Kuisioner/Pedoman Wawancara yang digunakan"),
+    (6, ["uji", "similar"],                              "Hasil Uji Periksa Similaritas Proposal"),
+]
 
 # PKM-KI (6 lampiran): VGK + "Gambaran Konsep Karya Inovatif" sebelum uji similaritas.
 _REQUIRED_LAMPIRAN_KI: list[tuple[int, list[str], str]] = [
@@ -96,6 +129,26 @@ _REQUIRED_LAMPIRAN_PM: list[tuple[int, list[str], str]] = [
     (5, ["kesediaan", "mitra"],                          "Surat Pernyataan Kesediaan Bekerja Sama dari Mitra"),
     (6, ["denah", "lokasi", "mitra"],                    "Denah Detail Lokasi Mitra Program"),
     (7, ["uji", "similar"],                              "Hasil Uji Periksa Similaritas Proposal"),
+]
+
+# PKM-AI (5 lampiran): naskah artikel ilmiah tanpa Daftar Isi/Daftar Lampiran —
+# checker harus skip stage 1 (cross-check Daftar Lampiran), hanya cek body.
+_REQUIRED_LAMPIRAN_AI: list[tuple[int, list[str], str]] = [
+    (1, ["biodata", "ketua", "dosen"],                   "Biodata Ketua dan Anggota, serta Dosen Pendamping"),
+    (2, ["kontribusi", "dosen"],                         "Kontribusi Ketua, Anggota, dan Dosen Pendamping"),
+    (3, ["pernyataan", "ketua"],                         "Surat Pernyataan Ketua Tim Penyusun"),
+    (4, ["pernyataan", "sumber"],                        "Surat Pernyataan Sumber Tulisan"),
+    (5, ["uji", "similar"],                              "Hasil Uji Periksa Similaritas Artikel"),
+]
+
+# PKM-GFT (4 lampiran): PKM insentif tanpa pelaksanaan — tidak ada justifikasi
+# anggaran. Daftar Lampiran tidak terpisah (gabung di Daftar Isi), sehingga
+# checker harus skip stage 1 — gunakan require_daftar=False di factory.
+_REQUIRED_LAMPIRAN_GFT: list[tuple[int, list[str], str]] = [
+    (1, ["biodata", "ketua", "dosen"],                   "Biodata Ketua dan Anggota, serta Dosen Pendamping"),
+    (2, ["susunan", "tim", "pengusul", "pembagian"],     "Susunan Tim Pengusul dan Pembagian Tugas"),
+    (3, ["pernyataan", "ketua"],                         "Surat Pernyataan Ketua Tim Pengusul"),
+    (4, ["uji", "similar"],                              "Hasil Uji Periksa Similaritas Proposal"),
 ]
 
 
@@ -145,10 +198,15 @@ class LampiranChecker:
         parser: DocxParser,
         required: list[tuple[int, list[str], str]],
         schema_label: str,
+        require_daftar: bool = True,
     ):
         self.parser = parser
         self.required = required
         self.schema_label = schema_label
+        # Kalau False (PKM-AI), skip Stage 1 (cross-check Daftar Lampiran).
+        # Dokumen artikel ilmiah tidak memuat Daftar Isi/Daftar Lampiran —
+        # validasi hanya pada body section LAMPIRAN.
+        self.require_daftar = require_daftar
 
     @classmethod
     def for_pkm_kc(cls, parser: DocxParser) -> "LampiranChecker":
@@ -160,13 +218,13 @@ class LampiranChecker:
 
     @classmethod
     def for_pkm_re(cls, parser: DocxParser) -> "LampiranChecker":
-        # PKM-RE pakai daftar lampiran wajib yang SAMA dengan PKM-KC.
-        return cls(parser, _REQUIRED_LAMPIRAN_KC, "PKM-RE")
+        # PKM-RE: 5 lampiran (TANPA Gambaran Teknologi yang khas KC).
+        return cls(parser, _REQUIRED_LAMPIRAN_RE, "PKM-RE")
 
     @classmethod
     def for_pkm_rsh(cls, parser: DocxParser) -> "LampiranChecker":
-        # PKM-RSH pakai daftar lampiran wajib yang SAMA dengan PKM-KC.
-        return cls(parser, _REQUIRED_LAMPIRAN_KC, "PKM-RSH")
+        # PKM-RSH: 6 lampiran (DENGAN Kuisioner/Pedoman Wawancara di item #5).
+        return cls(parser, _REQUIRED_LAMPIRAN_RSH, "PKM-RSH")
 
     @classmethod
     def for_pkm_k(cls, parser: DocxParser) -> "LampiranChecker":
@@ -185,6 +243,17 @@ class LampiranChecker:
     def for_pkm_pm(cls, parser: DocxParser) -> "LampiranChecker":
         return cls(parser, _REQUIRED_LAMPIRAN_PM, "PKM-PM")
 
+    @classmethod
+    def for_pkm_ai(cls, parser: DocxParser) -> "LampiranChecker":
+        # PKM-AI tanpa Daftar Lampiran → require_daftar=False.
+        return cls(parser, _REQUIRED_LAMPIRAN_AI, "PKM-AI", require_daftar=False)
+
+    @classmethod
+    def for_pkm_gft(cls, parser: DocxParser) -> "LampiranChecker":
+        # PKM-GFT: Daftar Lampiran gabung di Daftar Isi (tidak ada section
+        # terpisah) → require_daftar=False, validasi hanya pada body LAMPIRAN.
+        return cls(parser, _REQUIRED_LAMPIRAN_GFT, "PKM-GFT", require_daftar=False)
+
     # -------------------------------------------------------------------------
     # Public
     # -------------------------------------------------------------------------
@@ -192,18 +261,22 @@ class LampiranChecker:
     def check(self, index=None) -> LampiranCheckResult:
         result = LampiranCheckResult(status="pass")
 
-        # Stage 1: DAFTAR LAMPIRAN ada?
-        daftar_start = self._find_daftar_lampiran_idx()
-        if daftar_start is None:
-            result.status = "fail"
-            result.messages.append(CheckMessage(
-                level="fail",
-                text="DAFTAR LAMPIRAN tidak ditemukan",
-            ))
-            return result
+        # Stage 1: DAFTAR LAMPIRAN ada? — hanya untuk skema yang mewajibkannya.
+        # PKM-AI: tidak ada Daftar Lampiran, langsung loncat ke body check.
+        if self.require_daftar:
+            daftar_start = self._find_daftar_lampiran_idx()
+            if daftar_start is None:
+                result.status = "fail"
+                result.messages.append(CheckMessage(
+                    level="fail",
+                    text="DAFTAR LAMPIRAN tidak ditemukan",
+                ))
+                return result
+            daftar_corpus = self._collect_daftar_lampiran_text(daftar_start)
+        else:
+            daftar_corpus = ""  # tidak dipakai
 
-        # Stage 2: korpus untuk pengecekan
-        daftar_corpus = self._collect_daftar_lampiran_text(daftar_start)
+        # Stage 2: korpus body
         body_start = self._find_lampiran_section_start()
         body_text_corpus = self._collect_text_from_lampiran(body_start)
 
@@ -240,7 +313,12 @@ class LampiranChecker:
                         or _keywords_in_text(keywords, ocr_text)
                     )
 
-            in_daftar = _anchored_keywords_match(keywords, daftar_corpus)
+            # Cross-check Daftar Lampiran hanya kalau skema mewajibkannya.
+            in_daftar = (
+                _anchored_keywords_match(keywords, daftar_corpus)
+                if self.require_daftar
+                else True
+            )
 
             if not in_body:
                 missing_in_body.append((num, label))
