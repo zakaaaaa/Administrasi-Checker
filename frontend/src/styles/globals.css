@@ -332,7 +332,7 @@
 .check-landing-dot-pattern {
   background-image: radial-gradient(
     circle,
-    rgba(249, 115, 22, 0.18) 1px,
+    hsl(var(--brand-500) / 0.14) 1px,
     transparent 1px
   );
   background-size: 22px 22px;
@@ -368,6 +368,19 @@
     0 1px 0 rgba(255, 255, 255, 0.8) inset,
     0 20px 50px -20px rgba(249, 115, 22, 0.15),
     0 8px 24px -12px rgba(15, 23, 42, 0.08);
+}
+.check-landing-topbar,
+.check-landing-hero-preview {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.76), rgba(255, 255, 255, 0.42)),
+    linear-gradient(135deg, hsl(var(--brand-100) / 0.5), hsl(42 96% 82% / 0.2));
+  backdrop-filter: blur(20px) saturate(150%);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.68);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.8) inset,
+    0 22px 54px -24px hsl(var(--brand-700) / 0.25),
+    0 8px 22px -14px rgba(15, 23, 42, 0.12);
 }
 .check-landing-glass-badge {
   background: rgba(255, 255, 255, 0.75);

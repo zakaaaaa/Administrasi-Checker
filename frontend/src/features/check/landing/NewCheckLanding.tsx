@@ -21,17 +21,20 @@ export function NewCheckLanding() {
   }
 
   return (
-    <main className="relative mx-auto max-w-7xl px-4 pb-20 pt-10 sm:px-6">
+    <main className="relative mx-auto max-w-7xl px-4 pb-20 pt-6 sm:px-6 lg:pt-8">
       <CheckLandingDecor />
-      <CheckLandingHero />
 
-      <section id="flow-section" className="mt-6 grid gap-6 lg:grid-cols-[1fr_360px]">
-        <CheckLandingFlowSection />
+      <section className="grid gap-8 pt-8 lg:grid-cols-[minmax(0,1fr)_390px] lg:items-start lg:pt-12">
+        <CheckLandingHero />
         <CheckLandingTokenForm
           token={token}
           onTokenChange={setToken}
           onSubmit={handleContinue}
         />
+      </section>
+
+      <section id="flow-section" className="mt-10">
+        <CheckLandingFlowSection />
       </section>
     </main>
   );

@@ -70,6 +70,13 @@ SCHEMAS = {
         {"code": "PKM-VGK", "name": "Video Gagasan Konstruktif", "active": True},
     ],
     ("PKM", "SCIENTIFIC_ARTICLE"): [
+        {"code": "PKM-KC", "name": "Karsa Cipta", "active": True},
+        {"code": "PKM-K", "name": "Kewirausahaan", "active": True},
+        {"code": "PKM-RE", "name": "Riset Eksakta", "active": True},
+        {"code": "PKM-RSH", "name": "Riset Sosial Humaniora", "active": True},
+        {"code": "PKM-PM", "name": "Pengabdian kepada Masyarakat", "active": True},
+        {"code": "PKM-PI", "name": "Penerapan Iptek", "active": True},
+        {"code": "PKM-KI", "name": "Karya Inovatif", "active": True},
         {"code": "PKM-AI", "name": "Artikel Ilmiah", "active": True},
     ],
 }

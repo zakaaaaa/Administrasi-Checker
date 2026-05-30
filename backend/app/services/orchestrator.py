@@ -194,6 +194,16 @@ def _module_error_payload(exc: BaseException) -> dict[str, Any]:
 
 _log = logging.getLogger(__name__)
 _TIMING_ENABLED = os.environ.get("CHECK_TIMING", "1").lower() not in ("0", "false", "no", "")
+_SCIENTIFIC_ARTICLE_SCHEMAS = {
+    "PKM-KC",
+    "PKM-RE",
+    "PKM-RSH",
+    "PKM-K",
+    "PKM-PM",
+    "PKM-PI",
+    "PKM-KI",
+    "PKM-AI",
+}
 
 
 def _log_timing(key: str, t0: float, sink: dict[str, float] | None = None) -> None:
@@ -247,7 +257,7 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
         return _run_pkm_pi(parser)
     elif key == ("PKM", "PROPOSAL", "PKM-PM"):
         return _run_pkm_pm(parser)
-    elif key == ("PKM", "SCIENTIFIC_ARTICLE", "PKM-AI"):
+    elif req.competition == "PKM" and req.report_type == "SCIENTIFIC_ARTICLE" and req.schema_code in _SCIENTIFIC_ARTICLE_SCHEMAS:
         return _run_pkm_ai(parser)
     elif key == ("PKM", "PROPOSAL", "PKM-GFT"):
         return _run_pkm_gft(parser)
@@ -258,7 +268,11 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
             "PKM/PROPOSAL/PKM-RE, PKM/PROPOSAL/PKM-RSH, "
             "PKM/PROPOSAL/PKM-K, PKM/PROPOSAL/PKM-KI, "
             "PKM/PROPOSAL/PKM-PI, PKM/PROPOSAL/PKM-PM, "
-            "PKM/PROPOSAL/PKM-GFT, PKM/SCIENTIFIC_ARTICLE/PKM-AI."
+            "PKM/PROPOSAL/PKM-GFT, PKM/SCIENTIFIC_ARTICLE/PKM-KC, "
+            "PKM/SCIENTIFIC_ARTICLE/PKM-RE, PKM/SCIENTIFIC_ARTICLE/PKM-RSH, "
+            "PKM/SCIENTIFIC_ARTICLE/PKM-K, PKM/SCIENTIFIC_ARTICLE/PKM-PM, "
+            "PKM/SCIENTIFIC_ARTICLE/PKM-PI, PKM/SCIENTIFIC_ARTICLE/PKM-KI, "
+            "PKM/SCIENTIFIC_ARTICLE/PKM-AI."
         )
 
 
