@@ -21,6 +21,7 @@ const MODULES = [
   { key: 'reference', label: 'Daftar Pustaka' },
   { key: 'luaran', label: 'Luaran' },
   { key: 'lampiran', label: 'Lampiran' },
+  { key: 'surat_pernyataan', label: 'Surat Pernyataan' },
   { key: 'biodata_date', label: 'Tanggal Biodata' },
   { key: 'schedule', label: 'Jadwal Kegiatan' },
   { key: 'similarity', label: 'Similaritas' },
@@ -277,12 +278,21 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
       // (c) Daftar Lampiran tidak lengkap padahal di body ada — pass-through
       if (/^Kesalahan kelengkapan Daftar Lampiran/i.test(masalah))
         return masalah;
+      // (d) Surat Komitmen Tambahan Pendanaan (kondisional, ada dana Instansi Lain) — pass-through
+      if (/Komitmen Tambahan Pendanaan/i.test(masalah))
+        return masalah;
       // Legacy fallback (format lama)
       const numMatch = masalah.match(/Lampiran (\d+) \(([^)]+)\)/i);
       if (numMatch) {
         const [, num, label] = numMatch;
         return `Kesalahan Lampiran ${num} (${label}) tidak ditemukan di dokumen`;
       }
+      return masalah;
+    }
+
+    case 'surat_pernyataan': {
+      // Pesan backend (warning) sudah berupa kalimat user-facing siap tampil
+      // (termasuk daftar multiline "- ..."). Tampilkan apa adanya.
       return masalah;
     }
 

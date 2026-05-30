@@ -45,6 +45,7 @@ from app.services.reference_validator import ReferenceValidator
 from app.services.luaran_checker import LuaranChecker
 from app.services.lampiran_checker import LampiranChecker
 from app.services.biodata_date_checker import BiodataDateChecker
+from app.services.surat_pernyataan_checker import SuratPernyataanChecker
 from app.services.schedule_checker import ScheduleChecker
 from app.services.similarity_checker import SimilarityChecker
 from app.services.lampiran_index import LampiranOcrIndex
@@ -167,6 +168,18 @@ def _move_similarity_undetected_to_lampiran(
         for k, v in results.items()
         if isinstance(v, dict) and "status" in v and k != "overall_status"
     ]
+
+
+def _funding_letter_required(results: dict[str, Any]) -> bool:
+    """
+    True bila hasil budget menunjukkan ada dana Instansi Lain (>Rp0) pada Rekap
+    Sumber Dana Bab 4 → proposal wajib melampirkan Surat Pernyataan Komitmen
+    Tambahan Pendanaan. external_rp None (blok rekap tak terbaca) → False
+    (tidak bisa dipastikan, jadi tidak diwajibkan).
+    """
+    rekap = (results.get("budget") or {}).get("rekap_sumber_dana") or {}
+    ext = rekap.get("external_rp")
+    return bool(ext and ext > 0)
 
 
 def _module_error_payload(exc: BaseException) -> dict[str, Any]:
@@ -439,7 +452,10 @@ def _run_pkm_kc_like(
     # 8. Lampiran — OCR scoped (segment belum teridentifikasi)
     _t0 = time.perf_counter()
     try:
-        r = getattr(LampiranChecker, f"for_pkm_{s}")(parser).check(index=lampiran_index)
+        r = getattr(LampiranChecker, f"for_pkm_{s}")(parser).check(
+            index=lampiran_index,
+            require_funding_letter=_funding_letter_required(results),
+        )
         results["lampiran"] = r.to_dict()
         statuses.append(_extract_status(results["lampiran"]))
     except Exception as e:
@@ -457,6 +473,17 @@ def _run_pkm_kc_like(
         results["biodata_date"] = _module_error_payload(e)
         statuses.append("error")
     _log_timing("biodata_date", _t0, timings)
+
+    # 9b. Format Surat Pernyataan Ketua — OCR scoped (segment surat), reuse cache
+    _t0 = time.perf_counter()
+    try:
+        r = getattr(SuratPernyataanChecker, f"for_pkm_{s}")(parser).check(index=lampiran_index)
+        results["surat_pernyataan"] = r.to_dict()
+        statuses.append(_extract_status(results["surat_pernyataan"]))
+    except Exception as e:
+        results["surat_pernyataan"] = _module_error_payload(e)
+        statuses.append("error")
+    _log_timing("surat_pernyataan", _t0, timings)
 
     # 10. Jadwal kegiatan
     _t0 = time.perf_counter()
@@ -575,7 +602,10 @@ def _run_pkm_vgk(parser: DocxParser) -> dict[str, Any]:
     # 8. Lampiran (khusus PKM-VGK) — text scan + OCR fallback Vision pada gambar
     lampiran_index = LampiranOcrIndex(parser)
     try:
-        r = LampiranChecker.for_pkm_vgk(parser).check(index=lampiran_index)
+        r = LampiranChecker.for_pkm_vgk(parser).check(
+            index=lampiran_index,
+            require_funding_letter=_funding_letter_required(results),
+        )
         results["lampiran"] = r.to_dict()
         statuses.append(_extract_status(results["lampiran"]))
     except Exception as e:
@@ -589,6 +619,15 @@ def _run_pkm_vgk(parser: DocxParser) -> dict[str, Any]:
         statuses.append(_extract_status(results["biodata_date"]))
     except Exception as e:
         results["biodata_date"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 9b. Format Surat Pernyataan Ketua — reuse OCR cache.
+    try:
+        r = SuratPernyataanChecker.for_pkm_vgk(parser).check(index=lampiran_index)
+        results["surat_pernyataan"] = r.to_dict()
+        statuses.append(_extract_status(results["surat_pernyataan"]))
+    except Exception as e:
+        results["surat_pernyataan"] = _module_error_payload(e)
         statuses.append("error")
 
     # 10. Jadwal Kegiatan (Bar chart 3-4 bulan untuk PKM-VGK).
@@ -714,6 +753,15 @@ def _run_pkm_ai(parser: DocxParser) -> dict[str, Any]:
         results["lampiran"] = _module_error_payload(e)
         statuses.append("error")
 
+    # 7b. Format Surat Pernyataan Ketua — reuse OCR cache.
+    try:
+        r = SuratPernyataanChecker.for_pkm_ai(parser).check(index=lampiran_index)
+        results["surat_pernyataan"] = r.to_dict()
+        statuses.append(_extract_status(results["surat_pernyataan"]))
+    except Exception as e:
+        results["surat_pernyataan"] = _module_error_payload(e)
+        statuses.append("error")
+
     # 8. Uji Similaritas ≤ 25%
     try:
         r = SimilarityChecker.for_pkm_ai(parser).check()
@@ -827,6 +875,15 @@ def _run_pkm_gft(parser: DocxParser) -> dict[str, Any]:
         statuses.append(_extract_status(results["biodata_date"]))
     except Exception as e:
         results["biodata_date"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 8b. Format Surat Pernyataan Ketua — reuse OCR cache.
+    try:
+        r = SuratPernyataanChecker.for_pkm_gft(parser).check(index=lampiran_index)
+        results["surat_pernyataan"] = r.to_dict()
+        statuses.append(_extract_status(results["surat_pernyataan"]))
+    except Exception as e:
+        results["surat_pernyataan"] = _module_error_payload(e)
         statuses.append("error")
 
     # 9. Uji Similaritas ≤ 25%

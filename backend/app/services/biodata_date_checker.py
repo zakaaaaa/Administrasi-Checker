@@ -327,13 +327,26 @@ def _load_image_rels(zf: zipfile.ZipFile) -> dict[str, str]:
 # =============================================================================
 
 
-# Strip tanggal lahir: "Tempat dan Tanggal [Lahir] ... DD Bulan YYYY"
-# Menangani OCR misread "Tempat"→"Tcmpat" dan format tanpa kata "Lahir".
-# Gap pakai [\s\S]{0,300}? (lazy, lintas newline) agar match ke layout tabel Vision
-# yang taruh label kolom dulu (mengandung digit) baru value-nya.
+# Strip tanggal lahir agar tidak dianggap tanggal tanda tangan.
+# Variasi label yang ditangani (Vision OCR sering pecah tabel kolom-per-kolom):
+#   A. "Tempat dan Tanggal Lahir" / "Tempat dan Tanggal"            (utuh)
+#   B. "Tempat dan Lahir"                                            (kata 'Tanggal' hilang/terpisah baris)
+#   C. "Tempat,Tanggal Lahir" / "Tempat / Tanggal Lahir"             (punctuation variant)
+#   D. "Tanggal Lahir"                                                (label pendek)
+#   E. "T.T.L." / "TTL"                                               (singkatan)
+# Window 0..500 char (was 300) — Vision yang baca tabel kolom kadang menaruh
+# 1-2 baris label/value lain di antara label birth date dan value tanggalnya.
+# Mendukung "Tempat" misread OCR sebagai "Tcmpat".
 _TTL_RE = re.compile(
-    r"(?:t[ce]?mpat\s+dan\s+tanggal(?:\s+lahir)?|tanggal\s+lahir|t\.?\s*t\.?\s*l\.?)"
-    r"[\s\S]{0,300}?\d{1,2}\s+"
+    r"(?:"
+    r"t[ce]?mpat\s*[,/&]?\s*dan\s+tanggal(?:\s+lahir)?"   # A: tempat dan tanggal [lahir]
+    r"|t[ce]?mpat\s*[,/&]?\s*dan\s+lahir"                  # B: tempat dan lahir (tanpa 'tanggal')
+    r"|t[ce]?mpat\s*[,/]\s*tanggal(?:\s+lahir)?"           # C: tempat,tanggal / tempat/tanggal
+    r"|tanggal\s+lahir"                                     # D: tanggal lahir
+    r"|t\.?\s*t\.?\s*l\.?"                                  # E: T.T.L. abbr
+    r")"
+    r"[\s\S]{0,500}?"
+    r"\d{1,2}\s+"
     r"(?:Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus"
     r"|September|Oktober|November|Desember)\s+\d{4}",
     re.IGNORECASE,

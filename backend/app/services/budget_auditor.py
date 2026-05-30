@@ -131,6 +131,12 @@ class BudgetAuditResult:
     total_input_funding_rp: int = 0
     funding_validation: list[FundingValidationResult] = field(default_factory=list)
     rekap_validation: list[FundingValidationResult] = field(default_factory=list)
+    # Nominal sumber dana yang terbaca dari blok "Rekap Sumber Dana" tabel Bab 4.
+    # None = tidak terbaca (dokumen tanpa blok rekap). Dipakai a.l. sebagai pemicu
+    # syarat lampiran "Surat Pernyataan Komitmen Tambahan Pendanaan" bila external > 0.
+    rekap_belmawa_rp: Optional[int] = None
+    rekap_university_rp: Optional[int] = None
+    rekap_external_rp: Optional[int] = None
     table_integrity_status: str = "pass"  # 'pass' | 'fail'
     table_integrity_missing: list[str] = field(default_factory=list)
     categories: list[CategoryAllocationResult] = field(default_factory=list)
@@ -173,6 +179,11 @@ class BudgetAuditResult:
                 }
                 for fv in self.rekap_validation
             ],
+            "rekap_sumber_dana": {
+                "belmawa_rp": self.rekap_belmawa_rp,
+                "university_rp": self.rekap_university_rp,
+                "external_rp": self.rekap_external_rp,
+            },
             "table_integrity": {
                 "status": self.table_integrity_status,
                 "missing_categories": self.table_integrity_missing,
@@ -305,6 +316,9 @@ class BudgetAuditor:
         lamp2 = self._find_and_parse_lampiran2()
         if bab4:
             result.bab4_grand_total_rp = bab4.grand_total_rp
+            result.rekap_belmawa_rp = bab4.rekap_belmawa_rp
+            result.rekap_university_rp = bab4.rekap_university_rp
+            result.rekap_external_rp = bab4.rekap_external_rp
         if lamp2:
             result.lampiran2_grand_total_rp = lamp2.grand_total_rp
 

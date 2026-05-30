@@ -163,6 +163,23 @@ _DAFTAR_LAMPIRAN_RE = re.compile(r"^\s*daftar\s+lampiran(?:-lampiran)?\s*$", re.
 # Pattern "Lampiran N" — N angka atau romawi
 _LAMPIRAN_N_RE = re.compile(r"\blampiran\s+(\d+|[IVXLC]+)\b", re.IGNORECASE)
 
+# Frasa penanda "Surat Pernyataan Komitmen Tambahan Pendanaan" (istilah panduan)
+# sekaligus variasi "surat keterangan pendanaan institusi lain" yang lazim ditulis
+# pengusul. Lampiran ini WAJIB hanya bila proposal mencantumkan dana Instansi Lain.
+# Cocok bila salah satu frasa muncul utuh di korpus lampiran (teks atau OCR).
+_FUNDING_LETTER_PHRASES: list[str] = [
+    "komitmen tambahan pendanaan",
+    "komitmen pendanaan",
+    "tambahan pendanaan dari",
+    "keterangan pendanaan",
+    "pernyataan pendanaan",
+    "pendanaan institusi lain",
+    "pendanaan instansi lain",
+    "pendanaan dari institusi lain",
+    "pendanaan dari instansi lain",
+]
+_FUNDING_LETTER_LABEL = "Surat Pernyataan Komitmen Tambahan Pendanaan dari Instansi Lain"
+
 
 # =============================================================================
 # Data classes
@@ -258,7 +275,14 @@ class LampiranChecker:
     # Public
     # -------------------------------------------------------------------------
 
-    def check(self, index=None) -> LampiranCheckResult:
+    def check(self, index=None, require_funding_letter: bool = False) -> LampiranCheckResult:
+        """
+        require_funding_letter: bila True, wajibkan lampiran "Surat Pernyataan
+        Komitmen Tambahan Pendanaan" di body Lampiran. Orchestrator menyetel ini
+        True hanya untuk proposal yang mencantumkan dana Instansi Lain (>Rp0) di
+        Rekap Sumber Dana Bab 4. Tidak diteruskan untuk PKM-AI/PKM-GFT (tanpa
+        anggaran), sehingga syarat ini otomatis tidak berlaku di sana.
+        """
         result = LampiranCheckResult(status="pass")
 
         # Stage 1: DAFTAR LAMPIRAN ada? — hanya untuk skema yang mewajibkannya.
@@ -325,6 +349,16 @@ class LampiranChecker:
             elif not in_daftar:
                 missing_in_daftar_only.append((num, label))
 
+        # Stage 2b: Surat Pernyataan Komitmen Tambahan Pendanaan (kondisional) —
+        # wajib hanya bila proposal mencantumkan dana Instansi Lain. Cocokkan teks
+        # body dulu; baru OCR fallback bila perlu (lazy, reuse cache index).
+        funding_letter_missing = False
+        if require_funding_letter:
+            present = _funding_letter_present(body_text_corpus)
+            if not present:
+                present = _funding_letter_present(body_ocr_text())
+            funding_letter_missing = not present
+
         # Stage 3: susun pesan
         for num, label in missing_in_body:
             result.messages.append(CheckMessage(
@@ -335,6 +369,14 @@ class LampiranChecker:
             result.messages.append(CheckMessage(
                 level="fail",
                 text=f'Kesalahan kelengkapan Daftar Lampiran, tidak ditemukan "{label}"',
+            ))
+        if funding_letter_missing:
+            result.messages.append(CheckMessage(
+                level="fail",
+                text=(
+                    f'Tidak ditemukan "{_FUNDING_LETTER_LABEL}" pada halaman lampiran '
+                    f"(wajib karena proposal mencantumkan dana dari Instansi Lain)"
+                ),
             ))
 
         if result.messages:
@@ -477,6 +519,19 @@ def _anchored_keywords_match(keywords: list[str], corpus: str) -> bool:
         if all(kw in window for kw in keywords):
             return True
     return False
+
+
+def _funding_letter_present(corpus: str) -> bool:
+    """
+    True bila korpus memuat salah satu frasa penanda surat komitmen tambahan
+    pendanaan (lihat _FUNDING_LETTER_PHRASES). Frasa sengaja semuanya mengandung
+    "pendanaan" agar penyebutan "Instansi Lain" biasa di biodata/RAB tidak
+    memicu false positive.
+    """
+    if not corpus:
+        return False
+    cl = corpus.lower()
+    return any(p in cl for p in _FUNDING_LETTER_PHRASES)
 
 
 def _keywords_in_text(keywords: list[str], corpus: str) -> bool:

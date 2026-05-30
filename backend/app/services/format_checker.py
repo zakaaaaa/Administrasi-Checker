@@ -1032,14 +1032,16 @@ class FormatChecker:
                 sec.issues.append(
                     FormatIssue(
                         check_name="line_spacing",
-                        severity="warning",
+                        severity="fail",
                         location=self._format_para_location(para.index),
                         issue=f"Line spacing bukan {self.rules.line_spacing}.",
                         found=str(ls),
                         expected=str(self.rules.line_spacing),
                     )
                 )
-        # Caption spacing = fail (merah); body line spacing tetap warning.
+        # Caption spacing & body line spacing keduanya = fail (merah). Spasi 1,15
+        # adalah aturan eksplisit di panduan PKM 2026 §B Format Penulisan — bukan
+        # sekadar saran, jadi pelanggaran wajib di-flag fail di semua skema.
         if any(i.severity == "fail" for i in sec.issues):
             sec.status = "fail"
         elif sec.issues:
