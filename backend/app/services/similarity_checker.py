@@ -92,6 +92,14 @@ _SIM_PATTERNS = [
 _LAMPIRAN_N_RE = re.compile(r"\blampiran\s+(?:\d+|[ivxlc]+)", re.IGNORECASE)
 _SIM_HEADING_RE = re.compile(r"(similarit|uji\s+periksa|turnitin|plagiar)", re.IGNORECASE)
 
+# Heading lampiran similaritas: "Lampiran N ..." DI AWAL baris. Di-anchor ke awal
+# supaya paragraf body yang kebetulan menyebut "similaritas" tidak ikut ter-match,
+# sehingga batas panjang boleh longgar — heading asli sering >90 char karena memuat
+# embel-embel, mis. "Lampiran 6. Hasil Uji Periksa Similaritas Proposal (Turnitin)
+# dengan indeks similaritas maksimum 25%".
+_LAMPIRAN_HEAD_RE = re.compile(r"^\s*lampiran\s+(?:\d+|[ivxlc]+)\b", re.IGNORECASE)
+_MAX_SIM_HEADING_LEN = 160
+
 
 def _extract_similarity_percent(text: str) -> Optional[int]:
     """Ambil angka 'Overall Similarity' dari teks OCR, atau None."""
@@ -228,9 +236,9 @@ class SimilarityChecker:
         start: Optional[int] = None
         for p in paras:
             t = p.text.strip()
-            if not t or len(t) > 90:
+            if not t or len(t) > _MAX_SIM_HEADING_LEN:
                 continue
-            if _LAMPIRAN_N_RE.search(t) and _SIM_HEADING_RE.search(t):
+            if _LAMPIRAN_HEAD_RE.match(t) and _SIM_HEADING_RE.search(t):
                 start = p.index   # ambil yang TERAKHIR
         if start is None:
             # fallback: paragraf pendek apa pun yang menyebut similaritas/turnitin
@@ -243,7 +251,8 @@ class SimilarityChecker:
 
         end: Optional[int] = None
         for p in paras:
-            if p.index > start and len(p.text.strip()) <= 90 and _LAMPIRAN_N_RE.search(p.text):
+            t = p.text.strip()
+            if p.index > start and len(t) <= _MAX_SIM_HEADING_LEN and _LAMPIRAN_HEAD_RE.match(t):
                 end = p.index
                 break
         return start, end
@@ -258,6 +267,8 @@ class SimilarityChecker:
         if body is None:
             return []
 
+        _V_NS = "urn:schemas-microsoft-com:vml"
+
         rids: list[str] = []
         pc = 0
         for child in body:
@@ -265,6 +276,10 @@ class SimilarityChecker:
                 if pc >= start and (end is None or pc < end):
                     for blip in child.iter(f"{{{_A_NS}}}blip"):
                         rid = blip.get(f"{{{_R_NS}}}embed")
+                        if rid:
+                            rids.append(rid)
+                    for imgdata in child.iter(f"{{{_V_NS}}}imagedata"):
+                        rid = imgdata.get(f"{{{_R_NS}}}id")
                         if rid:
                             rids.append(rid)
                 pc += 1

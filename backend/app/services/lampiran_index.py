@@ -63,6 +63,7 @@ class LampiranOcrIndex:
     def __init__(self, parser: DocxParser):
         self.parser = parser
         self._para_rids: Optional[dict[int, list[str]]] = None
+        self._para_blip_rids: dict[int, list[str]] = {}
         self._rel_map: Optional[dict[str, str]] = None
         self._ocr_cache: dict[str, str] = {}
 
@@ -86,36 +87,50 @@ class LampiranOcrIndex:
             self._para_rids = {}
             return
 
+        blip_rids: dict[int, list[str]] = {}  # a:blip only (inserted images)
         pc = 0
         for child in body:
             tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
             if tag == "p":
                 rids: list[str] = []
+                b_rids: list[str] = []
                 for blip in child.iter(f"{{{_A_NS}}}blip"):
                     rid = blip.get(f"{{{_R_NS}}}embed")
                     if rid:
                         rids.append(rid)
+                        b_rids.append(rid)
                 for imgdata in child.iter(f"{{{_V_NS}}}imagedata"):
                     rid = imgdata.get(f"{{{_R_NS}}}id")
                     if rid:
                         rids.append(rid)
                 if rids:
                     para_rids[pc] = rids
+                if b_rids:
+                    blip_rids[pc] = b_rids
                 pc += 1
         self._para_rids = para_rids
+        self._para_blip_rids = blip_rids
 
-    def rids_in_range(self, start: Optional[int], end: Optional[int] = None) -> list[str]:
-        """rId gambar pada paragraf [start, end). start None = dari awal dokumen."""
+    def rids_in_range(
+        self,
+        start: Optional[int],
+        end: Optional[int] = None,
+        blip_only: bool = False,
+    ) -> list[str]:
+        """rId gambar pada paragraf [start, end). start None = dari awal dokumen.
+        blip_only=True hanya kembalikan a:blip (bukan VML) — dipakai untuk
+        _keywords_in_text agar OCR corpus tidak tercemar VML page-embed."""
         self._ensure_para_rids()
         assert self._para_rids is not None
+        source = self._para_blip_rids if blip_only else self._para_rids
         lo = start if start is not None else -1
         rids: list[str] = []
-        for idx in sorted(self._para_rids):
+        for idx in sorted(source):
             if idx < lo:
                 continue
             if end is not None and idx >= end:
                 break
-            rids.extend(self._para_rids[idx])
+            rids.extend(source[idx])
         return rids
 
     # --------------------------------------------------------------- segmentasi

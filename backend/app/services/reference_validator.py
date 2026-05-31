@@ -372,6 +372,8 @@ class ReferenceValidator:
         entries: list[ReferenceEntry] = []
         if blocks:
             for para_idx, text_normalized in blocks:
+                if not self._is_meaningful_entry(text_normalized):
+                    continue
                 entry = self._parse_entry(para_idx, text_normalized)
                 entries.append(entry)
         else:
@@ -383,8 +385,11 @@ class ReferenceValidator:
                 if para.is_heading:
                     continue
                 text_normalized = re.sub(r"\s+", " ", text)
+                if not self._is_meaningful_entry(text_normalized):
+                    continue
                 entry = self._parse_entry(i, text_normalized)
                 entries.append(entry)
+        entries = self._merge_continuation_entries(entries)
         return entries, dp_start, dp_end
 
     def _walk_dp_body_siblings_ooxml(
@@ -508,6 +513,52 @@ class ReferenceValidator:
                     entry.author_first = tokens[0]
 
         return entry
+
+    @staticmethod
+    def _is_meaningful_entry(text: str) -> bool:
+        """Return False untuk teks yang tidak mengandung huruf/angka (mis. satu titik artefak formatting)."""
+        return bool(re.search(r"[A-Za-z0-9À-ɏ]", text))
+
+    @staticmethod
+    def _looks_like_new_entry(text: str) -> bool:
+        """
+        Return True jika teks terlihat seperti awal entry baru (bukan lanjutan).
+
+        Continuation paragraph biasanya:
+        - Dimulai dengan nama jurnal / info volume:halaman (≥5 kata sebelum delimiter pertama)
+        - Dimulai dengan URL / DOI / "Retrieved"
+        Sedangkan entry baru selalu dimulai nama pengarang (1-3 kata + koma/titik cepat).
+        """
+        if re.match(r"^\s*(https?://|doi:|Retrieved|Available)", text, re.IGNORECASE):
+            return False
+        m = re.match(r"^\s*(\w[\w\s]{0,50}?)[,.(]", text)
+        if not m:
+            return True
+        prefix_words = m.group(1).strip().split()
+        # ≥5 kata sebelum delimiter pertama → kemungkinan judul jurnal/buku (continuation)
+        return len(prefix_words) < 5
+
+    def _merge_continuation_entries(
+        self, entries: list[ReferenceEntry]
+    ) -> list[ReferenceEntry]:
+        """
+        Gabungkan paragraf lanjutan (yang terpotong style/wrap) ke entry sebelumnya.
+
+        Paragraf dianggap lanjutan jika:
+        1. Tidak punya tahun, DAN
+        2. Tidak terlihat seperti awal entry baru (nama pengarang pendek + delimiter)
+        """
+        if not entries:
+            return entries
+        merged: list[ReferenceEntry] = [entries[0]]
+        for entry in entries[1:]:
+            if not entry.has_year and not self._looks_like_new_entry(entry.raw_text):
+                prev = merged[-1]
+                combined_text = prev.raw_text + " " + entry.raw_text
+                merged[-1] = self._parse_entry(prev.paragraph_index, combined_text)
+            else:
+                merged.append(entry)
+        return merged
 
     # ------------------------------------------------------------------------
     # Step 2: validasi format

@@ -1081,23 +1081,25 @@ class FormatChecker:
             if _is_figure_table_caption_paragraph(text):
                 continue
             align = para.alignment
-            # python-docx return 'left'/'right'/'center'/'justify' atau None
-            # None = inherit dari style (biasanya left untuk Normal)
-            if align is None:
-                # Nilai None = inherit style; tanpa resolver alignment style, ini ambigu.
-                # Supaya tidak false-positive ("halu"), skip dari pelanggaran.
+            # python-docx return 'left'/'right'/'center'/'justify' atau None.
+            # Pelanggaran "lupa justify" yang relevan HANYA rata kiri (left):
+            #   - None         = inherit style (ambigu) → skip, hindari false-positive.
+            #   - center/right = pilihan sengaja (caption, label bagian gambar
+            #     "Kiri:/Kanan:/Atas:/Bawah:", judul, tanggal) → bukan body yang
+            #     lupa justify → skip.
+            #   - justify      = benar.
+            if align != "left":
                 continue
-            elif align != "justify":
-                sec.issues.append(
-                    FormatIssue(
-                        check_name="alignment",
-                        severity="fail",
-                        location=self._format_para_location(para.index),
-                        issue="Paragraf body bukan justify.",
-                        found=align,
-                        expected="justify",
-                    )
+            sec.issues.append(
+                FormatIssue(
+                    check_name="alignment",
+                    severity="fail",
+                    location=self._format_para_location(para.index),
+                    issue="Paragraf body bukan justify.",
+                    found=align,
+                    expected="justify",
                 )
+            )
         if sec.issues:
             # Status warning kalau hanya inherit; fail kalau ada yang explicit non-justify
             has_fail = any(i.severity == "fail" for i in sec.issues)
@@ -1150,8 +1152,16 @@ class FormatChecker:
             if not matched_words:
                 continue
 
-            # Cek apakah ada run italic
-            has_italic_run = any(r.italic for r in para.runs)
+            # Cek apakah ada run yang EFEKTIF italic. Selain properti langsung run
+            # (r.italic), italic juga bisa berasal dari character style (w:rStyle)
+            # atau paragraph style — resolve lewat StyleResolver supaya kata asing
+            # yang dimiringkan via style (mis. ditulis bold+italic) tidak salah
+            # dianggap "belum italic".
+            has_italic_run = any(
+                (r.italic is True)
+                or (self.resolver.resolve_run_italic(para.index, ri) is True)
+                for ri, r in enumerate(para.runs)
+            )
             # Heuristik kasar: kalau seluruh paragraf tidak ada run italic
             # padahal mengandung kata asing → flag warning.
             if not has_italic_run:

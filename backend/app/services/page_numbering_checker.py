@@ -138,6 +138,8 @@ class HeaderFooterAnalysis:
     alignment: Optional[str] = None # 'left' | 'center' | 'right' atau None (default = left)
     font_name: Optional[str] = None
     font_size_pt: Optional[float] = None
+    # True kalau paragraf field benar-benar merender teks angka (bukan leftover kosong)
+    renders_text: bool = False
     # Numeral type jika dideteksi dari teks literal (bukan PAGE field)
     literal_numeral_type: Optional[str] = None  # 'arabic' | 'roman_lower' | None
 
@@ -430,38 +432,60 @@ class PageNumberingChecker:
         # Map header/footer rId → part name
         rid_map = self._get_rid_to_part_map()
 
-        # Header references (default + first + even)
-        for ref_type, rid in sec.header_refs.items():
-            part = rid_map.get(rid)
-            if part is None:
-                continue
-            hf = self._analyze_header_footer(part, kind="header")
-            if hf.has_page_field:
-                analysis.has_header_with_page = True
-                analysis.header_part = part
-                analysis.actual_position = "top"
-                analysis.actual_alignment = hf.alignment
-                analysis.actual_font_name = hf.font_name
-                analysis.actual_font_size_pt = hf.font_size_pt
-                if hf.literal_numeral_type is not None:
-                    analysis.actual_numeral_type = hf.literal_numeral_type
+        def pick(refs: dict, kind: str):
+            """Pilih header/footer yang merepresentasikan nomor halaman section.
 
-        # Footer references
-        for ref_type, rid in sec.footer_refs.items():
-            part = rid_map.get(rid)
-            if part is None:
-                continue
-            hf = self._analyze_header_footer(part, kind="footer")
-            if hf.has_page_field:
-                analysis.has_footer_with_page = True
-                analysis.footer_part = part
-                if not analysis.has_header_with_page:
-                    analysis.actual_position = "bottom"
-                    analysis.actual_alignment = hf.alignment
-                    analysis.actual_font_name = hf.font_name
-                    analysis.actual_font_size_pt = hf.font_size_pt
-                    if hf.literal_numeral_type is not None:
-                        analysis.actual_numeral_type = hf.literal_numeral_type
+            Urutan prioritas ref: 'default' (halaman ganjil/utama) → 'first' →
+            'even'. Di antara yang memuat field PAGE, utamakan yang BENAR-BENAR
+            merender angka (renders_text) supaya part 'even'/sisa yang kosong
+            (field PAGE tanpa teks, tidak terpakai Word) tidak ikut dianalisis.
+            """
+            candidates = []
+            for ref_type, rid in self._ordered_refs(refs):
+                part = rid_map.get(rid)
+                if part is None:
+                    continue
+                hf = self._analyze_header_footer(part, kind=kind)
+                if hf.has_page_field:
+                    candidates.append((part, hf))
+            for part, hf in candidates:
+                if hf.renders_text:
+                    return part, hf
+            return candidates[0] if candidates else (None, None)
+
+        hpart, hhf = pick(sec.header_refs, "header")
+        fpart, fhf = pick(sec.footer_refs, "footer")
+
+        if hhf is not None:
+            analysis.has_header_with_page = True
+            analysis.header_part = hpart
+        if fhf is not None:
+            analysis.has_footer_with_page = True
+            analysis.footer_part = fpart
+
+        # Sumber detail (posisi/alignment/font/numeral): utamakan part yang
+        # benar-benar merender angka; header diprioritaskan atas footer bila
+        # sama-sama kuat. Kalau hanya ada field kosong (leftover), set posisi saja
+        # dan biarkan alignment/font None agar tidak memunculkan pelanggaran palsu.
+        src = None
+        pos = None
+        if hhf is not None and hhf.renders_text:
+            src, pos = hhf, "top"
+        elif fhf is not None and fhf.renders_text:
+            src, pos = fhf, "bottom"
+        elif hhf is not None:
+            src, pos = hhf, "top"
+        elif fhf is not None:
+            src, pos = fhf, "bottom"
+
+        if src is not None:
+            analysis.actual_position = pos
+            if src.renders_text:
+                analysis.actual_alignment = src.alignment
+                analysis.actual_font_name = src.font_name
+                analysis.actual_font_size_pt = src.font_size_pt
+                if src.literal_numeral_type is not None:
+                    analysis.actual_numeral_type = src.literal_numeral_type
 
         return analysis
 
@@ -563,15 +587,18 @@ class PageNumberingChecker:
             self._hf_cache[part_name] = analysis
             return analysis
 
-        # Alignment: <w:pPr><w:jc w:val="..."/>
+        # Apakah paragraf field benar-benar merender teks angka. Header/footer
+        # 'even'/sisa yang tidak terpakai sering memuat field PAGE tapi teksnya
+        # kosong (tak pernah dirender Word) → renders_text=False agar diabaikan.
+        rendered = "".join(t.text or "" for t in target_para.iter(_q("t"))).strip()
+        analysis.renders_text = bool(rendered)
+
+        # Alignment: utamakan <w:pPr><w:jc> langsung, lalu jc dari style chain.
+        # JANGAN default ke 'left' bila tak ketemu — nomor halaman lazim dibuat
+        # rata kanan via tab stop atau via style (bukan w:jc langsung). Membiarkan
+        # None berarti "tidak bisa dipastikan" → tidak akan di-flag salah alignment.
         ppr = target_para.find(_q("pPr"))
-        if ppr is not None:
-            jc = ppr.find(_q("jc"))
-            if jc is not None:
-                analysis.alignment = jc.get(_q("val"))
-        if analysis.alignment is None:
-            # Default Word kalau tidak di-set adalah 'left'
-            analysis.alignment = "left"
+        analysis.alignment = self._resolve_para_alignment(ppr)
 
         # Font dari run yang memuat PAGE
         # Strategi: cari rPr di run pertama paragraf, dan kalau kosong, resolve via style
@@ -671,6 +698,47 @@ class PageNumberingChecker:
                 current = based_on.get(_q("val")) if based_on is not None else None
 
         return font_name, font_size
+
+    @staticmethod
+    def _ordered_refs(refs: dict) -> list:
+        """Urutkan ref header/footer berdasarkan prioritas: default → first → even."""
+        order = {"default": 0, "first": 1, "even": 2}
+        return sorted(refs.items(), key=lambda kv: order.get(kv[0], 9))
+
+    def _resolve_para_alignment(self, ppr: Optional[etree._Element]) -> Optional[str]:
+        """Alignment paragraf: w:jc langsung → w:jc dari style chain → None.
+
+        Sengaja TIDAK mengembalikan 'left' sebagai default: nomor halaman sering
+        dibuat rata kanan lewat tab stop / style (bukan w:jc langsung). None
+        berarti 'tidak bisa dipastikan' sehingga checker tidak menuduh salah.
+        """
+        if ppr is not None:
+            jc = ppr.find(_q("jc"))
+            if jc is not None and jc.get(_q("val")):
+                return jc.get(_q("val"))
+        style_id = None
+        if ppr is not None:
+            p_style = ppr.find(_q("pStyle"))
+            if p_style is not None:
+                style_id = p_style.get(_q("val"))
+        if not style_id:
+            return None
+        styles_index = self._get_styles_index()
+        visited: set[str] = set()
+        current = style_id
+        while current and current not in visited:
+            visited.add(current)
+            style = styles_index.get(current)
+            if style is None:
+                break
+            sppr = style.find(_q("pPr"))
+            if sppr is not None:
+                jc = sppr.find(_q("jc"))
+                if jc is not None and jc.get(_q("val")):
+                    return jc.get(_q("val"))
+            based_on = style.find(_q("basedOn"))
+            current = based_on.get(_q("val")) if based_on is not None else None
+        return None
 
     def _get_styles_index(self) -> dict:
         """Reuse logic dari StyleResolver: index styleId → element."""

@@ -341,8 +341,21 @@ class DocxParser:
           double-count (inilah penyebab over-count lama).
         - Mode non-Word (tanpa lastRenderedPageBreak): fallback ke break manual +
           section break non-continuous — perkiraan terbaik tanpa cache layout Word.
+
+        Catatan tabel/sdt: untuk elemen multi-paragraf (w:tbl, w:sdt), setiap
+        page break menghasilkan SEPASANG LRPB — satu "rest" di sel/paragraf
+        terakhir halaman lama, satu "lead" di sel/paragraf pertama halaman baru.
+        Menghitung keduanya = double-count. Solusi: hanya hitung LEAD LRPB
+        (sebelum teks) untuk tabel/sdt.
         """
         if self._document_has_lrpb():
+            tag = etree.QName(el).localname
+            if tag in ("tbl", "sdt"):
+                count = 0
+                for p_el in el.findall(".//w:p", namespaces=NSMAP):
+                    lead, _ = self._split_lrpb_around_text(p_el)
+                    count += lead
+                return count
             return len(el.findall(".//w:lastRenderedPageBreak", namespaces=NSMAP))
         delta = len(el.findall(".//w:br[@w:type='page']", namespaces=NSMAP))
         for sect_pr in el.findall(".//w:pPr/w:sectPr", namespaces=NSMAP):

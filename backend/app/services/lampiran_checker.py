@@ -114,7 +114,7 @@ _REQUIRED_LAMPIRAN_PI: list[tuple[int, list[str], str]] = [
     (2, ["justifikasi", "anggaran"],                     "Justifikasi Anggaran Kegiatan"),
     (3, ["susunan", "tim", "pengusul", "pembagian"],     "Susunan Tim Pengusul dan Pembagian Tugas"),
     (4, ["pernyataan", "ketua"],                         "Surat Pernyataan Ketua Tim Pengusul"),
-    (5, ["kesediaan", "mitra"],                          "Surat Pernyataan Kesediaan Bekerjasama dari Mitra"),
+    (5, ["kesediaan", "bekerja", "mitra"],               "Surat Pernyataan Kesediaan Bekerjasama dari Mitra"),
     (6, ["gambaran", "iptek"],                           "Gambaran IPTEK yang akan Diterapkan"),
     (7, ["denah", "lokasi", "mitra"],                    "Denah Detail Lokasi Mitra Program"),
     (8, ["uji", "similar"],                              "Hasil Uji Periksa Similaritas Proposal"),
@@ -126,7 +126,7 @@ _REQUIRED_LAMPIRAN_PM: list[tuple[int, list[str], str]] = [
     (2, ["justifikasi", "anggaran"],                     "Justifikasi Anggaran Kegiatan"),
     (3, ["susunan", "tim", "pengusul", "pembagian"],     "Susunan Tim Pengusul dan Pembagian Tugas"),
     (4, ["pernyataan", "ketua"],                         "Surat Pernyataan Ketua Tim Pengusul"),
-    (5, ["kesediaan", "mitra"],                          "Surat Pernyataan Kesediaan Bekerja Sama dari Mitra"),
+    (5, ["kesediaan", "bekerja", "mitra"],               "Surat Pernyataan Kesediaan Bekerja Sama dari Mitra"),
     (6, ["denah", "lokasi", "mitra"],                    "Denah Detail Lokasi Mitra Program"),
     (7, ["uji", "similar"],                              "Hasil Uji Periksa Similaritas Proposal"),
 ]
@@ -304,22 +304,42 @@ class LampiranChecker:
         body_start = self._find_lampiran_section_start()
         body_text_corpus = self._collect_text_from_lampiran(body_start)
 
-        # OCR body section hanya dipanggil kalau perlu (lazy)
+        # OCR body section hanya dipanggil kalau perlu (lazy).
+        # Dua corpus: semua gambar (anchored match) vs blip-only (keyword-anywhere).
+        # VML images sengaja dieksklusi dari blip_ocr karena berisi page-embed body
+        # PKM (dari Turnitin) yang mencemari _keywords_in_text dengan kata umum.
         ocr_corpus_cache: Optional[str] = None
+        ocr_blip_corpus_cache: Optional[str] = None
+
+        def _ensure_index() -> None:
+            nonlocal index
+            if index is None:
+                from app.services.lampiran_index import LampiranOcrIndex
+                index = LampiranOcrIndex(self.parser)
 
         def body_ocr_text() -> str:
-            nonlocal ocr_corpus_cache, index
+            nonlocal ocr_corpus_cache
             if ocr_corpus_cache is not None:
                 return ocr_corpus_cache
             if body_start is None:
                 ocr_corpus_cache = ""
                 return ocr_corpus_cache
-            if index is None:
-                from app.services.lampiran_index import LampiranOcrIndex
-                index = LampiranOcrIndex(self.parser)
+            _ensure_index()
             rids = index.rids_in_range(body_start)
             ocr_corpus_cache = index.ocr_text_for_rids(rids) if rids else ""
             return ocr_corpus_cache
+
+        def body_ocr_text_blip_only() -> str:
+            nonlocal ocr_blip_corpus_cache
+            if ocr_blip_corpus_cache is not None:
+                return ocr_blip_corpus_cache
+            if body_start is None:
+                ocr_blip_corpus_cache = ""
+                return ocr_blip_corpus_cache
+            _ensure_index()
+            rids = index.rids_in_range(body_start, blip_only=True)
+            ocr_blip_corpus_cache = index.ocr_text_for_rids(rids) if rids else ""
+            return ocr_blip_corpus_cache
 
         missing_in_body: list[tuple[int, str]] = []
         missing_in_daftar_only: list[tuple[int, str]] = []
@@ -330,11 +350,12 @@ class LampiranChecker:
             if not in_body:
                 ocr_text = body_ocr_text()
                 if ocr_text:
-                    # OCR fallback: terima anchored ATAU keyword-anywhere
-                    # (heading "Lampiran N" di gambar tak selalu ter-OCR jelas).
+                    # _anchored_keywords_match pakai semua gambar (termasuk VML).
+                    # _keywords_in_text pakai blip-only agar tidak false-positive
+                    # dari page-embed VML yang berisi teks body PKM.
                     in_body = (
                         _anchored_keywords_match(keywords, ocr_text)
-                        or _keywords_in_text(keywords, ocr_text)
+                        or _keywords_in_text(keywords, body_ocr_text_blip_only())
                     )
 
             # Cross-check Daftar Lampiran hanya kalau skema mewajibkannya.

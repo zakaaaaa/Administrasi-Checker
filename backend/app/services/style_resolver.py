@@ -172,6 +172,12 @@ class StyleResolver:
             run_rpr = runs[run_index].find(_q("rPr"))
             if run_rpr is not None:
                 self._fill_from_rpr(result, run_rpr, source="run")
+                # Character style (w:rStyle) chain — italic/bold sering datang dari
+                # sini (mis. kata asing diberi character style miring), bukan dari
+                # <w:i> langsung di run.
+                rstyle = run_rpr.find(_q("rStyle"))
+                if rstyle is not None and rstyle.get(_q("val")):
+                    self._fill_from_style_chain(result, rstyle.get(_q("val")))
         style_id = self._get_paragraph_style_id(para_xml) or "Normal"
         self._fill_from_style_chain(result, style_id)
         return result

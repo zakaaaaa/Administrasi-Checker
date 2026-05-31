@@ -27,3 +27,12 @@ out/
 
 # User uploads (file mentah, jangan di-commit)
 backend/storage/
+
+# Google Cloud service account keys — JANGAN commit
+*service-account*.json
+*-credentials*.json
+gcp-key.json
+google-credentials.json
+# Pola umum Google service account key: {project-id}-{hash}.json
+ocr-checker-*.json
+*-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].json
