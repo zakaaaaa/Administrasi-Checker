@@ -37,6 +37,7 @@ const MODULE_LABELS: Record<string, string> = {
   luaran:         'Luaran',
   lampiran:       'Lampiran',
   biodata_date:   'Tanggal Biodata',
+  signature_crop: 'Tanda Tangan',
   ai_front_matter:'Front Matter',
 };
 

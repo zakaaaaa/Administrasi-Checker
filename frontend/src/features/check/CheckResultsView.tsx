@@ -23,6 +23,7 @@ const MODULES = [
   { key: 'lampiran', label: 'Lampiran' },
   { key: 'surat_pernyataan', label: 'Surat Pernyataan' },
   { key: 'biodata_date', label: 'Tanggal Biodata' },
+  { key: 'signature_crop', label: 'Tanda Tangan' },
   { key: 'schedule', label: 'Jadwal Kegiatan' },
   { key: 'similarity', label: 'Similaritas' },
 ];
@@ -304,6 +305,10 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
         const tgl = dateMatch ? dateMatch[1] : '';
         return `Kesalahan tanggal/bulan/tahun${tgl ? ` '${tgl}'` : ''} di lampiran biodata, harus antara 9 Maret s.d. 9 April 2026`;
       }
+      return masalah;
+    }
+
+    case 'signature_crop': {
       return masalah;
     }
 

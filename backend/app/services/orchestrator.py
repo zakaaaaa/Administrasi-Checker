@@ -46,6 +46,7 @@ from app.services.luaran_checker import LuaranChecker
 from app.services.lampiran_checker import LampiranChecker
 from app.services.biodata_date_checker import BiodataDateChecker
 from app.services.surat_pernyataan_checker import SuratPernyataanChecker
+from app.services.signature_crop_checker import SignatureCropChecker
 from app.services.schedule_checker import ScheduleChecker
 from app.services.similarity_checker import SimilarityChecker
 from app.services.lampiran_index import LampiranOcrIndex
@@ -499,6 +500,17 @@ def _run_pkm_kc_like(
         statuses.append("error")
     _log_timing("surat_pernyataan", _t0, timings)
 
+    # 9c. Deteksi tanda tangan crop/paste pada lampiran — reuse cache
+    _t0 = time.perf_counter()
+    try:
+        r = SignatureCropChecker(parser).check(index=lampiran_index)
+        results["signature_crop"] = r.to_dict()
+        statuses.append(_extract_status(results["signature_crop"]))
+    except Exception as e:
+        results["signature_crop"] = _module_error_payload(e)
+        statuses.append("error")
+    _log_timing("signature_crop", _t0, timings)
+
     # 10. Jadwal kegiatan
     _t0 = time.perf_counter()
     try:
@@ -644,6 +656,15 @@ def _run_pkm_vgk(parser: DocxParser) -> dict[str, Any]:
         results["surat_pernyataan"] = _module_error_payload(e)
         statuses.append("error")
 
+    # 9c. Deteksi tanda tangan crop/paste pada lampiran.
+    try:
+        r = SignatureCropChecker(parser).check(index=lampiran_index)
+        results["signature_crop"] = r.to_dict()
+        statuses.append(_extract_status(results["signature_crop"]))
+    except Exception as e:
+        results["signature_crop"] = _module_error_payload(e)
+        statuses.append("error")
+
     # 10. Jadwal Kegiatan (Bar chart 3-4 bulan untuk PKM-VGK).
     try:
         r = ScheduleChecker.for_pkm_vgk(parser).check()
@@ -776,6 +797,15 @@ def _run_pkm_ai(parser: DocxParser) -> dict[str, Any]:
         results["surat_pernyataan"] = _module_error_payload(e)
         statuses.append("error")
 
+    # 7c. Deteksi tanda tangan crop/paste pada lampiran.
+    try:
+        r = SignatureCropChecker(parser).check(index=lampiran_index)
+        results["signature_crop"] = r.to_dict()
+        statuses.append(_extract_status(results["signature_crop"]))
+    except Exception as e:
+        results["signature_crop"] = _module_error_payload(e)
+        statuses.append("error")
+
     # 8. Uji Similaritas ≤ 25%
     try:
         r = SimilarityChecker.for_pkm_ai(parser).check()
@@ -898,6 +928,15 @@ def _run_pkm_gft(parser: DocxParser) -> dict[str, Any]:
         statuses.append(_extract_status(results["surat_pernyataan"]))
     except Exception as e:
         results["surat_pernyataan"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 8c. Deteksi tanda tangan crop/paste pada lampiran.
+    try:
+        r = SignatureCropChecker(parser).check(index=lampiran_index)
+        results["signature_crop"] = r.to_dict()
+        statuses.append(_extract_status(results["signature_crop"]))
+    except Exception as e:
+        results["signature_crop"] = _module_error_payload(e)
         statuses.append("error")
 
     # 9. Uji Similaritas ≤ 25%
