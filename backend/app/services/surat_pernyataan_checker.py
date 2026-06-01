@@ -185,7 +185,7 @@ class SuratPernyataanChecker:
             field_results.append((label, ok))
 
         skema_ok = _schema_mentioned(nc, self.schema_code)
-        materai_ok = "materai" in nc
+        materai_ok = _materai_mentioned(nc)
 
         # Sinyal "isi surat terbaca": minimal satu elemen ISI (field/skema/materai)
         # terdeteksi. Kalau NOL → kemungkinan scan tak terbaca OCR → jangan
@@ -275,6 +275,12 @@ def _subseq(tokens: list[str], words: list[str]) -> bool:
         return False
     it = iter(words)
     return all(any(w == tok for w in it) for tok in tokens)
+
+
+def _materai_mentioned(nc: str) -> bool:
+    """True bila teks menyebut materai/meterai (kata BI=meterai, sering salah eja atau
+    terpotong OCR menjadi 'meteral'/'materei'/'materai'/'metera')."""
+    return bool(re.search(r"mete?rai|matere?i|meteral|metera\b", nc))
 
 
 def _schema_mentioned(nc: str, code: str) -> bool:
