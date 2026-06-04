@@ -49,7 +49,7 @@ _REQUIRED_FIELDS: list[tuple[str, list[str], Optional[str]]] = [
     ("Judul Proposal PKM",      ["judul", "proposal"],           None),
 ]
 
-_LAMPIRAN_SECTION_RE = re.compile(r"^\s*LAMPIRAN\s*$", re.IGNORECASE)
+_LAMPIRAN_SECTION_RE = re.compile(r"^\s*LAMPIRAN(?:-LAMPIRAN)?\s*$", re.IGNORECASE)
 
 
 # =============================================================================
@@ -206,24 +206,21 @@ class SuratPernyataanChecker:
 
         missing: list[str] = []
         if not title_ok:
-            missing.append('Judul "SURAT PERNYATAAN KETUA TIM PENGUSUL"')
+            missing.append('Tidak terdapat judul "SURAT PERNYATAAN KETUA TIM PENGUSUL"')
         for label, ok in field_results:
             if not ok:
-                missing.append(f'Isian "{label}"')
+                missing.append(f'Tidak terdapat "{label}"')
         if not skema_ok:
-            missing.append(f'Penyebutan skema "{self.schema_label}" pada isi surat')
+            missing.append(f'Tidak terdapat penyebutan skema "{self.schema_label}" pada isi surat')
         if not materai_ok:
-            missing.append('Keterangan "Materai senilai Rp10.000"')
+            missing.append('Tidak terdapat Materai')
 
         if missing:
-            result.status = "warning"
+            result.status = "fail"
             lines = "\n".join(f"- {m}" for m in missing)
             result.messages.append(CheckMessage(
-                level="warning",
-                text=(
-                    "Format Surat Pernyataan Ketua tidak lengkap/tidak terbaca. "
-                    "Bagian berikut tidak terdeteksi (periksa manual):\n" + lines
-                ),
+                level="fail",
+                text="Kesalahan Format Surat Pernyataan Ketua tidak sesuai:\n" + lines,
             ))
         else:
             result.messages.append(CheckMessage(
@@ -241,7 +238,13 @@ class SuratPernyataanChecker:
 
     def _find_lampiran_section_start(self) -> Optional[int]:
         for p in self.parser.paragraphs:
-            if _LAMPIRAN_SECTION_RE.match(p.text.strip()):
+            t = p.text.strip()
+            if not _LAMPIRAN_SECTION_RE.match(t):
+                continue
+            if p.is_heading:
+                return p.index
+            letters = [c for c in t if c.isalpha()]
+            if letters and sum(1 for c in letters if c.isupper()) / len(letters) >= 0.9:
                 return p.index
         return None
 
@@ -278,9 +281,19 @@ def _subseq(tokens: list[str], words: list[str]) -> bool:
 
 
 def _materai_mentioned(nc: str) -> bool:
-    """True bila teks menyebut materai/meterai (kata BI=meterai, sering salah eja atau
-    terpotong OCR menjadi 'meteral'/'materei'/'materai'/'metera')."""
-    return bool(re.search(r"mete?rai|matere?i|meteral|metera\b", nc))
+    """Deteksi materai dengan 3 layer (toleran OCR pada stiker fisik):
+    L1 — kata 'meterai'/'materai' + variasi kesalahan umum Vision
+         ('meter ai' = spasi sisipan, 'metera1' tertangkap oleh metera\\b)
+    L2 — 'sepuluh ribu rupiah' — teks fisik unik di sisi kiri materai Rp10.000
+    L3 — denominasi '10 000' / '10000' — angka besar di tengah stiker
+    """
+    if re.search(r"mete?rai|matere?i|meteral|metera[1l]?\b|meter\s+ai", nc):
+        return True
+    if re.search(r"sepuluh\s+ribu", nc):
+        return True
+    if re.search(r"\b10\s*000\b", nc):
+        return True
+    return False
 
 
 def _schema_mentioned(nc: str, code: str) -> bool:
