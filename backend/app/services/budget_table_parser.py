@@ -145,6 +145,11 @@ class Bab4ParseResult:
     rekap_external_rp: Optional[int] = None
     rekap_total_rp: Optional[int] = None
     rekap_rows: dict = field(default_factory=dict)  # source_key -> row_index (estimasi halaman)
+    # Penjumlahan kolom "Sumber Dana" per kategori (bukan rekap).
+    # None = tabel tidak punya kolom Sumber Dana per baris kategori.
+    col_belmawa_sum: Optional[int] = None
+    col_university_sum: Optional[int] = None
+    col_external_sum: Optional[int] = None
 
 
 @dataclass
@@ -218,7 +223,15 @@ _REKAP_SOURCE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("belmawa",    re.compile(r"belmawa", re.IGNORECASE)),
     ("university", re.compile(r"perguruan\s+tinggi", re.IGNORECASE)),
     ("external",   re.compile(r"instansi\s+lain|institusi\s+lain", re.IGNORECASE)),
-    ("total",      re.compile(r"^\s*(?:jumlah|total)\s*$", re.IGNORECASE)),
+    # Loose match: "Jumlah" bisa muncul di tengah teks seperti "Rekap Sumber Dana Jumlah"
+    ("total",      re.compile(r"\b(?:jumlah|total)\b", re.IGNORECASE)),
+]
+
+# Pola sumber dana untuk kolom "Sumber Dana" per-kategori (tanpa "total")
+_SOURCE_COL_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("belmawa",    re.compile(r"belmawa", re.IGNORECASE)),
+    ("university", re.compile(r"perguruan\s+tinggi", re.IGNORECASE)),
+    ("external",   re.compile(r"instansi\s+lain|institusi\s+lain", re.IGNORECASE)),
 ]
 
 
@@ -270,6 +283,17 @@ def parse_bab4_table(table: TableInfo) -> Bab4ParseResult:
     name_col = 1
     cat_totals: dict[str, int] = {}
 
+    # Deteksi kolom "Sumber Dana" dari header (misal: kolom 2 = "Sumber Dana")
+    sumber_dana_col: Optional[int] = None
+    for i, h in enumerate(table.header_texts):
+        if "SUMBER" in h.upper():
+            sumber_dana_col = i
+            break
+
+    # Akumulator per sumber dana (dari kolom Sumber Dana, bukan blok rekap)
+    _col_sums: dict[str, int] = {"belmawa": 0, "university": 0, "external": 0}
+    _has_source_col_data = False
+
     for r_idx in range(1, table.rows):
         row_cells = sorted(
             (c for c in table.cells if c.row == r_idx),
@@ -302,6 +326,23 @@ def parse_bab4_table(table: TableInfo) -> Bab4ParseResult:
                 result.rekap_rows[source_key] = r_idx
             continue
 
+        # Akumulasi kolom Sumber Dana per baris kategori (sebelum rekap).
+        # '-', '–', '—' dan string kosong diperlakukan sebagai Rp0.
+        if sumber_dana_col is not None and len(row_cells) > sumber_dana_col:
+            source_text = row_cells[sumber_dana_col].text.strip()
+            if value_int is not None:
+                col_amount: Optional[int] = value_int
+            elif value_text in ("-", "–", "—", ""):
+                col_amount = 0
+            else:
+                col_amount = None
+            if col_amount is not None:
+                for src_key, src_pat in _SOURCE_COL_PATTERNS:
+                    if src_pat.search(source_text):
+                        _col_sums[src_key] += col_amount
+                        _has_source_col_data = True
+                        break
+
         if is_grand_total:
             if value_int is not None:
                 result.grand_total_rp = value_int
@@ -314,6 +355,11 @@ def parse_bab4_table(table: TableInfo) -> Bab4ParseResult:
         BudgetCategoryTotal(category_name=name, total_rp=total)
         for name, total in cat_totals.items()
     ]
+
+    if _has_source_col_data:
+        result.col_belmawa_sum = _col_sums["belmawa"]
+        result.col_university_sum = _col_sums["university"]
+        result.col_external_sum = _col_sums["external"]
 
     return result
 

@@ -278,9 +278,8 @@ class SignatureCropChecker:
                     result.messages.append(CheckMessage(
                         level="fail",
                         text=(
-                            f"Terdeteksi tanda tangan hasil crop/paste pada {label} — "
-                            f"tanda tangan harus ditulis langsung di dokumen atau "
-                            f"di-scan bersama halaman, bukan di-paste dari dokumen lain."
+                            f"Kesalahan tanda tangan hasil croping/timpa pada \"{label}\". "
+                            f"Gunakan TTD langsung atau hasil scan asli."
                         ),
                     ))
 

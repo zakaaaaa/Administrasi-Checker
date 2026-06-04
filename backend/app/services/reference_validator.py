@@ -51,16 +51,34 @@ from app.services.schema_rules import SchemaRules
 # Pattern regex
 # ============================================================================
 
-# Pola sitasi in-text:
+# Pola sitasi in-text (format Harvard benar):
 #   (Author, 2020)
 #   (Author dan Author, 2020)
-#   (Author dkk., 2020)        ← ini sebenarnya pelanggaran tapi kita parse dulu
+#   (Author dkk., 2020)        ← et al. di sitasi in-text diperbolehkan
 #   (Author et al., 2020)      ← sama
 # Year = 4 digit, optional suffix huruf kecil (2020a, 2020b)
 _INTEXT_CITATION_RE = re.compile(
     r"\(([^()]+?),\s*(\d{4}[a-z]?)\)",
     re.UNICODE,
 )
+
+# Pola sitasi in-text TANPA koma (format salah tapi masih harus dideteksi):
+#   (Author 2020)  ← seharusnya (Author, 2020)
+# Hanya tangkap jika author dimulai huruf kapital (filter "Gambar", "Tabel", dst di bawah)
+_INTEXT_CITATION_NO_COMMA_RE = re.compile(
+    r"\(([A-Z][a-zA-ZÀ-ɏ\-]+"
+    r"(?:\s+(?:dan|and|&)\s+[A-Z][a-zA-ZÀ-ɏ\-]+)?"
+    r"(?:\s+(?:dkk\.?|et\s+al\.?))?)"
+    r"\s+(\d{4}[a-z]?)\)",
+    re.UNICODE,
+)
+
+# Kata pembuka yang bukan nama penulis — filter false positive (Gambar 2020 dst.)
+_NO_COMMA_BLOCKLIST = frozenset([
+    "GAMBAR", "TABEL", "LAMPIRAN", "FIGURE", "TABLE", "APPENDIX",
+    "BAB", "CHAPTER", "HALAMAN", "PAGE", "GRAFIK", "DIAGRAM",
+    "BAGAN", "PETA", "FOTO", "LIHAT", "SEE",
+])
 
 # Tahun di awal/dalam entry DP (Indonesia: setelah nama+titik)
 # Format yang umum di sample real:
@@ -136,6 +154,7 @@ class InTextCitation:
     author: str                 # mis. "Astuti" (penulis pertama setelah normalisasi)
     year: int                   # 2012
     author_raw: str = ""        # substring penulis persis dari dokumen (sebelum koma+tahun)
+    has_format_error: bool = False  # True jika tidak pakai koma Harvard: "(Astuti 2012)"
 
 
 @dataclass
@@ -207,6 +226,7 @@ class ReferenceValidationResult:
                     "author": c.author,
                     "author_raw": c.author_raw,
                     "year": c.year,
+                    "has_format_error": c.has_format_error,
                 }
                 for c in self.in_text_citations
             ],
@@ -322,6 +342,23 @@ class ReferenceValidator:
         # Catatan: et al./dkk. di sitasi in-text DIPERBOLEHKAN (Harvard standar
         # mengizinkan singkatan untuk 3+ penulis). Yang dilarang hanya di DP.
         result.in_text_citations = self._extract_in_text_citations()
+
+        # Step 3b: flag sitasi in-text yang tidak sesuai format Harvard (tanpa koma)
+        for c in result.in_text_citations:
+            if c.has_format_error:
+                result.format_issues.append(
+                    FormatIssue(
+                        entry_index=-1,
+                        text_preview=c.raw_text,
+                        severity="fail",
+                        issue=(
+                            f"Format sitasi in-text tidak sesuai Harvard: '{c.raw_text}' "
+                            f"— nama penulis dan tahun harus dipisah koma. "
+                            f"Seharusnya '({c.author}, {c.year})'."
+                        ),
+                        paragraph_index=c.paragraph_index,
+                    )
+                )
 
         # Step 4: balance check (in-text ↔ DP)
         result.balance_findings = self._balance_check(
@@ -505,12 +542,12 @@ class ReferenceValidator:
             author = author.rstrip(". ").strip()
             # Skip kalau terlalu generik (mis. "UU RI No")
             if author and len(author) >= 2:
-                # Ambil token pertama saja (last name penulis pertama)
-                # mis. "Nyman, Rimma" → "Nyman"
-                #      "Smith and Jones" → "Smith"
-                tokens = re.split(r"[,\s]+", author)
-                if tokens:
-                    entry.author_first = tokens[0]
+                if "," in author:
+                    # Format "Last, First" → ambil last name saja
+                    entry.author_first = author.split(",")[0].strip()
+                else:
+                    # Nama institusi / single-name — simpan utuh
+                    entry.author_first = author
 
         return entry
 
@@ -619,7 +656,11 @@ class ReferenceValidator:
     def _extract_in_text_citations(self) -> list[InTextCitation]:
         """
         Scan body teks dari BAB 1 sampai sebelum DAFTAR PUSTAKA.
-        Pattern: (Author, Year) — toleran spasi, "dan", "&".
+
+        Dua pass:
+        1. Pattern benar: (Author, Year)
+        2. Pattern salah (tanpa koma): (Author Year) → has_format_error=True
+           Tetap dimasukkan ke list agar balance check tidak salah "bodong".
         """
         boundaries = self.parser.find_section_boundaries(
             ["BAB 1", "DAFTAR PUSTAKA"], headings_only=True
@@ -633,10 +674,14 @@ class ReferenceValidator:
             body_end = len(self.parser.paragraphs)
 
         citations: list[InTextCitation] = []
+
         for i in range(body_start, body_end):
             text = self.parser.paragraphs[i].text
             if not text.strip():
                 continue
+
+            # Pass 1: format benar (dengan koma)
+            matched_spans: set[tuple[int, int]] = set()
             for m in _INTEXT_CITATION_RE.finditer(text):
                 author_part = m.group(1).strip()
                 year_str = m.group(2)
@@ -645,13 +690,10 @@ class ReferenceValidator:
                     year = int(year_int_str)
                 except ValueError:
                     continue
-
-                # Author bisa "Smith dan Jones", "Smith, Jones", "Smith et al"
-                # Ambil author pertama saja
                 first_author = self._extract_first_author_from_citation(author_part)
                 if not first_author:
                     continue
-
+                matched_spans.add(m.span())
                 citations.append(
                     InTextCitation(
                         paragraph_index=i,
@@ -659,8 +701,39 @@ class ReferenceValidator:
                         author=first_author,
                         year=year,
                         author_raw=author_part,
+                        has_format_error=False,
                     )
                 )
+
+            # Pass 2: format salah (tanpa koma) — (Author Year)
+            for m in _INTEXT_CITATION_NO_COMMA_RE.finditer(text):
+                if m.span() in matched_spans:
+                    continue
+                author_part = m.group(1).strip()
+                # Filter false positive: Gambar, Tabel, BAB, dst.
+                first_word = author_part.split()[0].upper()
+                if first_word in _NO_COMMA_BLOCKLIST:
+                    continue
+                year_str = m.group(2)
+                year_int_str = re.sub(r"[a-z]", "", year_str)
+                try:
+                    year = int(year_int_str)
+                except ValueError:
+                    continue
+                first_author = self._extract_first_author_from_citation(author_part)
+                if not first_author:
+                    continue
+                citations.append(
+                    InTextCitation(
+                        paragraph_index=i,
+                        raw_text=m.group(0),
+                        author=first_author,
+                        year=year,
+                        author_raw=author_part,
+                        has_format_error=True,
+                    )
+                )
+
         return citations
 
     @staticmethod
@@ -741,7 +814,7 @@ class ReferenceValidator:
                             direction="in_text_not_in_references",
                             citation_or_entry=c.raw_text,
                             detail=(
-                                f"Sitasi '({c.author}, {c.year})' tidak match exact "
+                                f"Sitasi '({c.author}, {c.year})' tidak sesuai "
                                 f"di Daftar Pustaka. Author '{partial}' ada tapi "
                                 f"tahun {sorted(dp_years)} (bukan {c.year})."
                             ),
@@ -758,8 +831,8 @@ class ReferenceValidator:
                             direction="in_text_not_in_references",
                             citation_or_entry=c.raw_text,
                             detail=(
-                                f"Sitasi '({c.author}, {c.year})' tidak cocok persis "
-                                f"dengan nama di DP ('{partial}'). Periksa ejaan penulis."
+                                f"Sitasi \"({c.author}, {c.year})\" tidak cocok persis "
+                                f"dengan nama di Daftar Pustaka \"{partial}\". Periksa ejaan penulis."
                             ),
                             paragraph_index=c.paragraph_index,
                         )
@@ -811,18 +884,7 @@ class ReferenceValidator:
                 # Author di-cite tapi tahun beda — kita TIDAK flag (sudah
                 # di-flag oleh sisi in-text)
                 continue
-            findings.append(
-                BalanceFinding(
-                    direction="in_references_not_in_text",
-                    citation_or_entry=e.raw_text[: self.PREVIEW_CHARS],
-                    detail=(
-                        f"Referensi '{e.author_first} ({e.year})' ada di Daftar "
-                        f"Pustaka tapi tidak pernah disitasi di body teks "
-                        f"(referensi bodong)."
-                    ),
-                    paragraph_index=e.paragraph_index,
-                )
-            )
+            # Referensi di DP tapi tidak disitasi di body → diperbolehkan, skip.
 
         return findings
 
@@ -975,11 +1037,20 @@ class ReferenceValidator:
             return
 
         # Format issues
+        dkk_emitted = False
         for fi in result.format_issues:
             if fi.severity == "fail":
                 has_fail = True
             else:
                 has_warning = True
+            # dkk/et al: dedup — cukup satu pesan tanpa prefix/lokasi
+            if "dkk atau et al" in fi.issue:
+                if not dkk_emitted:
+                    result.messages.append(
+                        CheckMessage(level=fi.severity, text=fi.issue)
+                    )
+                    dkk_emitted = True
+                continue
             para = fi.paragraph_index
             if para is None and fi.entry_index >= 0 and fi.entry_index < len(
                 result.entries
@@ -1018,14 +1089,10 @@ class ReferenceValidator:
                     )
                 )
 
-        # Balance
+        # Balance — hanya cek sitasi in-text yang tidak ada di DP
         in_text_missing = [
             f for f in result.balance_findings
             if f.direction == "in_text_not_in_references"
-        ]
-        bodong = [
-            f for f in result.balance_findings
-            if f.direction == "in_references_not_in_text"
         ]
         if in_text_missing:
             has_fail = True
@@ -1042,25 +1109,7 @@ class ReferenceValidator:
                 result.messages.append(
                     CheckMessage(
                         level="fail",
-                        text=f"  • {f.detail}{loc(f.paragraph_index)}",
-                    )
-                )
-        if bodong:
-            has_fail = True
-            result.messages.append(
-                CheckMessage(
-                    level="fail",
-                    text=(
-                        f"{len(bodong)} entry Daftar Pustaka tidak pernah "
-                        f"disitasi di body teks (referensi bodong)."
-                    ),
-                )
-            )
-            for f in bodong[:5]:
-                result.messages.append(
-                    CheckMessage(
-                        level="fail",
-                        text=f"  • {f.detail}{loc(f.paragraph_index)}",
+                        text=f"  • {f.detail}",
                     )
                 )
 

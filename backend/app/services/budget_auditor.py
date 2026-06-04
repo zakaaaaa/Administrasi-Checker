@@ -137,6 +137,7 @@ class BudgetAuditResult:
     rekap_belmawa_rp: Optional[int] = None
     rekap_university_rp: Optional[int] = None
     rekap_external_rp: Optional[int] = None
+    rekap_total_rp: Optional[int] = None
     table_integrity_status: str = "pass"  # 'pass' | 'fail'
     table_integrity_missing: list[str] = field(default_factory=list)
     categories: list[CategoryAllocationResult] = field(default_factory=list)
@@ -183,6 +184,7 @@ class BudgetAuditResult:
                 "belmawa_rp": self.rekap_belmawa_rp,
                 "university_rp": self.rekap_university_rp,
                 "external_rp": self.rekap_external_rp,
+                "total_rp": self.rekap_total_rp,
             },
             "table_integrity": {
                 "status": self.table_integrity_status,
@@ -315,15 +317,22 @@ class BudgetAuditor:
         bab4 = self._find_and_parse_bab4()
         lamp2 = self._find_and_parse_lampiran2()
         if bab4:
-            result.bab4_grand_total_rp = bab4.grand_total_rp
+            # Gunakan baris Grand Total eksplisit, atau fallback ke sum kategori
+            # bila tabel tidak punya baris "Jumlah" di bagian kategori.
+            _cat_sum = sum(c.total_rp for c in bab4.categories if c.total_rp is not None)
+            result.bab4_grand_total_rp = bab4.grand_total_rp or (_cat_sum if _cat_sum > 0 else None)
             result.rekap_belmawa_rp = bab4.rekap_belmawa_rp
             result.rekap_university_rp = bab4.rekap_university_rp
             result.rekap_external_rp = bab4.rekap_external_rp
+            result.rekap_total_rp = bab4.rekap_total_rp
         if lamp2:
             result.lampiran2_grand_total_rp = lamp2.grand_total_rp
 
         # Lapis 1b: Validasi Rekap Sumber Dana di tabel Bab 4
         self._validate_rekap_sumber_dana(result, bab4)
+
+        # Lapis 1c: Validasi kolom Sumber Dana per kategori vs Rekap Sumber Dana
+        self._validate_source_column_totals(result, bab4)
 
         # Lapis 2: Integritas tabel (semua kategori wajib ada)
         self._check_table_integrity(result, bab4)
@@ -512,6 +521,96 @@ class BudgetAuditor:
                 ),
             ))
 
+        # Validasi penjumlahan internal: Belmawa + PT + Instansi harus = baris Total rekap
+        belmawa_v = bab4.rekap_belmawa_rp
+        university_v = bab4.rekap_university_rp
+        external_v = bab4.rekap_external_rp
+        rekap_total_v = bab4.rekap_total_rp
+        computed_sum = (belmawa_v or 0) + (university_v or 0) + (external_v or 0)
+
+        if rekap_total_v is not None and (belmawa_v is not None or university_v is not None):
+            if computed_sum != rekap_total_v:
+                result.rekap_validation.append(FundingValidationResult(
+                    name="rekap_sum",
+                    display_name="Rekap Sumber Dana (Penjumlahan)",
+                    input_rp=computed_sum,
+                    min_rp=rekap_total_v,
+                    max_rp=rekap_total_v,
+                    status="fail",
+                    message=(
+                        f"Rekap Sumber Dana: penjumlahan Belmawa (Rp{belmawa_v or 0:,}) "
+                        f"+ Perguruan Tinggi (Rp{university_v or 0:,}) "
+                        f"+ Instansi Lain (Rp{external_v or 0:,}) = Rp{computed_sum:,}, "
+                        f"tetapi baris Jumlah/Total rekap menunjukkan Rp{rekap_total_v:,}. "
+                        f"Selisih Rp{abs(computed_sum - rekap_total_v):,}."
+                    ),
+                ))
+
+        # Validasi rekap total harus cocok dengan grand total anggaran per kategori.
+        # Ini mencegah rekap diisi angka berbeda dari penjumlahan kategori nyata.
+        grand_total = bab4.grand_total_rp
+        effective_rekap = rekap_total_v if rekap_total_v is not None else (
+            computed_sum if (belmawa_v is not None or university_v is not None) else None
+        )
+        if effective_rekap is not None and grand_total is not None:
+            if effective_rekap != grand_total:
+                result.rekap_validation.append(FundingValidationResult(
+                    name="rekap_vs_grand_total",
+                    display_name="Rekap Sumber Dana vs Total Anggaran",
+                    input_rp=effective_rekap,
+                    min_rp=grand_total,
+                    max_rp=grand_total,
+                    status="fail",
+                    message=(
+                        f"Total Rekap Sumber Dana (Rp{effective_rekap:,}) tidak sama "
+                        f"dengan total anggaran per kategori (Rp{grand_total:,}). "
+                        f"Selisih Rp{abs(effective_rekap - grand_total):,}. "
+                        f"Rekap Sumber Dana harus mencerminkan total anggaran yang sesungguhnya."
+                    ),
+                ))
+
+    # ------------------------------------------------------------------------
+    # Lapis 1c: Validasi kolom Sumber Dana per kategori vs Rekap Sumber Dana
+    # ------------------------------------------------------------------------
+
+    def _validate_source_column_totals(
+        self,
+        result: BudgetAuditResult,
+        bab4: Optional[Bab4ParseResult],
+    ) -> None:
+        """
+        Bandingkan penjumlahan kolom Sumber Dana per kategori dengan nilai
+        Rekap Sumber Dana. Misal: jumlah semua baris "Belmawa" dari tiap kategori
+        harus sama dengan rekap_belmawa_rp.
+        Hanya berjalan bila tabel Bab 4 punya kolom Sumber Dana per baris (col_belmawa_sum tidak None).
+        """
+        if bab4 is None or bab4.col_belmawa_sum is None:
+            return  # Tabel tidak punya kolom Sumber Dana per kategori
+
+        checks = [
+            ("belmawa",    "Belmawa",          bab4.col_belmawa_sum,    bab4.rekap_belmawa_rp),
+            ("university", "Perguruan Tinggi",  bab4.col_university_sum, bab4.rekap_university_rp),
+            ("external",   "Instansi Lain",     bab4.col_external_sum,   bab4.rekap_external_rp),
+        ]
+        for name, display, col_sum, rekap_val in checks:
+            col_v = col_sum or 0
+            rekap_v = rekap_val or 0
+            if col_v == rekap_v:
+                continue
+            result.rekap_validation.append(FundingValidationResult(
+                name=f"source_col_{name}",
+                display_name=f"Kolom {display}",
+                input_rp=col_v,
+                min_rp=rekap_v,
+                max_rp=rekap_v,
+                status="fail",
+                message=(
+                    f"Penjumlahan kolom {display} per kategori = Rp{col_v:,}, "
+                    f"tidak sesuai dengan Rekap Sumber Dana {display} = Rp{rekap_v:,}. "
+                    f"Selisih Rp{abs(col_v - rekap_v):,}."
+                ),
+            ))
+
     # ------------------------------------------------------------------------
     # Parse tabel
     # ------------------------------------------------------------------------
@@ -681,6 +780,14 @@ class BudgetAuditor:
 
         tol = self.rules.cross_check.tolerance_rupiah
 
+        # Hitung total Bab 4: pakai baris Grand Total eksplisit, atau fallback
+        # ke sum kategori (dokumen tanpa baris "Jumlah" di bagian kategori).
+        bab4_total: Optional[int] = bab4.grand_total_rp
+        if bab4_total is None and bab4.categories:
+            cat_sum = sum(c.total_rp for c in bab4.categories if c.total_rp is not None)
+            if cat_sum > 0:
+                bab4_total = cat_sum
+
         # Map per kategori canonical
         bab4_map: dict[str, Optional[int]] = {}
         for c in bab4.categories:
@@ -694,7 +801,7 @@ class BudgetAuditor:
             if canonical:
                 lamp2_map[canonical] = c.total_rp
 
-        # Bandingkan tiap canonical
+        # Bandingkan tiap canonical (bila Lampiran 2 punya sub-total per kategori)
         all_canonicals = set(bab4_map.keys()) | set(lamp2_map.keys())
         for canonical in sorted(all_canonicals):
             b = bab4_map.get(canonical)
@@ -712,20 +819,21 @@ class BudgetAuditor:
                     )
                 )
 
-        # Cek grand total
-        if (
-            bab4.grand_total_rp is not None
-            and lamp2.grand_total_rp is not None
-            and abs(bab4.grand_total_rp - lamp2.grand_total_rp) > tol
-        ):
-            result.cross_check_discrepancies.append(
-                CrossCheckDiscrepancy(
-                    canonical_name="GRAND_TOTAL",
-                    bab4_rp=bab4.grand_total_rp,
-                    lampiran2_rp=lamp2.grand_total_rp,
-                    delta_rp=abs(bab4.grand_total_rp - lamp2.grand_total_rp),
+        # Cek grand total — selalu dilakukan bila kedua nilai tersedia.
+        # Fallback bab4_total dari sum kategori memastikan tabel tanpa baris
+        # "Jumlah" eksplisit tetap ter-cross-check dengan Lampiran 2.
+        lamp2_total = lamp2.grand_total_rp
+        if bab4_total is not None and lamp2_total is not None:
+            delta_total = abs(bab4_total - lamp2_total)
+            if delta_total > tol:
+                result.cross_check_discrepancies.append(
+                    CrossCheckDiscrepancy(
+                        canonical_name="GRAND_TOTAL",
+                        bab4_rp=bab4_total,
+                        lampiran2_rp=lamp2_total,
+                        delta_rp=delta_total,
+                    )
                 )
-            )
 
         result.cross_check_status = (
             "fail" if result.cross_check_discrepancies else "pass"

@@ -71,7 +71,7 @@ class FormatRules:
 
 def get_pkm_format_rules() -> FormatRules:
     """Default rules untuk semua skema PKM (sama untuk KC, K, GFT, dll)."""
-    return FormatRules()
+    return FormatRules(check_caption_line_spacing=True, caption_line_spacing=1.15)
 
 
 def get_pkm_ai_format_rules() -> FormatRules:
@@ -1014,7 +1014,6 @@ class FormatChecker:
                 continue
             spacing_distribution[ls] = spacing_distribution.get(ls, 0) + 1
             if _is_figure_table_caption_paragraph(para.text):
-                # Caption wajib spasi 1 — hanya cek jika skema mengaktifkan rule ini
                 if self.rules.check_caption_line_spacing and abs(ls - self.rules.caption_line_spacing) > cap_tol:
                     raw = para.text.strip()
                     snippet = raw[:60] + ("…" if len(raw) > 60 else "")
@@ -1023,7 +1022,7 @@ class FormatChecker:
                             check_name="caption_line_spacing",
                             severity="fail",
                             location=self._format_para_location(para.index),
-                            issue=f"Line spacing keterangan gambar/tabel bukan 1 — \"{snippet}\"",
+                            issue=f"Line spacing keterangan gambar/tabel bukan {self.rules.caption_line_spacing} — \"{snippet}\"",
                             found=str(ls),
                             expected=str(self.rules.caption_line_spacing),
                         )
@@ -1171,9 +1170,8 @@ class FormatChecker:
                         severity="fail",
                         location=self._format_para_location(para.index),
                         issue=(
-                            f"Paragraf memuat kata/frasa asing "
-                            f"({', '.join(matched_words[:3])}) tapi tidak ada run italic. "
-                            f"Bahasa asing wajib italic."
+                            f"Kesalahan penulisan kata asing tidak dicetak miring "
+                            f"\"{', '.join(matched_words[:3])}\""
                         ),
                         found="tidak italic",
                         expected="italic",

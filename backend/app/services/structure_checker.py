@@ -78,6 +78,17 @@ class OrderViolation:
 
 
 @dataclass
+class FormatViolation:
+    """BAB heading ditemukan tapi format tidak sesuai (angka Arab + titik wajib)."""
+    rule_name: str
+    matched_text: str
+    paragraph_index: int
+    expected_format: str
+    issues: list[str]
+    message: str
+
+
+@dataclass
 class CheckMessage:
     """Pesan feedback yang akan ditampilkan ke user."""
     level: str    # 'pass' | 'warning' | 'fail'
@@ -95,6 +106,7 @@ class StructureCheckResult:
     missing_required: list[MissingSection] = field(default_factory=list)
     forbidden_found: list[ForbiddenFinding] = field(default_factory=list)
     out_of_order: list[OrderViolation] = field(default_factory=list)
+    format_violations: list[FormatViolation] = field(default_factory=list)
     messages: list[CheckMessage] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -140,6 +152,17 @@ class StructureCheckResult:
                     "message": o.message,
                 }
                 for o in self.out_of_order
+            ],
+            "format_violations": [
+                {
+                    "rule_name": fv.rule_name,
+                    "matched_text": fv.matched_text,
+                    "paragraph_index": fv.paragraph_index,
+                    "expected_format": fv.expected_format,
+                    "issues": fv.issues,
+                    "message": fv.message,
+                }
+                for fv in self.format_violations
             ],
             "messages": [{"level": m.level, "text": m.text} for m in self.messages],
         }
@@ -253,16 +276,19 @@ class StructureChecker:
         # 1. Identifikasi semua section yang muncul di dokumen
         result.found_sections = self._identify_sections()
 
-        # 2. Cari section wajib yang HILANG
+        # 2. Validasi format penulisan judul BAB (angka Arab wajib, titik opsional)
+        result.format_violations = self._check_bab_format(result.found_sections)
+
+        # 3. Cari section wajib yang HILANG
         result.missing_required = self._find_missing_required(result.found_sections)
 
-        # 3. Section terlarang yang muncul = red flag
+        # 4. Section terlarang yang muncul = red flag
         result.forbidden_found = self._collect_forbidden(result.found_sections)
 
-        # 4. Validasi urutan section wajib yang ditemukan
+        # 5. Validasi urutan section wajib yang ditemukan
         result.out_of_order = self._check_order(result.found_sections)
 
-        # 5. Tentukan status overall + bangun messages
+        # 6. Tentukan status overall + bangun messages
         self._finalize(result)
 
         return result
@@ -279,6 +305,30 @@ class StructureChecker:
         """
         found: list[FoundSection] = []
         already_matched_required: set[str] = set()
+
+        # Pre-pass: scan SDT nodes (Word TOC field) untuk heading yang tidak masuk
+        # parser.paragraphs — kasus umum: "DAFTAR ISI" di-wrap dalam <w:sdt>.
+        for text, virtual_idx in self._extract_sdt_heading_candidates():
+            if _looks_like_toc_line(text):
+                continue
+            for rule in self.rules.sections:
+                if not _heading_matches_rule(text, rule):
+                    continue
+                if rule.required and rule.name in already_matched_required:
+                    break
+                if rule.required:
+                    already_matched_required.add(rule.name)
+                found.append(
+                    FoundSection(
+                        rule_name=rule.name,
+                        matched_text=text,
+                        paragraph_index=virtual_idx,
+                        is_forbidden=rule.forbidden,
+                        is_required=rule.required,
+                        is_core=rule.is_core,
+                    )
+                )
+                break
 
         for para in self.parser.paragraphs:
             text = para.text.strip()
@@ -319,8 +369,83 @@ class StructureChecker:
 
         return found
 
+    def _extract_sdt_heading_candidates(self) -> list[tuple[str, int]]:
+        """
+        Ambil paragraf heading dari SDT nodes di body XML (mis. TOC field Word).
+        Hanya paragraf dengan style name mengandung 'heading' yang diambil —
+        mengecualikan entri TOC (style 'TOC1', 'TOC2', dll.).
+        Mengembalikan (teks, virtual_index) dengan virtual_index negatif agar
+        SDT headings ditempatkan sebelum semua paragraf normal dalam ordering.
+        """
+        try:
+            from docx.oxml.ns import qn
+            body = self.parser.doc.element.body
+            results: list[tuple[str, int]] = []
+            virtual_idx = -10000
+            for child in body:
+                tag = child.tag.split("}")[1] if "}" in child.tag else child.tag
+                if tag != "sdt":
+                    continue
+                for p in child.iter(qn("w:p")):
+                    pStyle = p.find(".//" + qn("w:pStyle"))
+                    style_val = pStyle.get(qn("w:val"), "") if pStyle is not None else ""
+                    if "heading" not in style_val.lower():
+                        continue
+                    text = "".join(wt.text or "" for wt in p.iter(qn("w:t"))).strip()
+                    if text:
+                        results.append((text, virtual_idx))
+                        virtual_idx += 1
+            return results
+        except Exception:
+            return []
+
     # ------------------------------------------------------------------------
-    # Step 2: Cari section wajib yang hilang
+    # Step 2: Validasi format penulisan judul BAB
+    # ------------------------------------------------------------------------
+
+    _BAB_NUM_PATTERN = re.compile(r"^BAB\s+([IVXLCM0-9]+)([.\s]|$)", re.IGNORECASE)
+    _ROMAN_PATTERN = re.compile(r"^[IVXLCM]+$", re.IGNORECASE)
+
+    def _check_bab_format(self, found: list[FoundSection]) -> list[FormatViolation]:
+        """
+        Pastikan judul BAB menggunakan angka Arab (bukan Romawi).
+        Titik setelah nomor bab opsional — "BAB 1." dan "BAB 1 " sama-sama valid.
+        Yang tidak diperbolehkan: "BAB I.", "BAB IV.", dsb.
+        """
+        violations = []
+        for section in found:
+            if section.is_forbidden:
+                continue
+            if not section.rule_name.upper().startswith("BAB "):
+                continue
+
+            norm = _normalize(section.matched_text)
+            m = self._BAB_NUM_PATTERN.match(norm)
+            if not m:
+                continue
+
+            num_str = m.group(1).upper()
+            if not self._ROMAN_PATTERN.match(num_str):
+                continue
+
+            violations.append(
+                FormatViolation(
+                    rule_name=section.rule_name,
+                    matched_text=section.matched_text,
+                    paragraph_index=section.paragraph_index,
+                    expected_format=section.rule_name,
+                    issues=["gunakan angka Arab (bukan angka Romawi)"],
+                    message=(
+                        f"Format judul bab tidak sesuai: '{section.matched_text}' "
+                        f"— gunakan angka Arab (bukan angka Romawi). "
+                        f"Format yang benar: '{section.rule_name}'."
+                    ),
+                )
+            )
+        return violations
+
+    # ------------------------------------------------------------------------
+    # Step 3: Cari section wajib yang hilang
     # ------------------------------------------------------------------------
 
     def _find_missing_required(
@@ -448,6 +573,7 @@ class StructureChecker:
             result.forbidden_found
             or result.missing_required
             or result.out_of_order
+            or result.format_violations
         )
         result.status = "fail" if has_fail else "pass"
 
@@ -485,5 +611,14 @@ class StructureChecker:
                         f"{o.message} "
                         f"{loc(o.actual_earlier_index)} vs {loc(o.actual_later_index)}"
                     ),
+                )
+            )
+
+        # Format violations (angka Arab wajib, titik opsional)
+        for fv in result.format_violations:
+            result.messages.append(
+                CheckMessage(
+                    level="fail",
+                    text=f"{fv.message} {loc(fv.paragraph_index)}",
                 )
             )

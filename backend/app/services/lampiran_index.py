@@ -41,8 +41,8 @@ from app.services.biodata_date_checker import (
 
 _V_NS = "urn:schemas-microsoft-com:vml"
 
-# Heading "LAMPIRAN" (batas awal section) — sama dengan checker.
-_LAMPIRAN_SECTION_RE = re.compile(r"^\s*LAMPIRAN\s*$", re.IGNORECASE)
+# Heading "LAMPIRAN" atau "LAMPIRAN-LAMPIRAN" (batas awal section).
+_LAMPIRAN_SECTION_RE = re.compile(r"^\s*LAMPIRAN(?:-LAMPIRAN)?\s*$", re.IGNORECASE)
 # "Lampiran N" (angka atau romawi) — batas tiap sub-lampiran.
 _LAMPIRAN_N_RE = re.compile(r"\blampiran\s+(\d+|[IVXLC]+)\b", re.IGNORECASE)
 # Heading lampiran similaritas (untuk berhenti sebelum segment similaritas).
@@ -136,9 +136,16 @@ class LampiranOcrIndex:
     # --------------------------------------------------------------- segmentasi
 
     def find_section_start(self) -> Optional[int]:
-        """Heading 'LAMPIRAN' (is_heading) — batas awal section lampiran."""
+        """Heading 'LAMPIRAN' / 'LAMPIRAN-LAMPIRAN' — batas awal section lampiran.
+        Terima heading style ATAU teks all-uppercase (kasus style Body Text)."""
         for p in self.parser.paragraphs:
-            if _LAMPIRAN_SECTION_RE.match(p.text.strip()) and p.is_heading:
+            t = p.text.strip()
+            if not _LAMPIRAN_SECTION_RE.match(t):
+                continue
+            if p.is_heading:
+                return p.index
+            letters = [c for c in t if c.isalpha()]
+            if letters and sum(1 for c in letters if c.isupper()) / len(letters) >= 0.9:
                 return p.index
         return None
 

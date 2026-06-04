@@ -368,7 +368,8 @@ def _run_pkm_kc_like(
     log_label: str,
 ) -> dict[str, Any]:
     """
-    Pipeline 11-step yang dipakai bersama PKM-KC, PKM-RE, dan PKM-RSH.
+    Pipeline 11-step yang dipakai bersama semua skema PKM pendanaan
+    (KC, RE, RSH, K, KI, PI, PM, VGK).
     schema_suffix dipakai untuk pilih factory: for_pkm_{suffix}.
     """
     s = schema_suffix.lower()
@@ -550,144 +551,14 @@ def _run_pkm_kc_like(
 
 
 def _run_pkm_vgk(parser: DocxParser) -> dict[str, Any]:
-    schema = get_pkm_vgk_proposal_rules()
-    budget_rules = get_pkm_vgk_budget_rules()
-    results: dict[str, Any] = {}
-    statuses: list[str] = []
-
-    # 1. Structure
-    structure_result = None
-    try:
-        structure_result = StructureChecker(parser, schema).check()
-        results["structure"] = structure_result.to_dict()
-        statuses.append(_extract_status(results["structure"]))
-    except Exception as e:
-        results["structure"] = _module_error_payload(e)
-        statuses.append("error")
-
-    # 2. Physical Sheet
-    _physical_result = None
-    try:
-        _physical_result = PhysicalSheetCounter(parser, schema).check()
-        results["physical_sheet"] = _physical_result.to_dict()
-        statuses.append(_extract_status(results["physical_sheet"]))
-    except Exception as e:
-        results["physical_sheet"] = _module_error_payload(e)
-        statuses.append("error")
-
-    # 3. Format (bagian inti: Bab 1 s.d. sebelum Lampiran)
-    try:
-        if _physical_result and not _physical_result.pdf_path:
-            _physical_result.pdf_path = _render_pdf_for_format(str(parser.file_path))
-        _pdf_texts = _load_pdf_sheet_texts(_physical_result) if _physical_result else None
-        r = FormatChecker(parser, schema=schema, pdf_sheet_texts=_pdf_texts).check(
-            start_para_idx=_find_core_start_idx(structure_result)
-        )
-        results["format"] = r.to_dict()
-        statuses.append(_extract_status(results["format"]))
-    except Exception as e:
-        results["format"] = _module_error_payload(e)
-        statuses.append("error")
-
-    # 4. Page Numbering
-    try:
-        r = PageNumberingChecker(parser, schema).check()
-        results["page_numbering"] = r.to_dict()
-        statuses.append(_extract_status(results["page_numbering"]))
-    except Exception as e:
-        results["page_numbering"] = _module_error_payload(e)
-        statuses.append("error")
-
-    # 5. Budget
-    try:
-        r = BudgetAuditor(parser, budget_rules).check()
-        results["budget"] = r.to_dict()
-        statuses.append(_extract_status(results["budget"]))
-    except Exception as e:
-        results["budget"] = _module_error_payload(e)
-        statuses.append("error")
-
-    # 6. Reference
-    try:
-        r = ReferenceValidator(parser, schema).check()
-        results["reference"] = r.to_dict()
-        statuses.append(_extract_status(results["reference"]))
-    except Exception as e:
-        results["reference"] = _module_error_payload(e)
-        statuses.append("error")
-
-    # 7. Luaran (khusus PKM-VGK)
-    try:
-        r = LuaranChecker.for_pkm_vgk(parser).check()
-        results["luaran"] = r.to_dict()
-        statuses.append(_extract_status(results["luaran"]))
-    except Exception as e:
-        results["luaran"] = _module_error_payload(e)
-        statuses.append("error")
-
-    # 8. Lampiran (khusus PKM-VGK) — text scan + OCR fallback Vision pada gambar
-    lampiran_index = LampiranOcrIndex(parser)
-    try:
-        r = LampiranChecker.for_pkm_vgk(parser).check(
-            index=lampiran_index,
-            require_funding_letter=_funding_letter_required(results),
-        )
-        results["lampiran"] = r.to_dict()
-        statuses.append(_extract_status(results["lampiran"]))
-    except Exception as e:
-        results["lampiran"] = _module_error_payload(e)
-        statuses.append("error")
-
-    # 9. Tanggal biodata — OCR scoped (biodata + surat pernyataan), reuse cache.
-    try:
-        r = BiodataDateChecker.for_pkm_vgk(parser).check(index=lampiran_index)
-        results["biodata_date"] = r.to_dict()
-        statuses.append(_extract_status(results["biodata_date"]))
-    except Exception as e:
-        results["biodata_date"] = _module_error_payload(e)
-        statuses.append("error")
-
-    # 9b. Format Surat Pernyataan Ketua — reuse OCR cache.
-    try:
-        r = SuratPernyataanChecker.for_pkm_vgk(parser).check(index=lampiran_index)
-        results["surat_pernyataan"] = r.to_dict()
-        statuses.append(_extract_status(results["surat_pernyataan"]))
-    except Exception as e:
-        results["surat_pernyataan"] = _module_error_payload(e)
-        statuses.append("error")
-
-    # 9c. Deteksi tanda tangan crop/paste pada lampiran.
-    try:
-        r = SignatureCropChecker(parser).check(index=lampiran_index)
-        results["signature_crop"] = r.to_dict()
-        statuses.append(_extract_status(results["signature_crop"]))
-    except Exception as e:
-        results["signature_crop"] = _module_error_payload(e)
-        statuses.append("error")
-
-    # 10. Jadwal Kegiatan (Bar chart 3-4 bulan untuk PKM-VGK).
-    try:
-        r = ScheduleChecker.for_pkm_vgk(parser).check()
-        results["schedule"] = r.to_dict()
-        statuses.append(_extract_status(results["schedule"]))
-    except Exception as e:
-        results["schedule"] = _module_error_payload(e)
-        statuses.append("error")
-
-    # 11. Hasil uji similaritas ≤ 25% — OCR gambar similaritas.
-    try:
-        r = SimilarityChecker.for_pkm_vgk(parser).check()
-        results["similarity"] = r.to_dict()
-        statuses.append(_extract_status(results["similarity"]))
-    except Exception as e:
-        results["similarity"] = _module_error_payload(e)
-        statuses.append("error")
-
-    # Pindahkan undetected similarity ke pesan lampiran (kalau lampiran missing).
-    _move_similarity_undetected_to_lampiran(results, statuses)
-
-    results["overall_status"] = _aggregate_status(statuses)
-    return results
+    """PKM-VGK runner — pipeline sama dengan PKM-KC."""
+    return _run_pkm_kc_like(
+        parser,
+        schema=get_pkm_vgk_proposal_rules(),
+        budget_rules=get_pkm_vgk_budget_rules(),
+        schema_suffix="vgk",
+        log_label="PKM-VGK",
+    )
 
 
 # ============================================================================
@@ -786,6 +657,15 @@ def _run_pkm_ai(parser: DocxParser) -> dict[str, Any]:
         statuses.append(_extract_status(results["lampiran"]))
     except Exception as e:
         results["lampiran"] = _module_error_payload(e)
+        statuses.append("error")
+
+    # 7a. Tanggal biodata — TT 9 Mar–9 Apr 2026, reuse OCR cache.
+    try:
+        r = BiodataDateChecker.for_pkm_ai(parser).check(index=lampiran_index)
+        results["biodata_date"] = r.to_dict()
+        statuses.append(_extract_status(results["biodata_date"]))
+    except Exception as e:
+        results["biodata_date"] = _module_error_payload(e)
         statuses.append("error")
 
     # 7b. Format Surat Pernyataan Ketua — reuse OCR cache.

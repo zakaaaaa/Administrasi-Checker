@@ -1,13 +1,11 @@
 """
 ScheduleRules — konfigurasi aturan tabel "Jadwal Kegiatan" (BAB 4) per skema.
 
-Acuan format diturunkan dari template `format tabel.docx`:
+Yang dicek:
+- Rentang bulan (wajib tepat required_months bulan)
+- Penanggung Jawab terisi di tiap baris kegiatan
 
-    | No | Jadwal Kegiatan | Bulan (1 2 3 4) | Penanggung Jawab |
-
-Seperti budget_rules.py, aturan di-encode sebagai data (bukan menyimpan contoh
-dokumen "yang benar"). ScheduleChecker memvalidasi tabel dokumen terhadap rules
-ini.
+Nama kolom bebas — tidak divalidasi.
 """
 
 from __future__ import annotations
@@ -20,20 +18,14 @@ from typing import Optional
 class ScheduleTableRules:
     """Aturan satu tabel jadwal kegiatan."""
     schema_label: str                       # "PKM-KC", dst.
-    # Header kolom logis (urut), setelah merged-cell dinormalkan.
-    expected_headers: list[str] = field(default_factory=list)
-    strict_headers: bool = True             # header wajib persis sama (tidak boleh sinonim, mis. "PIC")
     required_months: int = 4                # jumlah kolom bulan wajib (tepat)
     require_pic_filled: bool = True         # tiap kegiatan wajib punya penanggung jawab
     pic_severity: str = "warning"           # severity jika sel penanggung jawab kosong
 
 
 def get_pkm_kc_schedule_rules() -> ScheduleTableRules:
-    """Aturan tabel jadwal kegiatan PKM-KC 2026 (acuan: format tabel.docx)."""
     return ScheduleTableRules(
         schema_label="PKM-KC",
-        expected_headers=["No", "Jadwal Kegiatan", "Bulan", "Penanggung Jawab"],
-        strict_headers=True,
         required_months=4,
         require_pic_filled=True,
         pic_severity="warning",

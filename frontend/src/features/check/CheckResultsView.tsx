@@ -58,10 +58,7 @@ function isSummaryLine(text: string): boolean {
 }
 
 function isBalanceSummary(text: string): boolean {
-  return (
-    /\d+ sitasi di teks tidak ditemukan/i.test(text) ||
-    /tidak pernah disitasi di body teks/i.test(text)
-  );
+  return /\d+ sitasi di teks tidak ditemukan/i.test(text);
 }
 
 // Peta kalimat predefined per modul
@@ -178,10 +175,9 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
       if (/indent|indentasi/.test(m))
         return 'Kesalahan indentasi paragraf berlebihan (paragraf menggeser teks ke kanan)';
       if (/italic|asing/.test(m)) {
-        // Ekstrak daftar kata asing dari backend: "...asing (word1, word2) tapi..."
-        const wordsMatch = masalah.match(/\(([^)]+)\)/);
-        const words = wordsMatch ? ` (${wordsMatch[1]})` : '';
-        return `Paragraf memuat kata asing${words} namun belum italic`;
+        const wordsMatch = masalah.match(/"([^"]+)"/);
+        const words = wordsMatch ? ` "${wordsMatch[1]}"` : '';
+        return `Kesalahan penulisan kata asing tidak dicetak miring${words}`;
       }
       return masalah;
     }
@@ -351,6 +347,12 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
 
 // Reformat pesan Daftar Pustaka ke kalimat yang lebih deskriptif
 function formatReferenceMessage(masalah: string): string {
+  // Sitasi in-text tanpa koma: "Format sitasi in-text tidak sesuai Harvard: '(Darlan 2022)' — ..."
+  const noCommaMatch = masalah.match(/Format sitasi in-text tidak sesuai Harvard:\s*'(\([^)]+\))'/i);
+  if (noCommaMatch) {
+    const inner = noCommaMatch[1].replace(/^\(|\)$/g, ''); // "(Darlan 2022)" → "Darlan 2022"
+    return `Kesalahan format sitasi "${inner}" tidak sesuai format harvard`;
+  }
   // Urutan alfabetis: "'Author1' muncul setelah 'Author2' (seharusnya sebelum)."
   const orderMatch = masalah.match(/'([^']+)'\s+muncul setelah\s+'([^']+)'/i);
   if (orderMatch) {

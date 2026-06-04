@@ -150,6 +150,10 @@ class BiodataDateChecker:
     def for_pkm_gft(cls, parser: DocxParser) -> "BiodataDateChecker":
         return cls(parser, "PKM-GFT")
 
+    @classmethod
+    def for_pkm_ai(cls, parser: DocxParser) -> "BiodataDateChecker":
+        return cls(parser, "PKM-AI")
+
     # -------------------------------------------------------------------------
     # Public
     # -------------------------------------------------------------------------
@@ -196,8 +200,9 @@ class BiodataDateChecker:
                 result.messages.append(CheckMessage(
                     level="fail",
                     text=(
-                        f"Tanggal '{raw.strip()}' di lampiran biodata tidak valid. "
-                        f"Harus antara 9 Maret 2026 s.d. 9 April 2026."
+                        f"Kesalahan tanggal/bulan/tahun di lampiran biodata, "
+                        f"harus antara 9 Maret s.d. 9 April 2026, "
+                        f"namun di biodata \"{raw.strip()}\""
                     ),
                 ))
         else:

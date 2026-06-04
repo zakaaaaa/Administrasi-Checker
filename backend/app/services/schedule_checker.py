@@ -1,18 +1,14 @@
 """
 ScheduleChecker — validasi tabel "Jadwal Kegiatan" (BAB 4) PKM-KC/PKM-VGK.
 
-Yang dicek (acuan: format tabel.docx):
-1. Struktur & penulisan header kolom — wajib persis: No, Jadwal Kegiatan,
-   Bulan, Penanggung Jawab. Tidak boleh sinonim (mis. "PIC" untuk Penanggung
-   Jawab, "Jenis Kegiatan" untuk Jadwal Kegiatan).
-2. Rentang bulan ≤ max_months (default 4).
-3. Tiap baris kegiatan punya Penanggung Jawab terisi.
+Yang dicek:
+1. Rentang bulan — wajib tepat required_months bulan.
+2. Tiap baris kegiatan punya Penanggung Jawab terisi.
+
+Nama kolom bebas, tidak divalidasi.
 
 Catatan deteksi:
-- Tabel jadwal dilokasi lewat tanda-tangan header ("BULAN"/"KEGIATAN"),
-  bukan urutan dokumen — meniru is_bab4_rab_table di budget_table_parser.
-  Anchor sengaja TIDAK memakai "Penanggung Jawab" supaya tabel tetap ketemu
-  meski label kolomnya yang justru salah tulis (itu yang sedang dicek).
+- Tabel jadwal dilokasi lewat tanda-tangan header ("BULAN"/"KEGIATAN").
 - Merged cell membuat python-docx menduplikasi teks sel ke beberapa kolom
   grid; header dinormalkan dengan dedup nilai berurutan yang sama.
 """
@@ -133,8 +129,7 @@ class ScheduleChecker:
                 level="warning",
                 text=(
                     f"Tabel jadwal kegiatan {label} tidak terdeteksi otomatis — "
-                    f"periksa manual. Format wajib: "
-                    f"{', '.join(self.rules.expected_headers)}."
+                    f"periksa manual."
                 ),
             ))
             return result
@@ -142,7 +137,7 @@ class ScheduleChecker:
         grid = self._build_grid(table)
 
         issues: list[CheckMessage] = []
-        issues += self._check_headers(table, grid)
+        issues += self._check_pic_header(table, grid)
         issues += self._check_months(table, grid)
         if self.rules.require_pic_filled:
             issues += self._check_pic_filled(table, grid)
@@ -154,8 +149,8 @@ class ScheduleChecker:
             result.messages.append(CheckMessage(
                 level="pass",
                 text=(
-                    f"Tabel jadwal kegiatan {label} sesuai format "
-                    f"({', '.join(self.rules.expected_headers)}, tepat {self.rules.required_months} bulan)."
+                    f"Tabel jadwal kegiatan {label} sesuai "
+                    f"(tepat {self.rules.required_months} bulan, Penanggung Jawab terisi)."
                 ),
             ))
         return result
@@ -189,30 +184,22 @@ class ScheduleChecker:
         return [grid.get((r, c), "") for c in range(table.cols)]
 
     # -------------------------------------------------------------------------
-    # 1. Header kolom (strict)
+    # 1. Nama kolom Penanggung Jawab
     # -------------------------------------------------------------------------
 
-    def _check_headers(self, table: TableInfo, grid: dict) -> list[CheckMessage]:
-        logical = _dedup_consecutive(self._row_cells(table, grid, 0))
-        expected = self.rules.expected_headers
-        expected_norm = {_norm(e) for e in expected}
-        logical_norm = {_norm(g) for g in logical}
-
-        # Header sudah sesuai (cocok sebagai himpunan) → tidak ada masalah.
-        if logical_norm == expected_norm:
+    def _check_pic_header(self, table: TableInfo, grid: dict) -> list[CheckMessage]:
+        """Kolom terakhir wajib bernama 'Penanggung Jawab' (nama kolom lain bebas)."""
+        last = table.cols - 1
+        header_cells = _dedup_consecutive(self._row_cells(table, grid, 0))
+        last_header = _norm(header_cells[-1]) if header_cells else ""
+        if last_header == "penanggung jawab":
             return []
-
-        # Satu pesan ringkas: tunjukkan header yang TERTULIS vs yang WAJIB, supaya
-        # jelas bedanya (mis. dokumen menulis "Jenis Kegiatan", wajibnya
-        # "Jadwal Kegiatan") tanpa pesan terpisah yang membingungkan.
-        written_join = ", ".join(logical) if logical else "(tidak terbaca)"
-        expected_join = ", ".join(expected)
+        written = header_cells[-1] if header_cells else "(tidak terbaca)"
         return [CheckMessage(
             level="fail",
             text=(
-                "Penulisan header kolom tabel jadwal tidak sesuai.\n"
-                f"Tertulis: {written_join}\n"
-                f"Wajib ditulis persis: {expected_join}"
+                f"Kesalahan format Tabel Jadwal Kegiatan, Kolom Penanggung Jawab "
+                f"tidak boleh ditulis \"{written}\""
             ),
         )]
 

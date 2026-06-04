@@ -55,7 +55,7 @@ _REQUIRED_LAMPIRAN_KC: list[tuple[int, list[str], str]] = [
     (2, ["justifikasi", "anggaran"],                     "Justifikasi Anggaran Kegiatan"),
     (3, ["susunan", "tim", "pengusul", "pembagian"],     "Susunan Tim Pengusul dan Pembagian Tugas"),
     (4, ["pernyataan", "ketua"],                         "Surat Pernyataan Ketua Tim Pengusul"),
-    (5, ["gambaran", "teknologi"],                       "Gambaran Teknologi yang akan Dikembangkan"),
+    (5, ["gambar", "teknologi"],                         "Gambaran Teknologi yang akan Dikembangkan"),
     (6, ["uji", "similar"],                              "Hasil Uji Periksa Similaritas Proposal"),
 ]
 
@@ -157,7 +157,8 @@ _REQUIRED_LAMPIRAN_GFT: list[tuple[int, list[str], str]] = [
 # =============================================================================
 
 # Heading LAMPIRAN (batas awal section lampiran di body)
-_LAMPIRAN_SECTION_RE = re.compile(r"^\s*LAMPIRAN\s*$", re.IGNORECASE)
+# Cocok "LAMPIRAN" dan "LAMPIRAN-LAMPIRAN" (variasi penulisan di lapangan).
+_LAMPIRAN_SECTION_RE = re.compile(r"^\s*LAMPIRAN(?:-LAMPIRAN)?\s*$", re.IGNORECASE)
 # Heading "DAFTAR LAMPIRAN" / "DAFTAR LAMPIRAN-LAMPIRAN" di depan dokumen
 _DAFTAR_LAMPIRAN_RE = re.compile(r"^\s*daftar\s+lampiran(?:-lampiran)?\s*$", re.IGNORECASE)
 # Pattern "Lampiran N" — N angka atau romawi
@@ -426,7 +427,14 @@ class LampiranChecker:
     def _find_lampiran_section_start(self) -> Optional[int]:
         for p in self.parser.paragraphs:
             t = p.text.strip()
-            if _LAMPIRAN_SECTION_RE.match(t) and p.is_heading:
+            if not _LAMPIRAN_SECTION_RE.match(t):
+                continue
+            # Terima jika heading style ATAU seluruh hurufnya uppercase
+            # (kasus "LAMPIRAN-LAMPIRAN" dengan style Body Text).
+            if p.is_heading:
+                return p.index
+            letters = [c for c in t if c.isalpha()]
+            if letters and sum(1 for c in letters if c.isupper()) / len(letters) >= 0.9:
                 return p.index
         return None
 
