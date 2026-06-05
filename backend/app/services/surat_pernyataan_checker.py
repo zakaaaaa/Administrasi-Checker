@@ -186,6 +186,10 @@ class SuratPernyataanChecker:
 
         skema_ok = _schema_mentioned(nc, self.schema_code)
         materai_ok = _materai_mentioned(nc)
+        # Fallback visual: OCR sering gagal baca teks stiker materai karena
+        # kontras rendah (teks pada background merah-oranye). Deteksi warna.
+        if not materai_ok and rids:
+            materai_ok = _detect_materai_visually(index, rids)
 
         # Sinyal "isi surat terbaca": minimal satu elemen ISI (field/skema/materai)
         # terdeteksi. Kalau NOL → kemungkinan scan tak terbaca OCR → jangan
@@ -278,6 +282,45 @@ def _subseq(tokens: list[str], words: list[str]) -> bool:
         return False
     it = iter(words)
     return all(any(w == tok for w in it) for tok in tokens)
+
+
+def _detect_materai_visually(index, rids: list[str]) -> bool:
+    """
+    Fallback visual: cari piksel merah-oranye khas stiker materai Rp10.000
+    di area tanda tangan (50–90% vertikal gambar).
+
+    Kontras teks di stiker rendah (putih/hitam pada background merah) → OCR
+    sering gagal baca "METERAI TEMPEL". Warna latar stiker justru unik dan
+    mudah dideteksi dengan analisis channel RGB sederhana.
+
+    Threshold 0.3%: stiker ~120×120 px di gambar 1240×1755 menghasilkan ≈0.6%
+    piksel merah-oranye setelah downsample; halaman putih/teks hitam ≈ 0%.
+    """
+    try:
+        from PIL import Image
+        import numpy as np
+    except ImportError:
+        return False
+
+    for rid in rids:
+        img = index._image_by_rid(rid)
+        if img is None:
+            continue
+        try:
+            w, h = img.size
+            crop = img.crop((0, int(h * 0.50), w, int(h * 0.90)))
+            small_w = max(1, crop.width // 4)
+            small_h = max(1, crop.height // 4)
+            small = crop.resize((small_w, small_h))
+            arr = np.array(small.convert("RGB"), dtype=np.int16)
+            r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+            red_mask = (r > 160) & (r - g > 30) & (r - b > 60)
+            ratio = red_mask.sum() / red_mask.size
+            if ratio > 0.003:
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def _materai_mentioned(nc: str) -> bool:

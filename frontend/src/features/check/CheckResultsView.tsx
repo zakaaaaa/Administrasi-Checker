@@ -61,6 +61,20 @@ function isBalanceSummary(text: string): boolean {
   return /\d+ sitasi di teks tidak ditemukan/i.test(text);
 }
 
+function sectionToDisplay(section: string): string {
+  const up = section.trim().toUpperCase();
+  if (up === 'LAMPIRAN') return 'Isi Lampiran';
+  if (up === 'DAFTAR LAMPIRAN' || up === 'DAFTAR LAMPIRAN-LAMPIRAN') return 'Daftar Lampiran';
+  if (up === 'DAFTAR PUSTAKA') return 'Daftar Pustaka';
+  const babMatch = section.match(/^(BAB\s+[\d]+\.?\s*)([\s\S]*)$/i);
+  if (babMatch) {
+    const prefix = babMatch[1].trim().toUpperCase();
+    const rest = babMatch[2].trim().split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+    return `${prefix} ${rest}`;
+  }
+  return section.replace(/\b\w+/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+}
+
 // Peta kalimat predefined per modul
 function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): string {
   const m = masalah.toLowerCase();
@@ -76,11 +90,7 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
       const sectionMatch = masalah.match(/'([^']+)'/);
       const section = sectionMatch ? sectionMatch[1] : '';
       if (/tidak ditemukan di dokumen/i.test(masalah)) {
-        const su = section.toUpperCase();
-        // Khusus DAFTAR LAMPIRAN: tanpa tanda kurung (sesuai permintaan)
-        if (su === 'DAFTAR LAMPIRAN' || su === 'DAFTAR LAMPIRAN-LAMPIRAN')
-          return `Kesalahan tidak ditemukan ${section}`;
-        return `Kesalahan tidak ditemukan (${section})`;
+        return `Tidak Ditemukan ${sectionToDisplay(section)}`;
       }
       return `Kesalahan Judul Bab (${section}) tidak sesuai panduan ${schemaCode} 2026`;
     }
@@ -176,8 +186,8 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
         return 'Kesalahan indentasi paragraf berlebihan (paragraf menggeser teks ke kanan)';
       if (/italic|asing/.test(m)) {
         const wordsMatch = masalah.match(/"([^"]+)"/);
-        const words = wordsMatch ? ` "${wordsMatch[1]}"` : '';
-        return `Kesalahan penulisan kata asing tidak dicetak miring${words}`;
+        const words = wordsMatch ? ` '${wordsMatch[1]}'` : '';
+        return `Terdapat kata asing${words} sebaiknya dicetak miring`;
       }
       return masalah;
     }
@@ -211,7 +221,7 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
       if (/melebihi batas|melebihi.*lembar|lembar.*melebihi/i.test(m)) {
         const maxMatch = masalah.match(/melebihi batas (\d+)/i);
         const max = maxMatch ? maxMatch[1] : '10';
-        return `Kesalahan jumlah halaman inti yang melebihi ${max} halaman`;
+        return `Jumlah Halaman Inti Melebihi ${max} Halaman`;
       }
       const duplikat = masalah.match(/Nomor halaman '(\d+)' duplikat — muncul di lembar fisik:\s*([\d,\s]+)/i);
       if (duplikat) {
@@ -246,8 +256,9 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
       const luaranSchema = schemaMatch ? schemaMatch[1].toUpperCase() : 'PKM';
       if (/yang tidak ditemukan:/i.test(m)) {
         const missingMatch = masalah.match(/yang tidak ditemukan:\s*([^.]+)/i);
-        const missing = missingMatch ? missingMatch[1].trim() : '';
-        return `Kesalahan luaran ${luaranSchema} tidak lengkap${missing ? ` ${missing}` : ''}`;
+        const missingRaw = missingMatch ? missingMatch[1].trim().replace(/'/g, '').trim() : '';
+        const missing = missingRaw.replace(/\b\w/g, c => c.toUpperCase());
+        return `Luaran ${luaranSchema} Tidak Lengkap${missing ? `: ${missing}` : ''}`;
       }
       if (/section.*tidak ditemukan|tidak ditemukan.*dokumen/i.test(m))
         return `Kesalahan section Luaran tidak ditemukan di dokumen ${luaranSchema}`;
@@ -288,14 +299,19 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
     }
 
     case 'surat_pernyataan': {
-      // Pesan backend (warning) sudah berupa kalimat user-facing siap tampil
-      // (termasuk daftar multiline "- ..."). Tampilkan apa adanya.
-      return masalah;
+      return masalah
+        .replace(/^Kesalahan\s+/i, '')
+        .replace(/\s*pada isi surat\b/gi, '');
     }
 
     case 'biodata_date': {
       if (/tidak dapat terdeteksi/i.test(m))
         return 'Tanggal tanda tangan biodata tidak terdeteksi — periksa manual (harus 9 Maret s.d. 9 April 2026)';
+      if (/namun di biodata/i.test(m)) {
+        const dateMatch = masalah.match(/namun di biodata\s+"([^"]+)"/i);
+        const tgl = dateMatch ? dateMatch[1].trim() : '';
+        return `Tanggal Tanda Tangan di Biodata${tgl ? ` ${tgl}` : ''}`;
+      }
       if (/tidak valid/i.test(m)) {
         const dateMatch = masalah.match(/'([^']+)'/);
         const tgl = dateMatch ? dateMatch[1] : '';
@@ -305,7 +321,9 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
     }
 
     case 'signature_crop': {
-      return masalah;
+      const labelMatch = masalah.match(/pada\s+"([^"]+)"/i);
+      const label = labelMatch ? labelMatch[1] : 'Lampiran';
+      return `Tanda Tangan Hasil Croping/Timpa pada ${label}`;
     }
 
     case 'schedule': {
@@ -319,6 +337,11 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
         const cntMatch = masalah.match(/jumlah bulan pada tabel jadwal (\d+)/i);
         const cnt = cntMatch ? ` (terdeteksi ${cntMatch[1]} bulan)` : '';
         return `Kesalahan jumlah bulan tabel jadwal harus tepat 4 bulan${cnt}`;
+      }
+      if (/kolom penanggung jawab tidak boleh ditulis/i.test(m)) {
+        const writtenMatch = masalah.match(/tidak boleh ditulis\s+"([^"]+)"/i);
+        const written = writtenMatch ? ` ${writtenMatch[1]}` : '';
+        return `Kolom Penanggung Jawab Tidak Boleh Ditulis${written}`;
       }
       if (/penanggung jawab kosong/i.test(m)) {
         const noMatch = masalah.match(/nomor (\d+)/i);
@@ -348,9 +371,10 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
 // Reformat pesan Daftar Pustaka ke kalimat yang lebih deskriptif
 function formatReferenceMessage(masalah: string): string {
   // Sitasi in-text tanpa koma: "Format sitasi in-text tidak sesuai Harvard: '(Darlan 2022)' — ..."
-  const noCommaMatch = masalah.match(/Format sitasi in-text tidak sesuai Harvard:\s*'(\([^)]+\))'/i);
+  // atau tanpa kurung: "Format sitasi in-text tidak sesuai Harvard: 'Darlan 2022' — ..."
+  const noCommaMatch = masalah.match(/Format sitasi in-text tidak sesuai Harvard:\s*'(\(?[^')]+?\)?)'/i);
   if (noCommaMatch) {
-    const inner = noCommaMatch[1].replace(/^\(|\)$/g, ''); // "(Darlan 2022)" → "Darlan 2022"
+    const inner = noCommaMatch[1].replace(/^\(|\)$/g, '').trim(); // "(Darlan 2022)" → "Darlan 2022"
     return `Kesalahan format sitasi "${inner}" tidak sesuai format harvard`;
   }
   // Urutan alfabetis: "'Author1' muncul setelah 'Author2' (seharusnya sebelum)."
@@ -372,11 +396,22 @@ function formatBudgetMessage(masalah: string): string {
     const [, src, valRaw] = rekap;
     const val = valRaw.replace(/,/g, '.'); // Rp3,000,000 → Rp3.000.000 (format Indonesia)
     if (/belmawa/i.test(src))
-      return `Kesalahan nominal Belmawa pada Rekap Sumber Dana BAB 4 (terdeteksi ${val}, harus 6–8 juta)`;
+      return `Nominal Belmawa Pada Rekap Sumber Dana BAB 4 ${val}`;
     if (/perguruan tinggi/i.test(src))
-      return `Kesalahan nominal Perguruan Tinggi pada Rekap Sumber Dana BAB 4 (terdeteksi ${val}, harus lebih dari 0 dan maksimal 2 juta)`;
+      return `Nominal Rekap Sumber Dana Perguruan Tinggi pada BAB 4 ${val}`;
     if (/instansi lain/i.test(src))
-      return `Kesalahan nominal Instansi Lain pada Rekap Sumber Dana BAB 4 (terdeteksi ${val}, maksimal 1 juta)`;
+      return `Nominal Rekap Sumber Dana Instansi Lain pada BAB 4 ${val}`;
+  }
+
+  // Penjumlahan internal rekap (Belmawa+PT+Instansi ≠ baris Total rekap)
+  if (/Rekap Sumber Dana: penjumlahan/i.test(masalah))
+    return 'Jumlah Total Rekap Sumber Dana Tidak Sinkron';
+
+  // Kolom sumber dana per kategori ≠ rekap
+  const colSync = masalah.match(/Penjumlahan kolom\s+([\w\s]+?)\s+per kategori/i);
+  if (colSync) {
+    const src = colSync[1].trim();
+    return `Total Rekap Sumber Dana untuk ${src} Tidak Sinkron dengan Tabel per Kategori`;
   }
 
   // Cross-check: "Cross-check Bab 4 ↔ Lampiran 2 untuk 'Category': Bab 4 = RpX, Lampiran 2 = RpY, selisih RpZ"
@@ -437,14 +472,177 @@ function parseBalanceGroups(notes: string[]): BalanceGroup[] {
   return groups;
 }
 
+type SummaryDef = { label: string; detect: (items: ErrorItem[]) => boolean };
+
+const SUMMARY_DEFS: SummaryDef[] = [
+  {
+    label: 'Kesalahan terdapat lembar judul / halaman sampul / lembar pengesahan / ringkasan / abstrak di proposal',
+    detect: (items) =>
+      items.some(
+        (it) =>
+          it.module === 'structure' &&
+          /terdapat lembar judul|halaman sampul|pengesahan|ringkasan|abstrak/i.test(it.masalah),
+      ),
+  },
+  {
+    label: 'Kesalahan ukuran kertas bukan A4',
+    detect: (items) =>
+      items.some((it) => it.module === 'format' && /ukuran kertas/i.test(it.masalah)),
+  },
+  {
+    label: 'Kesalahan format paragraf tidak satu kolom',
+    detect: (items) =>
+      items.some((it) => it.module === 'format' && /\bkolom\b/i.test(it.masalah)),
+  },
+  {
+    label: 'Kesalahan tipe huruf tidak Times New Roman',
+    detect: (items) =>
+      items.some((it) => it.module === 'format' && /times new roman/i.test(it.masalah)),
+  },
+  {
+    label: 'Kesalahan ukuran huruf tidak 12',
+    detect: (items) =>
+      items.some((it) => it.module === 'format' && /ukuran huruf tidak 12/i.test(it.masalah)),
+  },
+  {
+    label: 'Kesalahan margin',
+    detect: (items) =>
+      items.some((it) => it.module === 'format' && /\bmargin\b/i.test(it.masalah)),
+  },
+  {
+    label: 'Kesalahan perataan teks / paragraf tidak rata kiri-kanan',
+    detect: (items) =>
+      items.some(
+        (it) => it.module === 'format' && /perataan|rata kiri-kanan/i.test(it.masalah),
+      ),
+  },
+  {
+    label: 'Kesalahan spasi teks / paragraf tidak 1,15',
+    detect: (items) =>
+      items.some((it) => it.module === 'format' && /spasi teks/i.test(it.masalah)),
+  },
+  {
+    label: 'Kesalahan tidak terdapat daftar isi',
+    detect: (items) =>
+      items.some((it) => it.module === 'structure' && /daftar isi/i.test(it.masalah)),
+  },
+  {
+    label: 'Kesalahan judul bab tidak sesuai panduan PKM 2026',
+    detect: (items) =>
+      items.some(
+        (it) =>
+          it.module === 'structure' &&
+          !/terdapat lembar judul|halaman sampul|pengesahan|ringkasan|abstrak|daftar isi|luaran wajib/i.test(
+            it.masalah,
+          ),
+      ),
+  },
+  {
+    label: 'Kesalahan nomor halaman',
+    detect: (items) =>
+      items.some(
+        (it) => it.module === 'page_numbering' && !/letak nomor halaman/i.test(it.masalah),
+      ),
+  },
+  {
+    label: 'Kesalahan letak nomor halaman',
+    detect: (items) =>
+      items.some(
+        (it) => it.module === 'page_numbering' && /letak nomor halaman/i.test(it.masalah),
+      ),
+  },
+  {
+    label: 'Kesalahan menuliskan 4 luaran wajib PKM di proposal pada Bab 1 Pendahuluan',
+    detect: (items) =>
+      items.some(
+        (it) =>
+          it.module === 'luaran' ||
+          (it.module === 'structure' && /luaran wajib/i.test(it.masalah)),
+      ),
+  },
+  {
+    label: 'Kesalahan format rekapitulasi rencana anggaran biaya',
+    detect: (items) =>
+      items.some(
+        (it) =>
+          it.module === 'budget' &&
+          !/belmawa|perguruan tinggi|instansi lain|justifikasi anggaran/i.test(it.masalah),
+      ),
+  },
+  {
+    label: 'Kesalahan nominal pengajuan anggaran ke Belmawa (6–8 juta)',
+    detect: (items) =>
+      items.some((it) => it.module === 'budget' && /belmawa/i.test(it.masalah)),
+  },
+  {
+    label: 'Kesalahan nominal dana pendampingan perguruan tinggi (tidak ada atau lebih dari 2 juta)',
+    detect: (items) =>
+      items.some((it) => it.module === 'budget' && /perguruan tinggi/i.test(it.masalah)),
+  },
+  {
+    label: 'Kesalahan dana pendampingan institusi lain (lebih dari 1 juta atau tidak menyertakan surat keterangan)',
+    detect: (items) =>
+      items.some((it) => it.module === 'budget' && /instansi lain/i.test(it.masalah)),
+  },
+  {
+    label: 'Kesalahan total anggaran pada tabel rekapitulasi anggaran tidak sama dengan justifikasi anggaran di lampiran',
+    detect: (items) =>
+      items.some((it) => it.module === 'budget' && /justifikasi anggaran/i.test(it.masalah)),
+  },
+  {
+    label: 'Kesalahan format jadwal kegiatan tidak sesuai lampiran 1 buku panduan PKM 2026',
+    detect: (items) =>
+      items.some(
+        (it) => it.module === 'schedule' && !/jumlah bulan|4 bulan/i.test(it.masalah),
+      ),
+  },
+  {
+    label: 'Kesalahan waktu pelaksanaan (tidak 3–4 bulan)',
+    detect: (items) =>
+      items.some(
+        (it) => it.module === 'schedule' && /jumlah bulan|4 bulan/i.test(it.masalah),
+      ),
+  },
+  {
+    label: 'Kesalahan jumlah halaman bagian inti proposal (Bab 1 Pendahuluan – Daftar Pustaka lebih dari 10 halaman)',
+    detect: (items) =>
+      items.some((it) => it.module === 'physical_sheet' && /melebihi/i.test(it.masalah)),
+  },
+  {
+    label: 'Kesalahan daftar pustaka (tidak Harvard style, urutan abjad, dan menguraikan nama penulis)',
+    detect: (items) => items.some((it) => it.module === 'reference'),
+  },
+  {
+    label: 'Kesalahan lampiran wajib (tidak lengkap sesuai bidang PKM yang diusulkan)',
+    detect: (items) => items.some((it) => it.module === 'lampiran'),
+  },
+  {
+    label: 'Kesalahan tanggal / bulan / tahun (tidak antara 9 Maret s.d. 9 April 2026)',
+    detect: (items) => items.some((it) => it.module === 'biodata_date'),
+  },
+  {
+    label: 'Kesalahan tanda tangan pengusul / pendamping / mitra (cropping lokal)',
+    detect: (items) => items.some((it) => it.module === 'signature_crop'),
+  },
+  {
+    label: 'Kesalahan surat pernyataan ketua tim pengusul (tidak sesuai format panduan PKM 2026)',
+    detect: (items) => items.some((it) => it.module === 'surat_pernyataan'),
+  },
+  {
+    label: 'Kesalahan hasil uji periksa similaritas proposal lebih dari 25%',
+    detect: (items) => items.some((it) => it.module === 'similarity'),
+  },
+];
+
 export function CheckResultsView({ result }: { result: CheckResults }) {
   const resultMap = result.results as Record<string, ModuleData | undefined>;
 
-  const { flatItems, budgetItems, referenceItems, balanceNotes } = useMemo(() => {
+  const { flatItems, budgetItems, referenceItems, balanceNotes, foreignWordsSaran } = useMemo(() => {
     const flat: ErrorItem[] = [];
     const budget: ErrorItem[] = [];
     const reference: ErrorItem[] = [];
     const balance: string[] = [];
+    const foreignWordsSaran: string[] = [];
 
     // Ambil kode skema dari structure result (mis. "KC" → "PKM-KC")
     const structureSchema = resultMap.structure?.schema?.code;
@@ -487,6 +685,10 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
         // Struktur Dokumen (akar masalah sama: ada cover di halaman 1).
         if (key === 'physical_sheet' && /Halaman pertama tidak memuat.*Daftar Isi/i.test(msg.text)) continue;
         const { lokasi, masalah } = parseMessage(msg.text);
+        if (key === 'format' && /\basing\b/i.test(masalah)) {
+          foreignWordsSaran.push(mapToSentence(key, masalah, schemaCode));
+          continue;
+        }
         const isBudgetRelokasiWarning =
           key === 'budget' && /Saran relokasi/i.test(masalah);
         const isBudgetNoPage =
@@ -574,15 +776,30 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
       budgetItems: budget,
       referenceItems: reference,
       balanceNotes: balance,
+      foreignWordsSaran,
     };
   }, [resultMap]);
 
   const allErrors = [...flatItems, ...budgetItems, ...referenceItems];
+  const activeSummaryDefs = SUMMARY_DEFS.filter((def) => def.detect(allErrors));
+  const flatItemsDetail = flatItems.filter(
+    (item) =>
+      !(
+        item.module === 'structure' &&
+        (/terdapat lembar judul/i.test(item.masalah) || /tidak terdapat daftar isi/i.test(item.masalah))
+      ),
+  );
   const failCount = allErrors.filter(e => e.level === 'fail' || e.level === 'error').length;
   const warnCount = allErrors.filter(e => e.level === 'warning').length;
   const balanceGroups = parseBalanceGroups(balanceNotes);
+  const foreignWordsGroup: BalanceGroup | null = foreignWordsSaran.length > 0
+    ? { header: 'Format', items: [...new Set(foreignWordsSaran)] }
+    : null;
+  const allSaranGroups = foreignWordsGroup
+    ? [...balanceGroups, foreignWordsGroup]
+    : balanceGroups;
 
-  if (allErrors.length === 0 && balanceGroups.length === 0) {
+  if (allErrors.length === 0 && allSaranGroups.length === 0) {
     return (
       <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-8 text-center">
         <p className="text-xl font-semibold text-emerald-700">Semua pengecekan lulus!</p>
@@ -605,35 +822,47 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
             <p className="text-sm font-semibold text-amber-700">{warnCount} perlu diperhatikan</p>
           </div>
         )}
-        {balanceGroups.length > 0 && (
-          <div className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-2.5">
-            <p className="text-sm font-semibold text-sky-700">{balanceGroups.length} saran sitasi</p>
+        {allSaranGroups.length > 0 && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5">
+            <p className="text-sm font-semibold text-amber-700">{allSaranGroups.length} saran perbaikan</p>
           </div>
         )}
       </div>
 
-      {/* Flat list — kesalahan umum, per halaman */}
-      {flatItems.length > 0 && (
-        <div className="space-y-2">
-          {flatItems.map((item, i) => (
-            <ErrorRow key={i} item={item} showPage />
-          ))}
+      {/* Ringkasan Utama */}
+      <RingkasanUtama defs={activeSummaryDefs} />
+
+      {/* Detail Kesalahan */}
+      {(flatItemsDetail.length > 0 || budgetItems.length > 0 || referenceItems.length > 0 || allSaranGroups.length > 0) && (
+        <div className="space-y-6">
+          <p className="text-xs font-bold uppercase tracking-widest text-foreground-subtle">
+            Detail Kesalahan
+          </p>
+
+          {/* Flat list — kesalahan umum, per halaman */}
+          {flatItemsDetail.length > 0 && (
+            <div className="space-y-2">
+              {flatItemsDetail.map((item, i) => (
+                <ErrorRow key={i} item={item} showPage />
+              ))}
+            </div>
+          )}
+
+          {/* Audit Anggaran — tanpa kolom halaman */}
+          {budgetItems.length > 0 && (
+            <GroupedSection label="Audit Anggaran" items={budgetItems} />
+          )}
+
+          {/* Daftar Pustaka */}
+          {referenceItems.length > 0 && (
+            <GroupedSection label="Daftar Pustaka" items={referenceItems} showPage />
+          )}
+
+          {/* Saran Perbaikan — balance notes sitasi */}
+          {allSaranGroups.length > 0 && (
+            <SaranPerbaikanSection groups={allSaranGroups} />
+          )}
         </div>
-      )}
-
-      {/* Audit Anggaran — tanpa kolom halaman */}
-      {budgetItems.length > 0 && (
-        <GroupedSection label="Audit Anggaran" items={budgetItems} />
-      )}
-
-      {/* Daftar Pustaka */}
-      {referenceItems.length > 0 && (
-        <GroupedSection label="Daftar Pustaka" items={referenceItems} showPage />
-      )}
-
-      {/* Saran Perbaikan — balance notes sitasi */}
-      {balanceGroups.length > 0 && (
-        <SaranPerbaikanSection groups={balanceGroups} />
       )}
     </div>
   );
@@ -678,6 +907,27 @@ function GroupedSection({ label, items, showPage = false }: { label: string; ite
   );
 }
 
+function RingkasanUtama({ defs }: { defs: SummaryDef[] }) {
+  if (defs.length === 0) return null;
+  return (
+    <div className="rounded-2xl border border-red-200 bg-red-50/50 p-6">
+      <p className="mb-4 text-xs font-bold uppercase tracking-widest text-red-500">
+        Ringkasan Utama — {defs.length} poin kesalahan
+      </p>
+      <ol className="space-y-2.5">
+        {defs.map((def, i) => (
+          <li key={i} className="flex items-baseline gap-3">
+            <span className="w-6 shrink-0 text-right font-mono text-sm font-semibold text-red-400">
+              {i + 1}.
+            </span>
+            <span className="text-sm font-medium leading-relaxed text-red-900">{def.label}</span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 function SaranPerbaikanSection({ groups }: { groups: BalanceGroup[] }) {
   return (
     <div>
@@ -686,13 +936,13 @@ function SaranPerbaikanSection({ groups }: { groups: BalanceGroup[] }) {
       </p>
       <div className="space-y-3">
         {groups.map((group, gi) => (
-          <div key={gi} className="rounded-2xl border border-sky-200 bg-sky-50/60 p-5">
-            <p className="mb-3 text-base font-semibold text-sky-800">{group.header}</p>
+          <div key={gi} className="rounded-2xl border border-amber-200 bg-amber-50/60 p-5">
+            <p className="mb-3 text-base font-semibold text-amber-800">{group.header}</p>
             {group.items.length > 0 && (
               <ul className="space-y-1.5">
                 {group.items.map((item, ii) => (
-                  <li key={ii} className="flex items-start gap-2 text-base text-sky-700">
-                    <span className="mt-0.5 shrink-0 font-mono text-sky-400">•</span>
+                  <li key={ii} className="flex items-start gap-2 text-base text-amber-700">
+                    <span className="mt-0.5 shrink-0 font-mono text-amber-400">•</span>
                     <span className="font-mono">{item}</span>
                   </li>
                 ))}

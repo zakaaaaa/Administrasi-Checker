@@ -821,22 +821,6 @@ class ReferenceValidator:
                             paragraph_index=c.paragraph_index,
                         )
                     )
-                elif c.author.lower() != partial.lower():
-                    # Prefix mirip tapi ejaan beda — jangan anggap sudah valid.
-                    if key in seen_intext_findings:
-                        continue
-                    seen_intext_findings.add(key)
-                    findings.append(
-                        BalanceFinding(
-                            direction="in_text_not_in_references",
-                            citation_or_entry=c.raw_text,
-                            detail=(
-                                f"Sitasi \"({c.author}, {c.year})\" tidak cocok persis "
-                                f"dengan nama di Daftar Pustaka \"{partial}\". Periksa ejaan penulis."
-                            ),
-                            paragraph_index=c.paragraph_index,
-                        )
-                    )
                 continue
             else:
                 if key in seen_intext_findings:
