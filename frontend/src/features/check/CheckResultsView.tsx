@@ -810,25 +810,6 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
 
   return (
     <div className="space-y-8">
-      {/* Summary badges */}
-      <div className="flex flex-wrap gap-3">
-        {failCount > 0 && (
-          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-2.5">
-            <p className="text-sm font-semibold text-red-700">{failCount} harus diperbaiki</p>
-          </div>
-        )}
-        {warnCount > 0 && (
-          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5">
-            <p className="text-sm font-semibold text-amber-700">{warnCount} perlu diperhatikan</p>
-          </div>
-        )}
-        {allSaranGroups.length > 0 && (
-          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5">
-            <p className="text-sm font-semibold text-amber-700">{allSaranGroups.length} saran perbaikan</p>
-          </div>
-        )}
-      </div>
-
       {/* Ringkasan Utama */}
       <RingkasanUtama defs={activeSummaryDefs} />
 
@@ -841,7 +822,8 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
               terlihat sebagai header kosong. */}
           {flatItemsDetail.length > 0 && (
             <div className="space-y-2">
-              <p className="text-xs font-semibold uppercase tracking-widest text-foreground-subtle">
+              <p className="flex items-center gap-1.5 text-[15px] font-semibold uppercase tracking-widest text-black">
+                <SectionIcon name="detail" />
                 Detail Kesalahan
               </p>
               {flatItemsDetail.map((item, i) => (
@@ -870,20 +852,101 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
   );
 }
 
+// Ikon severity: bentuk berbeda per tingkat (bukan hanya warna) → lebih jelas
+// & ramah colorblind.
+function SeverityIcon({ fail }: { fail: boolean }) {
+  const common = {
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 2.2,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+  };
+  return fail ? (
+    <svg {...common} className="h-5 w-5 shrink-0 text-red-500">
+      <circle cx="12" cy="12" r="9" />
+      <line x1="15" y1="9" x2="9" y2="15" />
+      <line x1="9" y1="9" x2="15" y2="15" />
+    </svg>
+  ) : (
+    <svg {...common} className="h-5 w-5 shrink-0 text-amber-500">
+      <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+      <line x1="12" y1="9" x2="12" y2="13" />
+      <line x1="12" y1="17" x2="12.01" y2="17" />
+    </svg>
+  );
+}
+
+// Ikon kecil untuk heading section (scannability antar-bagian).
+function SectionIcon({ name }: { name: 'ringkasan' | 'detail' | 'budget' | 'reference' | 'saran' }) {
+  const common = {
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 2,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    className: 'h-3.5 w-3.5 text-brand-500',
+  };
+  switch (name) {
+    case 'ringkasan':
+      return (
+        <svg {...common}>
+          <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z" />
+          <line x1="4" y1="22" x2="4" y2="15" />
+        </svg>
+      );
+    case 'detail':
+      return (
+        <svg {...common}>
+          <line x1="8" y1="6" x2="21" y2="6" />
+          <line x1="8" y1="12" x2="21" y2="12" />
+          <line x1="8" y1="18" x2="21" y2="18" />
+          <line x1="3" y1="6" x2="3.01" y2="6" />
+          <line x1="3" y1="12" x2="3.01" y2="12" />
+          <line x1="3" y1="18" x2="3.01" y2="18" />
+        </svg>
+      );
+    case 'budget':
+      return (
+        <svg {...common}>
+          <rect x="2" y="6" width="20" height="12" rx="2" />
+          <circle cx="12" cy="12" r="2.5" />
+        </svg>
+      );
+    case 'reference':
+      return (
+        <svg {...common}>
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+        </svg>
+      );
+    case 'saran':
+      return (
+        <svg {...common}>
+          <path d="M9 18h6" />
+          <path d="M10 21h4" />
+          <path d="M12 3a6 6 0 0 0-4 10.5c.5.5 1 1.2 1 2.5h6c0-1.3.5-2 1-2.5A6 6 0 0 0 12 3z" />
+        </svg>
+      );
+  }
+}
+
 function ErrorRow({ item, showPage = false }: { item: ErrorItem; showPage?: boolean }) {
   const isFail = item.level === 'fail' || item.level === 'error';
   const rowCls = isFail ? 'border-red-100 bg-red-50/60' : 'border-amber-100 bg-amber-50/60';
-  const dotCls = isFail ? 'bg-red-400' : 'bg-amber-400';
+  const accentCls = isFail ? 'border-l-red-400' : 'border-l-amber-400';
   const textCls = isFail ? 'text-red-900' : 'text-amber-900';
   const tagCls = isFail ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700';
   const pageCls = isFail ? 'text-red-400' : 'text-amber-400';
 
   return (
-    <div className={`flex items-start gap-3 rounded-xl border px-4 py-3 ${rowCls}`}>
-      <span className={`mt-2.5 h-2.5 w-2.5 shrink-0 rounded-full ${dotCls}`} />
-      {showPage && (
-        <span className={`mt-0.5 w-20 shrink-0 font-mono text-sm font-medium ${pageCls}`}>
-          {item.page !== null ? `Hal. ${item.page}` : ''}
+    <div className={`flex items-center gap-3 rounded-xl border border-l-4 px-4 py-3 ${rowCls} ${accentCls}`}>
+      <SeverityIcon fail={isFail} />
+      {showPage && item.page !== null && (
+        <span className={`w-20 shrink-0 font-mono text-sm font-medium ${pageCls}`}>
+          Hal. {item.page}
         </span>
       )}
       <p className={`flex-1 whitespace-pre-line text-base font-medium leading-relaxed ${textCls}`}>{item.masalah}</p>
@@ -895,9 +958,11 @@ function ErrorRow({ item, showPage = false }: { item: ErrorItem; showPage?: bool
 }
 
 function GroupedSection({ label, items, showPage = false }: { label: string; items: ErrorItem[]; showPage?: boolean }) {
+  const iconName = label === 'Audit Anggaran' ? 'budget' : label === 'Daftar Pustaka' ? 'reference' : null;
   return (
     <div>
-      <p className="mb-2.5 text-sm font-semibold uppercase tracking-wider text-foreground-subtle">
+      <p className="mb-2.5 flex items-center gap-1.5 text-[15px] font-semibold uppercase tracking-wider text-black">
+        {iconName && <SectionIcon name={iconName} />}
         {label}
       </p>
       <div className="space-y-2">
@@ -913,14 +978,15 @@ function RingkasanUtama({ defs }: { defs: SummaryDef[] }) {
   if (defs.length === 0) return null;
   return (
     <div className="space-y-3">
-      <p className="text-xs font-semibold uppercase tracking-widest text-foreground-subtle">
+      <p className="flex items-center gap-1.5 text-[15px] font-semibold uppercase tracking-widest text-black">
+        <SectionIcon name="ringkasan" />
         Ringkasan Utama
       </p>
-      <div className="rounded-2xl border border-red-200 bg-red-50/50 p-6">
+      <div className="rounded-xl border border-red-100 bg-red-50/60 px-4 py-3">
         <ol className="space-y-3">
           {defs.map((def, i) => (
             <li key={i} className="flex items-baseline gap-3">
-              <span className="w-6 shrink-0 text-right font-mono text-base font-semibold text-red-400">
+              <span className="w-6 shrink-0 text-right font-mono text-base font-semibold text-red-900">
                 {i + 1}.
               </span>
               <span className="text-lg font-medium leading-relaxed text-red-900">{def.label}</span>
@@ -935,23 +1001,18 @@ function RingkasanUtama({ defs }: { defs: SummaryDef[] }) {
 function SaranPerbaikanSection({ groups }: { groups: BalanceGroup[] }) {
   return (
     <div>
-      <p className="mb-3 text-sm font-semibold uppercase tracking-wider text-foreground-subtle">
+      <p className="mb-3 flex items-center gap-1.5 text-[15px] font-semibold uppercase tracking-wider text-black">
+        <SectionIcon name="saran" />
         Saran Perbaikan
       </p>
       <div className="space-y-3">
-        {groups.map((group, gi) => (
-          <div key={gi} className="rounded-2xl border border-amber-200 bg-amber-50/60 p-5">
-            <p className="mb-3 text-base font-semibold text-amber-800">{group.header}</p>
-            {group.items.length > 0 && (
-              <ul className="space-y-1.5">
-                {group.items.map((item, ii) => (
-                  <li key={ii} className="flex items-start gap-2 text-base text-amber-700">
-                    <span className="mt-0.5 shrink-0 font-mono text-amber-400">•</span>
-                    <span className="font-mono">{item}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
+        {groups.flatMap((group) => group.items).map((item, i) => (
+          <div
+            key={i}
+            className="flex items-center gap-3 rounded-xl border border-l-4 border-amber-100 border-l-amber-400 bg-amber-50/60 px-4 py-3"
+          >
+            <SeverityIcon fail={false} />
+            <p className="flex-1 font-mono text-base text-amber-700">{item}</p>
           </div>
         ))}
       </div>

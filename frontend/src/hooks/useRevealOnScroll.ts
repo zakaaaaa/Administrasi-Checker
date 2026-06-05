@@ -9,6 +9,17 @@ export function useRevealOnScroll() {
   const observerRef = useRef<IntersectionObserver | null>(null);
 
   useEffect(() => {
+    const revealAll = () => {
+      document.querySelectorAll('[data-reveal]').forEach((el) => {
+        el.classList.add('reveal-in');
+      });
+    };
+
+    if (!('IntersectionObserver' in window)) {
+      revealAll();
+      return;
+    }
+
     observerRef.current = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
@@ -25,6 +36,11 @@ export function useRevealOnScroll() {
       observerRef.current?.observe(el);
     });
 
-    return () => observerRef.current?.disconnect();
+    const fallback = setTimeout(revealAll, 800);
+
+    return () => {
+      observerRef.current?.disconnect();
+      clearTimeout(fallback);
+    };
   }, []);
 }

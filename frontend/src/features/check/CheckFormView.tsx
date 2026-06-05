@@ -9,6 +9,7 @@ import {
   ALL_REPORTS,
   API_URL,
   LAST_RESULT_STORAGE_KEY,
+  LAST_RESULT_META_KEY,
   MAX_FILE_MB,
   SKEMA_LAPORAN_MAP,
   SKEMA_OPTIONS,
@@ -141,6 +142,8 @@ export function CheckFormView() {
         return;
       }
       sessionStorage.setItem(LAST_RESULT_STORAGE_KEY, JSON.stringify(data as CheckResults));
+      const reportLabel = ALL_REPORTS.find((r) => r.code === reportCode)?.label ?? reportCode;
+      sessionStorage.setItem(LAST_RESULT_META_KEY, JSON.stringify({ fileName: file.name, skema, reportLabel }));
       stopTimer();
       // Respons datang → jalankan tahap "Menyusun hasil" sebentar, lalu 100%.
       setProgress(PROGRESS_WAIT_CAP);

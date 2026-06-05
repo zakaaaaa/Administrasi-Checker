@@ -52,6 +52,7 @@ export const SKEMA_OPTIONS: { value: SkemaCode; label: string; desc: string }[] 
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
 export const LAST_RESULT_STORAGE_KEY = 'last_check_result_v1';
+export const LAST_RESULT_META_KEY = 'last_check_result_meta_v1';
 export const MAX_FILE_MB = 25;
 
 export function formatBytes(bytes: number): string {

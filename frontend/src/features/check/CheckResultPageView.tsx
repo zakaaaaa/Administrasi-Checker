@@ -1,117 +1,97 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { CheckResultsView } from '@/features/check/CheckResultsView';
 import type { CheckResults } from '@/features/check/types';
-import { LAST_RESULT_STORAGE_KEY } from '@/features/check/form/checkFormConstants';
+import { LAST_RESULT_STORAGE_KEY, LAST_RESULT_META_KEY } from '@/features/check/form/checkFormConstants';
 import { exportCheckResultPdf } from '@/features/check/exportCheckResultPdf';
-import {
-  CheckFormStepBar,
-  CheckFormStepDot,
-} from '@/features/check/form/CheckFormStepIndicator';
 
+type ResultMeta = { fileName: string; skema: string; reportLabel: string };
 
 export function CheckResultPageView() {
   const [result] = useState<CheckResults | null>(() => {
     if (typeof window === 'undefined') return null;
     const raw = sessionStorage.getItem(LAST_RESULT_STORAGE_KEY);
     if (!raw) return null;
-    try {
-      return JSON.parse(raw) as CheckResults;
-    } catch {
-      return null;
-    }
+    try { return JSON.parse(raw) as CheckResults; } catch { return null; }
   });
 
-  const [scrolled, setScrolled] = useState(false);
-  useEffect(() => {
-    const handler = () => setScrolled(window.scrollY > 8);
-    window.addEventListener('scroll', handler, { passive: true });
-    return () => window.removeEventListener('scroll', handler);
-  }, []);
+  const [meta] = useState<ResultMeta | null>(() => {
+    if (typeof window === 'undefined') return null;
+    const raw = sessionStorage.getItem(LAST_RESULT_META_KEY);
+    if (!raw) return null;
+    try { return JSON.parse(raw) as ResultMeta; } catch { return null; }
+  });
 
   return (
-    <>
-      {/* Full-width sticky header */}
-      <header
-        className={`sticky top-0 z-10 w-full print:hidden transition-all duration-200 ${
-          scrolled
-            ? 'bg-surface-elevated shadow-sm border-b border-border'
-            : 'bg-surface-elevated'
-        }`}
-      >
-        <div className="px-4 py-4 sm:px-6">
-          <div className="flex items-center justify-between">
+    <div className="relative min-h-screen">
+      {/* Header */}
+      <header className="sticky top-0 z-10 border-b border-border bg-surface-elevated print:hidden">
+        <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3 sm:px-6">
+          <div className="flex items-center gap-3">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="https://wryvhzvzeuadzbpelbdz.supabase.co/storage/v1/object/public/web/logopkm.png"
+              alt="Logo PKM"
+              className="h-8 w-auto object-contain"
+            />
+            <div>
+              <p className="font-mono text-[10px] uppercase tracking-widest text-foreground-subtle">
+                Hasil Pengecekan
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {result && (
+              <button
+                type="button"
+                onClick={() => exportCheckResultPdf(result)}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-brand-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-brand-700 print:hidden"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                Export PDF
+              </button>
+            )}
             <Link
               href="/check/new"
-              className="inline-flex items-center gap-1.5 text-sm font-medium text-foreground-muted transition hover:text-foreground"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-brand-300 bg-brand-50 px-3 py-2 text-xs font-semibold text-brand-700 transition hover:bg-brand-100"
             >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="h-4 w-4"
-              >
-                <line x1="19" y1="12" x2="5" y2="12" />
-                <polyline points="12 19 5 12 12 5" />
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+                <polyline points="1 4 1 10 7 10" />
+                <path d="M3.51 15a9 9 0 1 0 .49-3.51" />
               </svg>
-              Kembali ke Form
+              Cek Dokumen Lain
             </Link>
-
-            <button
-              type="button"
-              onClick={() => result && exportCheckResultPdf(result)}
-              disabled={!result}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-brand-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-40 print:hidden"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="h-4 w-4"
-              >
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="7 10 12 15 17 10" />
-                <line x1="12" y1="15" x2="12" y2="3" />
-              </svg>
-              Export PDF
-            </button>
-          </div>
-
-          <div className="mt-4">
-            <p className="font-mono text-xs uppercase tracking-[0.18em] text-foreground-subtle">
-              Langkah 3 dari 3 · Hasil Pengecekan
-            </p>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
-              Hasil{' '}
-              <span className="font-display text-gradient-brand">pengecekan dokumen</span>
-            </h1>
-            <p className="mt-2 max-w-2xl text-sm text-foreground-muted sm:text-base">
-              Tinjau setiap modul di bawah dan perbaiki temuan sebelum submit ke Simbelmawa.
-            </p>
-          </div>
-
-          <div className="mt-5 flex items-center gap-2">
-            <CheckFormStepDot state="done" label="Token" />
-            <CheckFormStepBar state="active" />
-            <CheckFormStepDot state="done" label="Form" />
-            <CheckFormStepBar state="active" />
-            <CheckFormStepDot state="active" label="Hasil" />
           </div>
         </div>
       </header>
 
-      {/* Page content */}
-      <main className="mx-auto max-w-[1890px] px-4 pb-24 pt-6 sm:px-6">
+      <main className="mx-auto max-w-5xl px-4 pb-24 pt-8 sm:px-6">
         {result ? (
-          <CheckResultsView result={result} />
+          <div>
+            <div className="mb-6">
+              <p className="font-mono text-xs uppercase tracking-[0.18em] text-foreground-subtle">
+                Hasil Pengecekan
+              </p>
+              <h1 className="mt-1.5 text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+                <span className="font-display text-gradient-brand">
+                  {meta?.fileName ?? 'Dokumen'}
+                </span>
+              </h1>
+              {meta && (
+                <p className="mt-1 text-sm text-foreground-muted">
+                  {meta.skema} · {meta.reportLabel}
+                </p>
+              )}
+            </div>
+            <CheckResultsView result={result} />
+          </div>
         ) : (
           <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-5">
             <p className="text-sm font-semibold text-amber-800">Hasil belum tersedia.</p>
@@ -127,6 +107,6 @@ export function CheckResultPageView() {
           </div>
         )}
       </main>
-    </>
+    </div>
   );
 }
