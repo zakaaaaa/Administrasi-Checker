@@ -119,7 +119,7 @@ export function ReviewerCheckForm({ adminId, adminUsername, onLogout }: Props) {
   return (
     <div className="relative min-h-screen">
       {/* Header */}
-      <header className="sticky top-0 z-10 border-b border-black/8 bg-white/80 backdrop-blur-lg print:hidden">
+      <header className="sticky top-0 z-10 border-b border-border bg-surface-elevated print:hidden">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3 sm:px-6">
           <div className="flex items-center gap-3">
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -271,8 +271,8 @@ export function ReviewerCheckForm({ adminId, adminUsername, onLogout }: Props) {
                     onDrop={onDrop}
                     className={`group flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed px-6 py-10 text-center transition ${
                       isDragging
-                        ? 'border-brand-500 bg-brand-50/70'
-                        : 'border-white/70 bg-white/40 hover:border-brand-300 hover:bg-white/60'
+                        ? 'border-brand-500 bg-brand-50'
+                        : 'border-border bg-surface-elevated hover:border-brand-300 hover:bg-surface-sunken'
                     }`}
                   >
                     <input type="file" accept=".docx" onChange={onFileInput} className="hidden" />
@@ -291,7 +291,7 @@ export function ReviewerCheckForm({ adminId, adminUsername, onLogout }: Props) {
                     </p>
                   </label>
                 ) : (
-                  <div className="flex items-center gap-3 rounded-2xl border border-brand-300/60 bg-white/70 p-4 backdrop-blur">
+                  <div className="flex items-center gap-3 rounded-2xl border border-border bg-surface-sunken p-4">
                     <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand-100 text-brand-600">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
                         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
