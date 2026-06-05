@@ -10,14 +10,14 @@ const jakarta = Plus_Jakarta_Sans({
   subsets: ['latin'],
   variable: '--font-jakarta',
   display: 'swap',
-  weight: ['300', '400', '500', '600', '700', '800'],
+  weight: ['400', '500', '600', '700'],
 });
 
 const poppins = Poppins({
   subsets: ['latin'],
   variable: '--font-poppins',
   display: 'swap',
-  weight: ['400', '500', '600', '700', '800'],
+  weight: ['600', '700', '800'],
 });
 
 // ----------------------------------------------------------------------------
@@ -48,7 +48,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       data-scroll-behavior="smooth"
       className={`${jakarta.variable} ${poppins.variable}`}
     >
-      <body className="canvas-glass min-h-screen overflow-x-hidden font-sans text-base font-medium text-foreground antialiased">
+      <body className="canvas-glass min-h-screen overflow-x-hidden font-sans text-base font-normal text-foreground antialiased">
         <RootShellOrbs />
 
         {children}

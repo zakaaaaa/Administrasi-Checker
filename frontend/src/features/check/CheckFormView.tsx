@@ -1,7 +1,7 @@
 'use client';
 
 import type { ChangeEvent, DragEvent, FormEvent } from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import type { CheckResults } from '@/features/check/types';
@@ -18,6 +18,7 @@ import {
 } from './form/checkFormConstants';
 import { CheckFormSection } from './form/CheckFormSection';
 import { CheckFormSelectCard } from './form/CheckFormSelectCard';
+import { CheckProgressModal, PROGRESS_WAIT_CAP } from './CheckProgressModal';
 
 export function CheckFormView() {
   const router = useRouter();
@@ -29,8 +30,17 @@ export function CheckFormView() {
   const [file, setFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const progressTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [fileError, setFileError] = useState('');
+
+  // Bersihkan interval simulasi saat unmount.
+  useEffect(() => {
+    return () => {
+      if (progressTimer.current) clearInterval(progressTimer.current);
+    };
+  }, []);
 
   useEffect(() => {
     const validCodes = SKEMA_LAPORAN_MAP[skema];
@@ -89,6 +99,30 @@ export function CheckFormView() {
     }
 
     setSubmitting(true);
+    setProgress(0);
+    // Simulasi linear berbasis waktu: bar naik dengan laju tetap melewati tahap
+    // proses (Unggah → Struktur → Format → OCR) selama ~SIM_DURATION_MS, lalu
+    // PARKIR sedikit di bawah batas tunggu (tetap di tahap OCR) sampai respons
+    // datang. Tahap "Menyusun hasil" baru jalan setelah respons (lihat success).
+    // Backend nyata ~120–180 dtk → durasi disetel ke 180 dtk agar tiap tahap
+    // mengalir merata sepanjang proses (≈43 dtk/tahap, OCR ≈51 dtk) dan bar
+    // terus bergerak pelan, tidak melesat lalu nyangkut.
+    const SIM_DURATION_MS = 180000;
+    const TICK_MS = 150;
+    const WAIT_HOLD = PROGRESS_WAIT_CAP - 1; // parkir di band OCR, bukan menyusun
+    const stepPerTick = (PROGRESS_WAIT_CAP / SIM_DURATION_MS) * TICK_MS;
+    if (progressTimer.current) clearInterval(progressTimer.current);
+    progressTimer.current = setInterval(() => {
+      setProgress((p) => Math.min(WAIT_HOLD, p + stepPerTick));
+    }, TICK_MS);
+
+    const stopTimer = () => {
+      if (progressTimer.current) {
+        clearInterval(progressTimer.current);
+        progressTimer.current = null;
+      }
+    };
+
     const fd = new FormData();
     fd.append('token', token);
     fd.append('competition', 'PKM');
@@ -102,15 +136,23 @@ export function CheckFormView() {
       if (!res.ok) {
         const msg = data?.detail ?? `Error ${res.status}`;
         setErrorMsg(typeof msg === 'string' ? msg : JSON.stringify(msg));
+        stopTimer();
+        setSubmitting(false);
         return;
       }
       sessionStorage.setItem(LAST_RESULT_STORAGE_KEY, JSON.stringify(data as CheckResults));
+      stopTimer();
+      // Respons datang → jalankan tahap "Menyusun hasil" sebentar, lalu 100%.
+      setProgress(PROGRESS_WAIT_CAP);
+      await new Promise((r) => setTimeout(r, 450));
+      setProgress(100);
+      await new Promise((r) => setTimeout(r, 550));
       router.push('/check/new/result');
     } catch (err) {
       setErrorMsg(
         `Tidak bisa terhubung ke server: ${err instanceof Error ? err.message : String(err)}`,
       );
-    } finally {
+      stopTimer();
       setSubmitting(false);
     }
   }
@@ -121,8 +163,10 @@ export function CheckFormView() {
 
   return (
     <div className="relative min-h-screen">
+      {submitting && <CheckProgressModal progress={progress} />}
+
       {/* Sticky header — mirip ReviewerCheckForm */}
-      <header className="sticky top-0 z-10 border-b border-black/8 bg-white/80 backdrop-blur-lg">
+      <header className="sticky top-0 z-10 border-b border-border bg-surface-elevated">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3 sm:px-6">
           <div className="flex items-center gap-3">
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -162,10 +206,7 @@ export function CheckFormView() {
 
       <main className="mx-auto max-w-5xl px-4 pb-24 pt-8 sm:px-6">
         <div className="mb-6">
-          <p className="font-mono text-xs uppercase tracking-[0.18em] text-foreground-subtle">
-            Langkah 2 dari 3 · Form Pengecekan
-          </p>
-          <h1 className="mt-1.5 text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
             Cek Dokumen PKM
           </h1>
           <p className="mt-1 text-sm text-foreground-muted">
@@ -236,8 +277,8 @@ export function CheckFormView() {
                 onDrop={onDrop}
                 className={`group flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed px-6 py-10 text-center transition ${
                   isDragging
-                    ? 'border-brand-500 bg-brand-50/70'
-                    : 'border-white/70 bg-white/40 hover:border-brand-300 hover:bg-white/60'
+                    ? 'border-brand-500 bg-brand-50'
+                    : 'border-border bg-surface-elevated hover:border-brand-300 hover:bg-surface-sunken'
                 }`}
               >
                 <input type="file" accept=".docx" onChange={onFileInput} className="hidden" />
@@ -264,7 +305,7 @@ export function CheckFormView() {
                 </p>
               </label>
             ) : (
-              <div className="flex items-center gap-3 rounded-2xl border border-brand-300/60 bg-white/70 p-4 backdrop-blur">
+              <div className="flex items-center gap-3 rounded-2xl border border-border bg-surface-sunken p-4">
                 <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand-100 text-brand-600">
                   <svg
                     viewBox="0 0 24 24"

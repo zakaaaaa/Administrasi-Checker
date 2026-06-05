@@ -835,13 +835,15 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
       {/* Detail Kesalahan */}
       {(flatItemsDetail.length > 0 || budgetItems.length > 0 || referenceItems.length > 0 || allSaranGroups.length > 0) && (
         <div className="space-y-6">
-          <p className="text-xs font-bold uppercase tracking-widest text-foreground-subtle">
-            Detail Kesalahan
-          </p>
-
-          {/* Flat list — kesalahan umum, per halaman */}
+          {/* Eyebrow "Detail Kesalahan" hanya tampil bila ada baris kesalahan
+              flat di bawahnya. Kalau cuma sub-bagian berlabel sendiri (Daftar
+              Pustaka / Audit Anggaran), umbrella ini disembunyikan agar tidak
+              terlihat sebagai header kosong. */}
           {flatItemsDetail.length > 0 && (
             <div className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-widest text-foreground-subtle">
+                Detail Kesalahan
+              </p>
               {flatItemsDetail.map((item, i) => (
                 <ErrorRow key={i} item={item} showPage />
               ))}
@@ -910,20 +912,22 @@ function GroupedSection({ label, items, showPage = false }: { label: string; ite
 function RingkasanUtama({ defs }: { defs: SummaryDef[] }) {
   if (defs.length === 0) return null;
   return (
-    <div className="rounded-2xl border border-red-200 bg-red-50/50 p-6">
-      <p className="mb-4 text-xs font-bold uppercase tracking-widest text-red-500">
-        Ringkasan Utama — {defs.length} poin kesalahan
+    <div className="space-y-3">
+      <p className="text-xs font-semibold uppercase tracking-widest text-foreground-subtle">
+        Ringkasan Utama
       </p>
-      <ol className="space-y-2.5">
-        {defs.map((def, i) => (
-          <li key={i} className="flex items-baseline gap-3">
-            <span className="w-6 shrink-0 text-right font-mono text-sm font-semibold text-red-400">
-              {i + 1}.
-            </span>
-            <span className="text-sm font-medium leading-relaxed text-red-900">{def.label}</span>
-          </li>
-        ))}
-      </ol>
+      <div className="rounded-2xl border border-red-200 bg-red-50/50 p-6">
+        <ol className="space-y-3">
+          {defs.map((def, i) => (
+            <li key={i} className="flex items-baseline gap-3">
+              <span className="w-6 shrink-0 text-right font-mono text-base font-semibold text-red-400">
+                {i + 1}.
+              </span>
+              <span className="text-lg font-medium leading-relaxed text-red-900">{def.label}</span>
+            </li>
+          ))}
+        </ol>
+      </div>
     </div>
   );
 }

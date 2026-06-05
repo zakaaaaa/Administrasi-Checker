@@ -13,6 +13,10 @@ const config: Config = {
         'foreground-muted': 'hsl(var(--foreground-muted))',
         'foreground-subtle': 'hsl(var(--foreground-subtle))',
         border: 'hsl(var(--border))',
+        'border-strong': 'hsl(var(--border-strong))',
+        surface: 'hsl(var(--surface))',
+        'surface-elevated': 'hsl(var(--surface-elevated))',
+        'surface-sunken': 'hsl(var(--surface-sunken))',
         brand: {
           50: 'hsl(var(--brand-50))',
           100: 'hsl(var(--brand-100))',

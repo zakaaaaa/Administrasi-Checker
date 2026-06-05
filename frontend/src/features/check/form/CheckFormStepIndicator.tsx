@@ -10,7 +10,7 @@ export function CheckFormStepDot({
       ? 'bg-brand-500 text-white'
       : state === 'active'
         ? 'bg-white text-brand-600 ring-2 ring-brand-500'
-        : 'bg-white/60 text-foreground-subtle ring-1 ring-white/70';
+        : 'bg-surface-sunken text-foreground-subtle ring-1 ring-border';
   const text = state === 'todo' ? 'text-foreground-subtle' : 'text-foreground';
   return (
     <div className="flex items-center gap-1.5">
@@ -41,7 +41,7 @@ export function CheckFormStepDot({
 export function CheckFormStepBar({ state }: { state: 'active' | 'todo' }) {
   return (
     <span
-      className={`h-0.5 max-w-[60px] flex-1 rounded-full ${state === 'active' ? 'bg-brand-300' : 'bg-white/60'}`}
+      className={`h-0.5 max-w-[60px] flex-1 rounded-full ${state === 'active' ? 'bg-brand-300' : 'bg-border'}`}
     />
   );
 }

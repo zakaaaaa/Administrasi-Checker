@@ -1,7 +1,7 @@
 const FLOW_STEPS = [
   {
     title: 'Akses',
-    body: 'Masukkan token, lalu pilih jenis laporan dan skema PKM yang sesuai.',
+    body: 'Masukkan token dari admin, lalu pilih jenis laporan dan skema PKM yang sesuai.',
     accent: 'Token aktif',
   },
   {
@@ -18,48 +18,46 @@ const FLOW_STEPS = [
 
 export function CheckLandingFlowSection() {
   return (
-    <div data-reveal className="check-landing-glass-card rounded-[1.75rem] p-5 sm:p-8">
-      <div className="mx-auto max-w-3xl text-center">
-        <div className="flex items-center justify-center gap-2">
-          <span className="h-1.5 w-8 rounded-full bg-brand-500" />
-          <p className="font-mono text-sm uppercase tracking-[0.2em] text-foreground-subtle">
-            Alur Pengisian
-          </p>
-          <span className="h-1.5 w-8 rounded-full bg-brand-500" />
-        </div>
-        <h2 className="mt-4 font-display text-2xl font-bold leading-tight text-foreground sm:text-3xl">
-          Tiga langkah sampai hasil cek siap dibaca.
-        </h2>
-        <p className="mx-auto mt-3 max-w-2xl text-sm leading-relaxed text-foreground-muted sm:text-base">
-          Mulai dari akses token, unggah dokumen, lalu baca rangkuman temuan yang perlu dirapikan.
-        </p>
-      </div>
-
-      <div className="mt-8 grid gap-4 lg:grid-cols-3">
-        {FLOW_STEPS.map((item, idx) => (
-          <div
-            key={item.title}
-            className="group relative min-h-[190px] overflow-hidden rounded-2xl border border-white/60 bg-white/55 p-5 backdrop-blur-md transition hover:-translate-y-0.5 hover:border-brand-200 hover:bg-white/80"
+    <section id="flow-section" className="relative px-4 py-16 sm:px-6 sm:py-20">
+      <div className="mx-auto max-w-5xl">
+        <div className="mx-auto max-w-2xl text-center">
+          <h2
+            data-reveal
+            data-reveal-delay="1"
+            className="mt-3 font-display text-2xl font-bold leading-tight text-foreground sm:text-3xl"
           >
+            Tiga langkah sampai hasil cek siap dibaca.
+          </h2>
+        </div>
+
+        <div className="mt-10 grid gap-4 lg:grid-cols-3">
+          {FLOW_STEPS.map((item, idx) => (
             <div
-              aria-hidden
-              className="absolute right-4 top-4 text-5xl font-bold leading-none text-brand-100/70 transition group-hover:text-brand-100"
+              key={item.title}
+              data-reveal
+              data-reveal-delay={`${idx + 1}` as '1' | '2' | '3'}
+              className="group relative min-h-[180px] overflow-hidden rounded-2xl border border-border bg-surface-elevated p-5 transition hover:-translate-y-0.5 hover:border-brand-300"
             >
-              0{idx + 1}
-            </div>
-            <div className="relative z-10">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand-100 text-sm font-bold text-brand-700 transition group-hover:bg-brand-500 group-hover:text-white">
+              <div
+                aria-hidden
+                className="absolute right-4 top-3 text-5xl font-bold leading-none text-brand-100 transition group-hover:text-brand-200"
+              >
                 0{idx + 1}
               </div>
-              <p className="mt-5 text-xs font-semibold uppercase tracking-[0.16em] text-brand-700">
-                {item.accent}
-              </p>
-              <h3 className="mt-2 text-xl font-bold text-foreground">{item.title}</h3>
-              <p className="mt-2 text-sm leading-relaxed text-foreground-muted">{item.body}</p>
+              <div className="relative z-10">
+                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-100 text-sm font-bold text-brand-700 transition group-hover:bg-brand-500 group-hover:text-white">
+                  0{idx + 1}
+                </div>
+                <p className="mt-5 text-xs font-semibold uppercase tracking-[0.16em] text-brand-700">
+                  {item.accent}
+                </p>
+                <h3 className="mt-2 text-lg font-semibold text-foreground">{item.title}</h3>
+                <p className="mt-2 text-sm leading-relaxed text-foreground-muted">{item.body}</p>
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
-    </div>
+    </section>
   );
 }

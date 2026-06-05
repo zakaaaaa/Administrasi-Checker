@@ -37,8 +37,8 @@ export function CheckResultPageView() {
       <header
         className={`sticky top-0 z-10 w-full print:hidden transition-all duration-200 ${
           scrolled
-            ? 'bg-white shadow-sm border-b border-black/8'
-            : 'bg-white/70 backdrop-blur-lg'
+            ? 'bg-surface-elevated shadow-sm border-b border-border'
+            : 'bg-surface-elevated'
         }`}
       >
         <div className="px-4 py-4 sm:px-6">

@@ -4,15 +4,24 @@ import type { FormEvent } from 'react';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useRevealOnScroll } from '@/hooks/useRevealOnScroll';
-import { CheckLandingDecor } from './CheckLandingDecor';
-import { CheckLandingFlowSection } from './CheckLandingFlowSection';
+import { CheckLandingTopNav } from './CheckLandingTopNav';
 import { CheckLandingHero } from './CheckLandingHero';
+import { CheckLandingResultPreview } from './CheckLandingResultPreview';
+import { CheckLandingScope } from './CheckLandingScope';
+import { CheckLandingBenefits } from './CheckLandingBenefits';
+import { CheckLandingFlowSection } from './CheckLandingFlowSection';
+import { CheckLandingFaq } from './CheckLandingFaq';
 import { CheckLandingTokenForm } from './CheckLandingTokenForm';
+import { CheckLandingFooter } from './CheckLandingFooter';
 
 export function NewCheckLanding() {
   const [token, setToken] = useState('');
   const router = useRouter();
   useRevealOnScroll();
+
+  function scrollToStart() {
+    document.getElementById('mulai')?.scrollIntoView({ behavior: 'smooth' });
+  }
 
   function handleContinue(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -21,21 +30,24 @@ export function NewCheckLanding() {
   }
 
   return (
-    <main className="relative mx-auto max-w-7xl px-4 pb-20 pt-6 sm:px-6 lg:pt-8">
-      <CheckLandingDecor />
+    <div className="relative min-h-screen">
+      <CheckLandingTopNav onStart={scrollToStart} />
 
-      <section className="grid gap-8 pt-8 lg:grid-cols-[minmax(0,1fr)_390px] lg:items-start lg:pt-12">
-        <CheckLandingHero />
+      <main>
+        <CheckLandingHero onStart={scrollToStart} />
+        <CheckLandingResultPreview />
+        <CheckLandingScope />
+        <CheckLandingBenefits />
+        <CheckLandingFlowSection />
+        <CheckLandingFaq />
         <CheckLandingTokenForm
           token={token}
           onTokenChange={setToken}
           onSubmit={handleContinue}
         />
-      </section>
+      </main>
 
-      <section id="flow-section" className="mt-10">
-        <CheckLandingFlowSection />
-      </section>
-    </main>
+      <CheckLandingFooter />
+    </div>
   );
 }
