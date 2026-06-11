@@ -302,6 +302,28 @@
   animation-delay: 1.6s;
 }
 
+@keyframes check-landing-result-scroll {
+  0%,
+  12% {
+    transform: translateY(0);
+  }
+  54%,
+  68% {
+    transform: translateY(calc(-100% + var(--preview-scroll-window, 250px)));
+  }
+  92%,
+  100% {
+    transform: translateY(0);
+  }
+}
+.check-landing-result-scroll {
+  animation: check-landing-result-scroll 8.4s ease-in-out infinite;
+  will-change: transform;
+}
+.check-landing-result-scroll-window:hover .check-landing-result-scroll {
+  animation-play-state: paused;
+}
+
 .check-landing-glass-card {
   background: hsl(var(--surface-elevated));
   border: 1px solid hsl(var(--border));
@@ -324,6 +346,13 @@
 }
 .check-landing-blob {
   display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .check-landing-result-scroll {
+    animation: none;
+    transform: none;
+  }
 }
 
 @media print {

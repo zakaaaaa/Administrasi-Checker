@@ -4,23 +4,40 @@ import { useEffect, useState } from 'react';
 
 type Phase = 'upload' | 'progress' | 'result';
 
-// Durasi tiap fase (ms). Hasil ditahan lebih lama agar sempat dibaca.
+// Durasi tiap fase (ms). Hasil ditahan lebih lama agar animasi scroll sempat terbaca.
 const UPLOAD_MS = 2000;
 const PROGRESS_MS = 3000;
-const RESULT_MS = 5000;
+const RESULT_MS = 9000;
 
 type PreviewRow = {
   level: 'fail' | 'warn';
-  page: string;
+  page?: string;
   text: string;
   mod: string;
 };
+
+const SUMMARY_ITEMS = [
+  'Kesalahan margin tidak sesuai aturan PKM',
+  'Lampiran wajib belum lengkap',
+  'Daftar pustaka perlu dirapikan mengikuti Harvard style',
+];
 
 const PREVIEW_ROWS: PreviewRow[] = [
   { level: 'fail', page: 'Hal 11', text: 'Margin tidak sesuai aturan PKM (kiri, kanan)', mod: 'Format Penulisan' },
   { level: 'fail', page: 'Hal 4', text: 'Lampiran biodata dosen pembimbing belum ditemukan', mod: 'Lampiran' },
   { level: 'warn', page: 'Hal 12', text: 'Ukuran huruf tidak 12 pt', mod: 'Format Penulisan' },
-  { level: 'warn', page: '—', text: 'Urutan daftar pustaka belum alfabetis', mod: 'Daftar Pustaka' },
+];
+
+const BUDGET_ROWS: PreviewRow[] = [
+  { level: 'warn', text: 'Nominal Belmawa pada rekap sumber dana Rp8.500.000', mod: 'Anggaran' },
+];
+
+const REFERENCE_ROWS: PreviewRow[] = [
+  { level: 'warn', page: 'Hal 18', text: 'Urutan alfabetis "Sari" harusnya sebelum "Wijaya"', mod: 'Daftar Pustaka' },
+];
+
+const SUGGESTION_ROWS: PreviewRow[] = [
+  { level: 'warn', text: 'Cocokkan sitasi Darlan 2022 dengan entri daftar pustaka', mod: 'Saran Perbaikan' },
 ];
 
 const PROGRESS_STAGES = [
@@ -52,6 +69,61 @@ function SeverityIcon({ fail, className = 'h-4 w-4' }: { fail: boolean; classNam
       <line x1="12" y1="17" x2="12.01" y2="17" />
     </svg>
   );
+}
+
+function SectionIcon({ name }: { name: 'ringkasan' | 'detail' | 'budget' | 'reference' | 'saran' }) {
+  const common = {
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 2,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    className: 'h-3.5 w-3.5 text-brand-500',
+  };
+
+  switch (name) {
+    case 'ringkasan':
+      return (
+        <svg {...common}>
+          <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z" />
+          <line x1="4" y1="22" x2="4" y2="15" />
+        </svg>
+      );
+    case 'detail':
+      return (
+        <svg {...common}>
+          <line x1="8" y1="6" x2="21" y2="6" />
+          <line x1="8" y1="12" x2="21" y2="12" />
+          <line x1="8" y1="18" x2="21" y2="18" />
+          <line x1="3" y1="6" x2="3.01" y2="6" />
+          <line x1="3" y1="12" x2="3.01" y2="12" />
+          <line x1="3" y1="18" x2="3.01" y2="18" />
+        </svg>
+      );
+    case 'budget':
+      return (
+        <svg {...common}>
+          <rect x="2" y="6" width="20" height="12" rx="2" />
+          <circle cx="12" cy="12" r="2.5" />
+        </svg>
+      );
+    case 'reference':
+      return (
+        <svg {...common}>
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+        </svg>
+      );
+    case 'saran':
+      return (
+        <svg {...common}>
+          <path d="M9 18h6" />
+          <path d="M10 21h4" />
+          <path d="M12 3a6 6 0 0 0-4 10.5c.5.5 1 1.2 1 2.5h6c0-1.3.5-2 1-2.5A6 6 0 0 0 12 3z" />
+        </svg>
+      );
+  }
 }
 
 function Spinner({ className = 'h-4 w-4' }: { className?: string }) {
@@ -131,6 +203,81 @@ function ProgressPhase({ progress }: { progress: number }) {
   );
 }
 
+function PreviewHeading({ icon, label }: { icon: 'ringkasan' | 'detail' | 'budget' | 'reference' | 'saran'; label: string }) {
+  return (
+    <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-foreground">
+      <SectionIcon name={icon} />
+      {label}
+    </p>
+  );
+}
+
+function PreviewIssueRow({ row, showPage = false }: { row: PreviewRow; showPage?: boolean }) {
+  const isFail = row.level === 'fail';
+  const rowCls = isFail ? 'border-red-100 border-l-red-400 bg-red-50/60' : 'border-amber-100 border-l-amber-400 bg-amber-50/60';
+  const textCls = isFail ? 'text-red-900' : 'text-amber-900';
+  const tagCls = isFail ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700';
+  const pageCls = isFail ? 'text-red-400' : 'text-amber-400';
+
+  return (
+    <div className={`flex items-start gap-2.5 rounded-xl border border-l-4 px-3 py-2.5 sm:items-center ${rowCls}`}>
+      <SeverityIcon fail={isFail} className="mt-0.5 h-4 w-4 sm:mt-0 sm:h-5 sm:w-5" />
+      {showPage && row.page && (
+        <span className={`w-12 shrink-0 font-mono text-[11px] font-medium sm:w-14 sm:text-xs ${pageCls}`}>
+          {row.page}
+        </span>
+      )}
+      <p className={`flex-1 text-xs font-medium leading-snug sm:text-sm ${textCls}`}>{row.text}</p>
+      <span className={`hidden shrink-0 rounded px-2 py-0.5 font-mono text-[10px] font-semibold md:inline ${tagCls}`}>
+        {row.mod}
+      </span>
+    </div>
+  );
+}
+
+function SummaryPreview() {
+  return (
+    <section className="space-y-2">
+      <PreviewHeading icon="ringkasan" label="Ringkasan Utama" />
+      <div className="rounded-xl border border-red-100 bg-red-50/60 px-3.5 py-3">
+        <ol className="space-y-2">
+          {SUMMARY_ITEMS.map((item, i) => (
+            <li key={item} className="flex items-baseline gap-2.5">
+              <span className="w-5 shrink-0 text-right font-mono text-sm font-semibold text-red-900">
+                {i + 1}.
+              </span>
+              <span className="text-sm font-medium leading-relaxed text-red-900">{item}</span>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </section>
+  );
+}
+
+function PreviewGroupedSection({
+  icon,
+  label,
+  rows,
+  showPage = false,
+}: {
+  icon: 'detail' | 'budget' | 'reference' | 'saran';
+  label: string;
+  rows: PreviewRow[];
+  showPage?: boolean;
+}) {
+  return (
+    <section className="space-y-2">
+      <PreviewHeading icon={icon} label={label} />
+      <div className="space-y-2">
+        {rows.map((row) => (
+          <PreviewIssueRow key={`${label}-${row.text}`} row={row} showPage={showPage} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function ResultPhase() {
   return (
     <div className="space-y-4">
@@ -142,26 +289,16 @@ function ResultPhase() {
           2 perlu diperhatikan
         </span>
       </div>
-      <div className="space-y-2">
-        {PREVIEW_ROWS.map((row, i) => {
-          const isFail = row.level === 'fail';
-          const rowCls = isFail ? 'border-red-100 border-l-red-400 bg-red-50/60' : 'border-amber-100 border-l-amber-400 bg-amber-50/60';
-          const textCls = isFail ? 'text-red-900' : 'text-amber-900';
-          const tagCls = isFail ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700';
-          const pageCls = isFail ? 'text-red-400' : 'text-amber-400';
-          return (
-            <div key={i} className={`flex items-center gap-3 rounded-xl border border-l-4 px-3.5 py-2.5 ${rowCls}`}>
-              <SeverityIcon fail={isFail} />
-              {row.page !== '—' && (
-                <span className={`w-14 shrink-0 font-mono text-xs font-medium ${pageCls}`}>{row.page}</span>
-              )}
-              <p className={`flex-1 text-sm font-medium leading-snug ${textCls}`}>{row.text}</p>
-              <span className={`hidden shrink-0 rounded px-2 py-0.5 font-mono text-[10px] font-semibold sm:inline ${tagCls}`}>
-                {row.mod}
-              </span>
-            </div>
-          );
-        })}
+      <div className="check-landing-result-scroll-window relative h-[var(--preview-scroll-window)] [--preview-scroll-window:250px] overflow-hidden rounded-xl sm:[--preview-scroll-window:262px]">
+        <div className="check-landing-result-scroll space-y-4 pr-1">
+          <SummaryPreview />
+          <PreviewGroupedSection icon="detail" label="Detail Kesalahan" rows={PREVIEW_ROWS} showPage />
+          <PreviewGroupedSection icon="budget" label="Audit Anggaran" rows={BUDGET_ROWS} />
+          <PreviewGroupedSection icon="reference" label="Daftar Pustaka" rows={REFERENCE_ROWS} showPage />
+          <PreviewGroupedSection icon="saran" label="Saran Perbaikan" rows={SUGGESTION_ROWS} />
+        </div>
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-5 bg-gradient-to-b from-surface-elevated to-transparent" />
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-surface-elevated to-transparent" />
       </div>
     </div>
   );

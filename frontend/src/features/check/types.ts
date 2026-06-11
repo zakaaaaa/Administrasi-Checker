@@ -16,6 +16,11 @@ export type CheckResults = {
     budget: ModuleResult;
     reference: ModuleResult;
     ai_front_matter?: ModuleResult;
+    luaran?: ModuleResult;
+    lampiran?: ModuleResult;
+    surat_pernyataan?: ModuleResult;
+    biodata_date?: ModuleResult;
+    signature_crop?: ModuleResult;
     schedule?: ModuleResult;
     similarity?: ModuleResult;
   };

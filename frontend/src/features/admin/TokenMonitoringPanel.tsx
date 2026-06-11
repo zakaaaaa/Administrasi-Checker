@@ -1,94 +1,181 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { AdminMenuIcon } from './AdminMenuIcon';
+import { API_URL } from './constants';
 import type { TokenRecord } from './types';
 
-type Props = {
-  tokenList: TokenRecord[];
-  tokenListLoading: boolean;
-  tokenListError: string;
-  filterStatus: 'all' | 'used' | 'unused';
-  setFilterStatus: (v: 'all' | 'used' | 'unused') => void;
-  filterDateFrom: string;
-  setFilterDateFrom: (v: string) => void;
-  filterDateTo: string;
-  setFilterDateTo: (v: string) => void;
-  onRefresh: () => void;
+type TokenStatus = 'all' | 'used' | 'unused';
+
+type TokenResponse = {
+  tokens: TokenRecord[];
+  total: number;
+  used_count: number;
+  unused_count: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
 };
 
-export function TokenMonitoringPanel({
-  tokenList,
-  tokenListLoading,
-  tokenListError,
-  filterStatus,
-  setFilterStatus,
-  filterDateFrom,
-  setFilterDateFrom,
-  filterDateTo,
-  setFilterDateTo,
-  onRefresh,
-}: Props) {
-  const [searchToken, setSearchToken] = useState('');
-  const normalizedSearchToken = searchToken.trim().toLowerCase();
-  const compactSearchToken = normalizedSearchToken.replace(/[^a-z0-9]/g, '');
+type Props = {
+  adminId: string;
+};
 
-  const filtered = useMemo(() => {
-    return tokenList.filter((t) => {
-      if (normalizedSearchToken) {
-        const normalizedToken = t.token.toLowerCase();
-        const compactToken = normalizedToken.replace(/[^a-z0-9]/g, '');
-        const matchesToken =
-          normalizedToken.includes(normalizedSearchToken) ||
-          (Boolean(compactSearchToken) && compactToken.includes(compactSearchToken));
-        if (!matchesToken) {
-          return false;
-        }
+function formatDateTime(value: string | null): string {
+  return value
+    ? new Date(value).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' })
+    : '-';
+}
+
+function SearchIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4"
+    >
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.3-4.3" />
+    </svg>
+  );
+}
+
+function RefreshIcon({ loading }: { loading: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`}
+    >
+      <polyline points="1 4 1 10 7 10" />
+      <path d="M3.51 15a9 9 0 1 0 .49-3.51" />
+    </svg>
+  );
+}
+
+export function TokenMonitoringPanel({ adminId }: Props) {
+  const [tokenList, setTokenList] = useState<TokenRecord[]>([]);
+  const [tokenListLoading, setTokenListLoading] = useState(false);
+  const [tokenListError, setTokenListError] = useState('');
+  const [searchToken, setSearchToken] = useState('');
+  const [debouncedSearchToken, setDebouncedSearchToken] = useState('');
+  const [filterStatus, setFilterStatus] = useState<TokenStatus>('all');
+  const [filterDateFrom, setFilterDateFrom] = useState('');
+  const [filterDateTo, setFilterDateTo] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [total, setTotal] = useState(0);
+  const [usedCount, setUsedCount] = useState(0);
+  const [unusedCount, setUnusedCount] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+
+  const fetchTokenList = useCallback(async () => {
+    if (!adminId) return;
+    setTokenListLoading(true);
+    setTokenListError('');
+    try {
+      const params = new URLSearchParams({
+        admin_id: adminId,
+        page: String(page),
+        page_size: String(pageSize),
+        status: filterStatus,
+      });
+      if (debouncedSearchToken.trim()) params.set('q', debouncedSearchToken.trim());
+      if (filterDateFrom) params.set('date_from', filterDateFrom);
+      if (filterDateTo) params.set('date_to', filterDateTo);
+
+      const res = await fetch(`${API_URL}/api/admin/tokens?${params.toString()}`);
+      const data = await res.json() as Partial<TokenResponse> & { detail?: unknown };
+      if (!res.ok) {
+        setTokenListError(typeof data?.detail === 'string' ? data.detail : 'Gagal memuat daftar token');
+        return;
       }
-      if (filterStatus === 'used' && !t.used) return false;
-      if (filterStatus === 'unused' && t.used) return false;
-      if (filterDateFrom && t.created_at) {
-        if (new Date(t.created_at) < new Date(filterDateFrom)) return false;
+
+      const nextTotal = typeof data.total === 'number' ? data.total : 0;
+      const nextTotalPages = typeof data.total_pages === 'number' ? Math.max(1, data.total_pages) : 1;
+      setTokenList(Array.isArray(data.tokens) ? data.tokens : []);
+      setTotal(nextTotal);
+      setUsedCount(typeof data.used_count === 'number' ? data.used_count : 0);
+      setUnusedCount(typeof data.unused_count === 'number' ? data.unused_count : 0);
+      setTotalPages(nextTotalPages);
+      if (nextTotal > 0 && page > nextTotalPages) {
+        setPage(nextTotalPages);
       }
-      if (filterDateTo && t.created_at) {
-        const to = new Date(filterDateTo);
-        to.setHours(23, 59, 59, 999);
-        if (new Date(t.created_at) > to) return false;
-      }
-      return true;
-    });
-  }, [compactSearchToken, filterDateFrom, filterDateTo, filterStatus, normalizedSearchToken, tokenList]);
-  const usedCount = tokenList.filter((t) => t.used).length;
-  const unusedCount = tokenList.length - usedCount;
+    } catch (err) {
+      setTokenListError(
+        `Tidak bisa terhubung ke server: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setTokenListLoading(false);
+    }
+  }, [adminId, debouncedSearchToken, filterDateFrom, filterDateTo, filterStatus, page, pageSize]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void fetchTokenList();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [fetchTokenList]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearchToken(searchToken.trim());
+      setPage(1);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [searchToken]);
+
+  function resetFilters() {
+    setSearchToken('');
+    setFilterDateFrom('');
+    setFilterDateTo('');
+    setFilterStatus('all');
+    setPage(1);
+  }
+
+  const startRecord = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const endRecord = total === 0 ? 0 : Math.min(total, startRecord + tokenList.length - 1);
+  const canPrev = page > 1 && !tokenListLoading;
+  const canNext = page < totalPages && !tokenListLoading;
+  const hasActiveFilter =
+    Boolean(searchToken || filterDateFrom || filterDateTo || filterStatus !== 'all');
 
   return (
     <div className="glass-surface rounded-[1.5rem] p-6 sm:p-8">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex items-center gap-2">
           <AdminMenuIcon name="monitoring" className="h-4 w-4 text-brand-600" />
           <h2 className="text-lg font-semibold text-foreground">Monitoring Token</h2>
         </div>
         <button
           type="button"
-          onClick={onRefresh}
+          onClick={fetchTokenList}
           disabled={tokenListLoading}
-          className="btn-liquid btn-liquid-ghost px-4 py-1.5 text-xs font-semibold disabled:opacity-50"
+          className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl border border-border px-3 text-xs font-medium text-foreground-muted transition hover:border-brand-200 hover:text-foreground disabled:opacity-50"
         >
-          {tokenListLoading ? 'Memuat...' : 'Refresh'}
+          <RefreshIcon loading={tokenListLoading} />
+          Refresh
         </button>
       </div>
 
-      {tokenList.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-2">
-          <span className="rounded-full bg-white/50 px-3 py-1 text-xs font-semibold text-foreground-muted">
-            Total: {tokenList.length}
-          </span>
-          <span className="rounded-full bg-green-100/80 px-3 py-1 text-xs font-semibold text-green-700">
-            Belum dipakai: {unusedCount}
-          </span>
-          <span className="rounded-full bg-red-100/80 px-3 py-1 text-xs font-semibold text-red-700">
-            Terpakai: {usedCount}
-          </span>
-        </div>
-      )}
+      <div className="mt-3 flex flex-wrap gap-2">
+        <span className="rounded-full bg-white/50 px-3 py-1 text-xs font-semibold text-foreground-muted">
+          Total: {total}
+        </span>
+        <span className="rounded-full bg-green-100/80 px-3 py-1 text-xs font-semibold text-green-700">
+          Belum dipakai: {unusedCount}
+        </span>
+        <span className="rounded-full bg-red-100/80 px-3 py-1 text-xs font-semibold text-red-700">
+          Terpakai: {usedCount}
+        </span>
+      </div>
 
       <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(240px,1fr)_auto] lg:items-end">
         <div className="flex flex-col gap-1">
@@ -100,19 +187,7 @@ export function TokenMonitoringPanel({
           </label>
           <div className="relative">
             <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-foreground-subtle">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.3"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="h-4 w-4"
-              >
-                <circle cx="11" cy="11" r="8" />
-                <path d="m21 21-4.3-4.3" />
-              </svg>
+              <SearchIcon />
             </span>
             <input
               id="token-search"
@@ -155,7 +230,10 @@ export function TokenMonitoringPanel({
             <input
               type="date"
               value={filterDateFrom}
-              onChange={(e) => setFilterDateFrom(e.target.value)}
+              onChange={(e) => {
+                setFilterDateFrom(e.target.value);
+                setPage(1);
+              }}
               className="glass-input rounded-xl px-3 py-2 text-xs font-medium"
             />
           </div>
@@ -166,7 +244,10 @@ export function TokenMonitoringPanel({
             <input
               type="date"
               value={filterDateTo}
-              onChange={(e) => setFilterDateTo(e.target.value)}
+              onChange={(e) => {
+                setFilterDateTo(e.target.value);
+                setPage(1);
+              }}
               className="glass-input rounded-xl px-3 py-2 text-xs font-medium"
             />
           </div>
@@ -174,12 +255,15 @@ export function TokenMonitoringPanel({
             <label className="text-[10px] font-semibold uppercase tracking-wide text-foreground-subtle">
               Status
             </label>
-            <div className="flex overflow-hidden rounded-xl border border-white/40 bg-white/30">
+            <div className="flex overflow-hidden rounded-xl border border-border bg-surface">
               {(['all', 'unused', 'used'] as const).map((s) => (
                 <button
                   key={s}
                   type="button"
-                  onClick={() => setFilterStatus(s)}
+                  onClick={() => {
+                    setFilterStatus(s);
+                    setPage(1);
+                  }}
                   className={`px-3 py-2 text-xs font-semibold transition ${
                     filterStatus === s ? 'bg-brand-500 text-white' : 'text-foreground-muted hover:bg-white/50'
                   }`}
@@ -189,15 +273,27 @@ export function TokenMonitoringPanel({
               ))}
             </div>
           </div>
-          {(searchToken || filterDateFrom || filterDateTo || filterStatus !== 'all') && (
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-semibold uppercase tracking-wide text-foreground-subtle">
+              Per Halaman
+            </label>
+            <select
+              value={pageSize}
+              onChange={(e) => {
+                setPageSize(Number(e.target.value));
+                setPage(1);
+              }}
+              className="glass-input rounded-xl px-3 py-2 text-xs font-medium"
+            >
+              <option value={10}>10</option>
+              <option value={20}>20</option>
+              <option value={50}>50</option>
+            </select>
+          </div>
+          {hasActiveFilter && (
             <button
               type="button"
-              onClick={() => {
-                setSearchToken('');
-                setFilterDateFrom('');
-                setFilterDateTo('');
-                setFilterStatus('all');
-              }}
+              onClick={resetFilters}
               className="rounded-xl px-3 py-2 text-xs font-semibold text-foreground-muted transition hover:bg-white/40"
             >
               Reset filter
@@ -212,77 +308,99 @@ export function TokenMonitoringPanel({
         </div>
       )}
 
-      {tokenListLoading && (
+      {tokenListLoading && tokenList.length === 0 && (
         <div className="mt-6 py-8 text-center text-sm text-foreground-muted">Memuat data token...</div>
       )}
 
-      {!tokenListLoading && !tokenListError && tokenList.length === 0 && (
-        <div className="mt-6 rounded-2xl border border-dashed border-white/60 bg-white/30 py-8 text-center">
+      {!tokenListLoading && !tokenListError && tokenList.length === 0 && !hasActiveFilter && (
+        <div className="mt-6 rounded-2xl border border-dashed border-border bg-surface py-8 text-center">
           <p className="text-sm text-foreground-muted">Belum ada token. Generate token untuk melihat daftar.</p>
         </div>
       )}
 
-      {!tokenListLoading && tokenList.length > 0 && filtered.length === 0 && (
-        <div className="mt-6 rounded-2xl border border-dashed border-white/60 bg-white/30 py-8 text-center">
+      {!tokenListLoading && !tokenListError && tokenList.length === 0 && hasActiveFilter && (
+        <div className="mt-6 rounded-2xl border border-dashed border-border bg-surface py-8 text-center">
           <p className="text-sm text-foreground-muted">
             Tidak ada token yang cocok dengan pencarian atau filter.
           </p>
         </div>
       )}
 
-      {!tokenListLoading && filtered.length > 0 && (
-        <div className="mt-4 overflow-x-auto rounded-2xl">
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-white/30">
-                <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-foreground-subtle">
-                  Token
-                </th>
-                <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-foreground-subtle">
-                  Dibuat
-                </th>
-                <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-foreground-subtle">
-                  Status
-                </th>
-                <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-foreground-subtle">
-                  Dipakai Pada
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((t) => (
-                <tr key={t.token} className="border-b border-white/10 transition hover:bg-white/20">
-                  <td className="px-3 py-2.5">
-                    <code className="break-all font-mono text-xs text-foreground">{t.token}</code>
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-2.5 text-xs text-foreground-muted">
-                    {t.created_at
-                      ? new Date(t.created_at).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' })
-                      : '—'}
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-2.5">
-                    {t.used ? (
-                      <span className="inline-flex items-center rounded-full bg-red-100/80 px-2.5 py-0.5 text-xs font-semibold text-red-700">
-                        Terpakai
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center rounded-full bg-green-100/80 px-2.5 py-0.5 text-xs font-semibold text-green-700">
-                        Belum dipakai
-                      </span>
-                    )}
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-2.5 text-xs text-foreground-muted">
-                    {t.used_at
-                      ? new Date(t.used_at).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' })
-                      : '—'}
-                  </td>
+      {tokenList.length > 0 && (
+        <div className="mt-4 overflow-hidden rounded-2xl">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-border">
+                  <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-foreground-subtle">
+                    Token
+                  </th>
+                  <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-foreground-subtle">
+                    Dibuat
+                  </th>
+                  <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-foreground-subtle">
+                    Status
+                  </th>
+                  <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-foreground-subtle">
+                    Dipakai Pada
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-          <p className="mt-2 px-3 text-[11px] text-foreground-subtle">
-            Menampilkan {filtered.length} dari {tokenList.length} token
-          </p>
+              </thead>
+              <tbody>
+                {tokenList.map((t) => (
+                  <tr key={t.token} className="border-b border-border transition hover:bg-surface">
+                    <td className="px-3 py-2.5">
+                      <code className="break-all font-mono text-xs text-foreground">{t.token}</code>
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2.5 text-xs text-foreground-muted">
+                      {formatDateTime(t.created_at)}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2.5">
+                      {t.used ? (
+                        <span className="inline-flex items-center rounded-full bg-red-100/80 px-2.5 py-0.5 text-xs font-semibold text-red-700">
+                          Terpakai
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center rounded-full bg-green-100/80 px-2.5 py-0.5 text-xs font-semibold text-green-700">
+                          Belum dipakai
+                        </span>
+                      )}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2.5 text-xs text-foreground-muted">
+                      {formatDateTime(t.used_at)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex flex-col gap-3 border-t border-border px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-xs font-medium text-foreground-muted">
+              Menampilkan {startRecord}-{endRecord} dari {total} token
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPage((current) => Math.max(1, current - 1))}
+                disabled={!canPrev}
+                className="inline-flex h-9 items-center rounded-lg border border-border px-3 text-xs font-semibold text-foreground-muted transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                Sebelumnya
+              </button>
+              <span className="min-w-20 rounded-lg bg-surface px-3 py-2 text-center font-mono text-xs font-semibold text-foreground">
+                {page} / {totalPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+                disabled={!canNext}
+                className="inline-flex h-9 items-center rounded-lg border border-border px-3 text-xs font-semibold text-foreground-muted transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                Berikutnya
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

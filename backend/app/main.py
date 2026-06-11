@@ -6,7 +6,7 @@ load_dotenv()
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -217,18 +217,73 @@ def generate_bulk_tokens(req: GenerateBulkTokenRequest):
 
 
 @app.get("/api/admin/tokens")
-def list_tokens(admin_id: str):
+def list_tokens(
+    admin_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=5, le=50),
+    q: str = "",
+    status: str = "all",
+    date_from: str = "",
+    date_to: str = "",
+):
     _verify_admin(admin_id)
+    if status not in ("all", "used", "unused"):
+        raise HTTPException(400, "Status token tidak valid")
+
+    where_parts: list[str] = []
+    params: list = []
+
+    query = q.strip()
+    if query:
+        compact_query = "".join(ch for ch in query if ch.isalnum())
+        if compact_query:
+            where_parts.append("(token ILIKE %s OR regexp_replace(token, '[^A-Za-z0-9]', '', 'g') ILIKE %s)")
+            params.append(f"%{query}%")
+            params.append(f"%{compact_query}%")
+        else:
+            where_parts.append("token ILIKE %s")
+            params.append(f"%{query}%")
+    if status == "used":
+        where_parts.append("consumed_at IS NOT NULL")
+    elif status == "unused":
+        where_parts.append("consumed_at IS NULL")
+    if date_from:
+        where_parts.append("created_at >= %s::date")
+        params.append(date_from)
+    if date_to:
+        where_parts.append("created_at < (%s::date + INTERVAL '1 day')")
+        params.append(date_to)
+
+    where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    offset = (page - 1) * page_size
+
     with get_cursor() as cur:
         cur.execute(
-            """
+            f"""
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE consumed_at IS NOT NULL) AS used_count
+            FROM tokens
+            {where_sql}
+            """,
+            tuple(params),
+        )
+        count_row = cur.fetchone()
+        total = count_row["total"]
+        used_count = count_row["used_count"]
+
+        cur.execute(
+            f"""
             SELECT token, created_at, consumed_at
             FROM tokens
+            {where_sql}
             ORDER BY created_at DESC
-            LIMIT 500
+            LIMIT %s OFFSET %s
             """,
+            (*params, page_size, offset),
         )
         rows = cur.fetchall()
+    total_pages = (total + page_size - 1) // page_size if total else 1
     return {
         "tokens": [
             {
@@ -238,7 +293,13 @@ def list_tokens(admin_id: str):
                 "used_at": r["consumed_at"].isoformat() if r["consumed_at"] else None,
             }
             for r in rows
-        ]
+        ],
+        "total": total,
+        "used_count": used_count,
+        "unused_count": total - used_count,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
     }
 
 
@@ -284,11 +345,44 @@ def _count_messages(mod: dict) -> tuple[int, int]:
 
 
 @app.get("/api/admin/uploads")
-def list_uploads(admin_id: str, limit: int = 100):
+def list_uploads(
+    admin_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=5, le=50),
+    q: str = "",
+):
     _verify_admin(admin_id)
+    query = q.strip()
+    where_sql = ""
+    params: list = []
+    if query:
+        where_sql = """
+            WHERE (
+                s.original_filename ILIKE %s
+                OR s.schema_code ILIKE %s
+                OR s.report_type ILIKE %s
+                OR COALESCE(r.overall_status, '') ILIKE %s
+                OR CAST(s.id AS TEXT) ILIKE %s
+            )
+        """
+        like = f"%{query}%"
+        params.extend([like, like, like, like, like])
+
+    offset = (page - 1) * page_size
     with get_cursor() as cur:
         cur.execute(
-            """
+            f"""
+            SELECT COUNT(*) AS total
+            FROM submissions s
+            LEFT JOIN results r ON s.id = r.submission_id
+            {where_sql}
+            """,
+            tuple(params),
+        )
+        total = cur.fetchone()["total"]
+
+        cur.execute(
+            f"""
             SELECT
                 s.id            AS submission_id,
                 s.original_filename,
@@ -305,10 +399,11 @@ def list_uploads(admin_id: str, limit: int = 100):
                 r.reference_result
             FROM submissions s
             LEFT JOIN results r ON s.id = r.submission_id
+            {where_sql}
             ORDER BY s.completed_at DESC NULLS LAST
-            LIMIT %s
+            LIMIT %s OFFSET %s
             """,
-            (limit,),
+            (*params, page_size, offset),
         )
         rows = cur.fetchall()
 
@@ -345,7 +440,14 @@ def list_uploads(admin_id: str, limit: int = 100):
             "results":          results,
         })
 
-    return {"uploads": uploads}
+    total_pages = (total + page_size - 1) // page_size if total else 1
+    return {
+        "uploads": uploads,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import { AdminComingSoonPanel } from './AdminComingSoonPanel';
 import { AdminDesktopHeader } from './AdminDesktopHeader';
 import { AdminLoginScreen } from './AdminLoginScreen';
@@ -11,11 +11,99 @@ import { API_URL, MENU_ITEMS, STORAGE_KEY } from './constants';
 import { TokenGeneratePanel } from './TokenGeneratePanel';
 import { TokenMonitoringPanel } from './TokenMonitoringPanel';
 import { UploadHistoryPanel } from './UploadHistoryPanel';
-import type { MenuKey, TokenRecord } from './types';
+import type { MenuKey } from './types';
+
+type AdminSession = {
+  adminId: string;
+  username: string;
+};
+
+const EMPTY_ADMIN_SESSION: AdminSession = { adminId: '', username: '' };
+const ADMIN_SESSION_CHANGE_EVENT = 'admin-session-change';
+
+function subscribeHydration() {
+  return () => {};
+}
+
+function getClientHydrationSnapshot() {
+  return true;
+}
+
+function getServerHydrationSnapshot() {
+  return false;
+}
+
+function subscribeStoredAdminSession(onStoreChange: () => void) {
+  if (typeof window === 'undefined') return () => {};
+
+  const handleChange = () => onStoreChange();
+  window.addEventListener('storage', handleChange);
+  window.addEventListener(ADMIN_SESSION_CHANGE_EVENT, handleChange);
+
+  return () => {
+    window.removeEventListener('storage', handleChange);
+    window.removeEventListener(ADMIN_SESSION_CHANGE_EVENT, handleChange);
+  };
+}
+
+function getStoredAdminSessionSnapshot() {
+  if (typeof window === 'undefined') return null;
+  try {
+    return localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function getServerAdminSessionSnapshot() {
+  return null;
+}
+
+function parseStoredAdminSession(raw: string | null): AdminSession {
+  try {
+    if (!raw) return EMPTY_ADMIN_SESSION;
+    const parsed = JSON.parse(raw) as { admin_id?: string; username?: string };
+    return {
+      adminId: parsed.admin_id ?? '',
+      username: parsed.username ?? '',
+    };
+  } catch {
+    return EMPTY_ADMIN_SESSION;
+  }
+}
+
+function emitAdminSessionChange() {
+  window.dispatchEvent(new Event(ADMIN_SESSION_CHANGE_EVENT));
+}
+
+function storeAdminSession(session: AdminSession) {
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({ admin_id: session.adminId, username: session.username }),
+  );
+  emitAdminSessionChange();
+}
+
+function clearStoredAdminSession() {
+  localStorage.removeItem(STORAGE_KEY);
+  emitAdminSessionChange();
+}
 
 export function AdminPanel() {
-  const [adminId, setAdminId] = useState('');
-  const [adminUsername, setAdminUsername] = useState('');
+  const sessionReady = useSyncExternalStore(
+    subscribeHydration,
+    getClientHydrationSnapshot,
+    getServerHydrationSnapshot,
+  );
+  const storedSessionRaw = useSyncExternalStore(
+    subscribeStoredAdminSession,
+    getStoredAdminSessionSnapshot,
+    getServerAdminSessionSnapshot,
+  );
+  const storedSession = sessionReady ? parseStoredAdminSession(storedSessionRaw) : EMPTY_ADMIN_SESSION;
+  const adminId = storedSession.adminId;
+  const adminUsername = storedSession.username;
+
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
@@ -31,63 +119,11 @@ export function AdminPanel() {
   const [tokenLoading, setTokenLoading] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  const [tokenList, setTokenList] = useState<TokenRecord[]>([]);
-  const [tokenListLoading, setTokenListLoading] = useState(false);
-  const [tokenListError, setTokenListError] = useState('');
-  const [filterStatus, setFilterStatus] = useState<'all' | 'used' | 'unused'>('all');
-  const [filterDateFrom, setFilterDateFrom] = useState('');
-  const [filterDateTo, setFilterDateTo] = useState('');
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as { admin_id: string; username: string };
-        if (parsed.admin_id && parsed.username) {
-          setAdminId(parsed.admin_id);
-          setAdminUsername(parsed.username);
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  const fetchTokenList = useCallback(async () => {
-    if (!adminId) return;
-    setTokenListLoading(true);
-    setTokenListError('');
-    try {
-      const res = await fetch(`${API_URL}/api/admin/tokens?admin_id=${encodeURIComponent(adminId)}`);
-      const data = await res.json();
-      if (!res.ok) {
-        setTokenListError(typeof data?.detail === 'string' ? data.detail : 'Gagal memuat daftar token');
-        return;
-      }
-      setTokenList(data.tokens);
-    } catch (err) {
-      setTokenListError(
-        `Tidak bisa terhubung ke server: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    } finally {
-      setTokenListLoading(false);
-    }
-  }, [adminId]);
-
-  useEffect(() => {
-    if (activeMenu === 'monitoring' && adminId) {
-      void fetchTokenList();
-    }
-  }, [activeMenu, adminId, fetchTokenList]);
-
   function handleLogout() {
-    localStorage.removeItem(STORAGE_KEY);
-    setAdminId('');
-    setAdminUsername('');
+    clearStoredAdminSession();
     setGeneratedToken('');
     setBulkTokens([]);
     setTokenError('');
-    setTokenList([]);
     setActiveMenu('dashboard');
   }
 
@@ -109,12 +145,10 @@ export function AdminPanel() {
         setLoginError(typeof data?.detail === 'string' ? data.detail : 'Login gagal');
         return;
       }
-      setAdminId(data.admin_id);
-      setAdminUsername(data.username);
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ admin_id: data.admin_id, username: data.username }),
-      );
+      storeAdminSession({
+        adminId: data.admin_id,
+        username: data.username,
+      });
       setPassword('');
     } catch (err) {
       setLoginError(`Tidak bisa terhubung ke server: ${err instanceof Error ? err.message : String(err)}`);
@@ -169,7 +203,6 @@ export function AdminPanel() {
         }
         setBulkTokens(data.tokens as string[]);
       }
-      void fetchTokenList();
     } catch (err) {
       setTokenError(`Tidak bisa terhubung ke server: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -201,6 +234,14 @@ export function AdminPanel() {
   }
 
   const isAuthed = Boolean(adminId);
+
+  if (!sessionReady) {
+    return (
+      <main className="relative flex min-h-[calc(100vh-4rem)] items-center justify-center px-4 py-10 sm:px-6">
+        <div className="text-sm font-medium text-slate-600">Memuat sesi admin...</div>
+      </main>
+    );
+  }
 
   if (!isAuthed) {
     return (
@@ -246,18 +287,7 @@ export function AdminPanel() {
                 tokenError={tokenError}
               />
             ) : activeMenu === 'monitoring' ? (
-              <TokenMonitoringPanel
-                tokenList={tokenList}
-                tokenListLoading={tokenListLoading}
-                tokenListError={tokenListError}
-                filterStatus={filterStatus}
-                setFilterStatus={setFilterStatus}
-                filterDateFrom={filterDateFrom}
-                setFilterDateFrom={setFilterDateFrom}
-                filterDateTo={filterDateTo}
-                setFilterDateTo={setFilterDateTo}
-                onRefresh={fetchTokenList}
-              />
+              <TokenMonitoringPanel adminId={adminId} />
             ) : activeMenu === 'uploads' ? (
               <UploadHistoryPanel adminId={adminId} />
             ) : (

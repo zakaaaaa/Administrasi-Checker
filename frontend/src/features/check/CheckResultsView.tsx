@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import type { CheckResults } from '@/features/check/types';
 
 type Message = { level: string; text: string };
@@ -473,6 +473,33 @@ function parseBalanceGroups(notes: string[]): BalanceGroup[] {
 }
 
 type SummaryDef = { label: string; detect: (items: ErrorItem[]) => boolean };
+type SummaryGroup = { def: SummaryDef; items: ErrorItem[] };
+type PageErrorGroup = { key: string; page: number | null; items: ErrorItem[] };
+
+function groupErrorsByPage(items: ErrorItem[]): PageErrorGroup[] {
+  const groups = new Map<string, PageErrorGroup>();
+
+  for (const item of items) {
+    const key = item.page === null ? 'no-page' : `page-${item.page}`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.items.push(item);
+    } else {
+      groups.set(key, {
+        key,
+        page: item.page,
+        items: [item],
+      });
+    }
+  }
+
+  return Array.from(groups.values()).sort((a, b) => {
+    if (a.page === null && b.page === null) return 0;
+    if (a.page === null) return -1;
+    if (b.page === null) return 1;
+    return a.page - b.page;
+  });
+}
 
 const SUMMARY_DEFS: SummaryDef[] = [
   {
@@ -636,6 +663,7 @@ const SUMMARY_DEFS: SummaryDef[] = [
 
 export function CheckResultsView({ result }: { result: CheckResults }) {
   const resultMap = result.results as Record<string, ModuleData | undefined>;
+  const [openDetailPages, setOpenDetailPages] = useState<Set<string>>(() => new Set());
 
   const { flatItems, budgetItems, referenceItems, balanceNotes, foreignWordsSaran } = useMemo(() => {
     const flat: ErrorItem[] = [];
@@ -781,7 +809,10 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
   }, [resultMap]);
 
   const allErrors = [...flatItems, ...budgetItems, ...referenceItems];
-  const activeSummaryDefs = SUMMARY_DEFS.filter((def) => def.detect(allErrors));
+  const activeSummaryGroups = SUMMARY_DEFS.map((def) => ({
+    def,
+    items: allErrors.filter((item) => def.detect([item])),
+  })).filter((group) => group.items.length > 0);
   const flatItemsDetail = flatItems.filter(
     (item) =>
       !(
@@ -789,8 +820,9 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
         (/terdapat lembar judul/i.test(item.masalah) || /tidak terdapat daftar isi/i.test(item.masalah))
       ),
   );
-  const failCount = allErrors.filter(e => e.level === 'fail' || e.level === 'error').length;
-  const warnCount = allErrors.filter(e => e.level === 'warning').length;
+  const detailPageGroups = useMemo(() => groupErrorsByPage(flatItemsDetail), [flatItemsDetail]);
+  const allDetailPagesOpen =
+    detailPageGroups.length > 0 && detailPageGroups.every((group) => openDetailPages.has(group.key));
   const balanceGroups = parseBalanceGroups(balanceNotes);
   const foreignWordsGroup: BalanceGroup | null = foreignWordsSaran.length > 0
     ? { header: 'Format', items: [...new Set(foreignWordsSaran)] }
@@ -798,6 +830,25 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
   const allSaranGroups = foreignWordsGroup
     ? [...balanceGroups, foreignWordsGroup]
     : balanceGroups;
+
+  function toggleAllDetailPages() {
+    setOpenDetailPages((current) => {
+      const everyPageOpen =
+        detailPageGroups.length > 0 && detailPageGroups.every((group) => current.has(group.key));
+      return everyPageOpen
+        ? new Set()
+        : new Set(detailPageGroups.map((group) => group.key));
+    });
+  }
+
+  function toggleDetailPage(key: string) {
+    setOpenDetailPages((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
 
   if (allErrors.length === 0 && allSaranGroups.length === 0) {
     return (
@@ -811,7 +862,7 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
   return (
     <div className="space-y-8">
       {/* Ringkasan Utama */}
-      <RingkasanUtama defs={activeSummaryDefs} />
+      <RingkasanUtama groups={activeSummaryGroups} />
 
       {/* Detail Kesalahan */}
       {(flatItemsDetail.length > 0 || budgetItems.length > 0 || referenceItems.length > 0 || allSaranGroups.length > 0) && (
@@ -821,15 +872,13 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
               Pustaka / Audit Anggaran), umbrella ini disembunyikan agar tidak
               terlihat sebagai header kosong. */}
           {flatItemsDetail.length > 0 && (
-            <div className="space-y-2">
-              <p className="flex items-center gap-1.5 text-[15px] font-semibold uppercase tracking-widest text-black">
-                <SectionIcon name="detail" />
-                Detail Kesalahan
-              </p>
-              {flatItemsDetail.map((item, i) => (
-                <ErrorRow key={i} item={item} showPage />
-              ))}
-            </div>
+            <DetailErrorsByPageSection
+              groups={detailPageGroups}
+              openPages={openDetailPages}
+              allPagesOpen={allDetailPagesOpen}
+              onToggleAll={toggleAllDetailPages}
+              onTogglePage={toggleDetailPage}
+            />
           )}
 
           {/* Audit Anggaran — tanpa kolom halaman */}
@@ -933,6 +982,39 @@ function SectionIcon({ name }: { name: 'ringkasan' | 'detail' | 'budget' | 'refe
   }
 }
 
+function EyeIcon({ className = 'h-4 w-4' }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon({ className = 'h-4 w-4' }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
+  );
+}
+
 function ErrorRow({ item, showPage = false }: { item: ErrorItem; showPage?: boolean }) {
   const isFail = item.level === 'fail' || item.level === 'error';
   const rowCls = isFail ? 'border-red-100 bg-red-50/60' : 'border-amber-100 bg-amber-50/60';
@@ -957,6 +1039,74 @@ function ErrorRow({ item, showPage = false }: { item: ErrorItem; showPage?: bool
   );
 }
 
+function DetailErrorsByPageSection({
+  groups,
+  openPages,
+  allPagesOpen,
+  onToggleAll,
+  onTogglePage,
+}: {
+  groups: PageErrorGroup[];
+  openPages: Set<string>;
+  allPagesOpen: boolean;
+  onToggleAll: () => void;
+  onTogglePage: (key: string) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="flex items-center gap-1.5 text-[15px] font-semibold uppercase tracking-widest text-black">
+          <SectionIcon name="detail" />
+          Detail Kesalahan
+        </p>
+        <button
+          type="button"
+          onClick={onToggleAll}
+          aria-label={allPagesOpen ? 'Tutup semua detail kesalahan' : 'Buka semua detail kesalahan'}
+          aria-expanded={allPagesOpen}
+          title={allPagesOpen ? 'Tutup semua detail kesalahan' : 'Buka semua detail kesalahan'}
+          className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-border bg-surface-elevated px-2.5 text-foreground-muted transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700"
+        >
+          <EyeIcon />
+          <ChevronDownIcon className={`h-3.5 w-3.5 transition-transform ${allPagesOpen ? 'rotate-180' : ''}`} />
+        </button>
+      </div>
+
+      <div className="space-y-3">
+        {groups.map((group) => {
+          const isOpen = openPages.has(group.key);
+          const pageLabel = group.page === null ? 'Tanpa halaman terdeteksi' : `Halaman ${group.page}`;
+          return (
+            <div key={group.key} className="overflow-hidden rounded-xl border border-border bg-surface-elevated">
+              <button
+                type="button"
+                onClick={() => onTogglePage(group.key)}
+                aria-expanded={isOpen}
+                className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-surface-sunken"
+              >
+                <span className="min-w-0 flex-1 text-sm font-semibold text-foreground sm:text-base">
+                  {pageLabel}
+                </span>
+                <span className="shrink-0 rounded-full bg-brand-50 px-2.5 py-1 text-xs font-semibold text-brand-700">
+                  {group.items.length} temuan
+                </span>
+                <ChevronDownIcon className={`h-4 w-4 shrink-0 text-foreground-subtle transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+              </button>
+              {isOpen && (
+                <div className="space-y-2 border-t border-border bg-surface px-3 py-3 sm:px-4">
+                  {group.items.map((item, i) => (
+                    <ErrorRow key={`${group.key}-${i}`} item={item} />
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function GroupedSection({ label, items, showPage = false }: { label: string; items: ErrorItem[]; showPage?: boolean }) {
   const iconName = label === 'Audit Anggaran' ? 'budget' : label === 'Daftar Pustaka' ? 'reference' : null;
   return (
@@ -974,8 +1124,8 @@ function GroupedSection({ label, items, showPage = false }: { label: string; ite
   );
 }
 
-function RingkasanUtama({ defs }: { defs: SummaryDef[] }) {
-  if (defs.length === 0) return null;
+function RingkasanUtama({ groups }: { groups: SummaryGroup[] }) {
+  if (groups.length === 0) return null;
   return (
     <div className="space-y-3">
       <p className="flex items-center gap-1.5 text-[15px] font-semibold uppercase tracking-widest text-black">
@@ -984,12 +1134,27 @@ function RingkasanUtama({ defs }: { defs: SummaryDef[] }) {
       </p>
       <div className="rounded-xl border border-red-100 bg-red-50/60 px-4 py-3">
         <ol className="space-y-3">
-          {defs.map((def, i) => (
-            <li key={i} className="flex items-baseline gap-3">
-              <span className="w-6 shrink-0 text-right font-mono text-base font-semibold text-red-900">
-                {i + 1}.
-              </span>
-              <span className="text-lg font-medium leading-relaxed text-red-900">{def.label}</span>
+          {groups.map((group, i) => (
+            <li key={group.def.label}>
+              <details className="group rounded-lg border border-red-100 bg-white/45 transition open:bg-red-50/70">
+                <summary className="flex cursor-pointer list-none items-start gap-3 rounded-lg px-2 py-2 transition hover:bg-red-100/60 [&::-webkit-details-marker]:hidden">
+                  <span className="w-6 shrink-0 text-right font-mono text-base font-semibold text-red-900">
+                    {i + 1}.
+                  </span>
+                  <span className="min-w-0 flex-1 text-lg font-medium leading-relaxed text-red-900">
+                    {group.def.label}
+                  </span>
+                  <span className="mt-1 shrink-0 rounded-full bg-red-100 px-2.5 py-1 text-xs font-semibold text-red-700">
+                    {group.items.length} detail
+                  </span>
+                  <ChevronDownIcon className="mt-1 h-4 w-4 shrink-0 text-red-500 transition-transform group-open:rotate-180" />
+                </summary>
+                <div className="space-y-2 border-t border-red-100 px-2 pb-2 pt-3">
+                  {group.items.map((item, detailIndex) => (
+                    <ErrorRow key={`${group.def.label}-${detailIndex}`} item={item} showPage />
+                  ))}
+                </div>
+              </details>
             </li>
           ))}
         </ol>
