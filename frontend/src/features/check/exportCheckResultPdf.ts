@@ -4,16 +4,22 @@ import type { CheckResults } from './types';
 
 const MODULES = [
   { key: 'structure', label: 'Struktur Dokumen' },
+  { key: 'ai_front_matter', label: 'Front Matter' },
   { key: 'physical_sheet', label: 'Jumlah Lembar Fisik' },
   { key: 'format', label: 'Format Penulisan' },
   { key: 'page_numbering', label: 'Penomoran Halaman' },
   { key: 'budget', label: 'Audit Anggaran' },
   { key: 'reference', label: 'Daftar Pustaka' },
+  { key: 'luaran', label: 'Luaran' },
+  { key: 'lampiran', label: 'Lampiran' },
+  { key: 'surat_pernyataan', label: 'Surat Pernyataan' },
+  { key: 'biodata_date', label: 'Tanggal Biodata' },
+  { key: 'signature_crop', label: 'Tanda Tangan' },
   { key: 'schedule', label: 'Jadwal Kegiatan' },
   { key: 'similarity', label: 'Similaritas' },
 ] as const;
 
-export function exportCheckResultPdf(result: CheckResults) {
+export function exportCheckResultPdf(result: CheckResults, sourceFileName?: string) {
   const doc = new jsPDF({ unit: 'pt', format: 'a4' });
   const marginX = 40;
   let y = 48;
@@ -32,6 +38,10 @@ export function exportCheckResultPdf(result: CheckResults) {
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(11);
+  if (sourceFileName) {
+    doc.text(`Dokumen: ${sourceFileName}`, marginX, y);
+    y += 16;
+  }
   doc.text(`Submission ID: ${result.submission_id}`, marginX, y);
   y += 16;
   doc.text(`Status Keseluruhan: ${overallStatusLabel}`, marginX, y);
@@ -39,6 +49,7 @@ export function exportCheckResultPdf(result: CheckResults) {
 
   MODULES.forEach(({ key, label }, moduleIndex) => {
     const mod = result.results[key] as { status?: string; messages?: { text: string }[] };
+    if (!mod) return;
     const status = (mod?.status ?? 'unknown').toUpperCase();
     const messages = Array.isArray(mod?.messages) ? mod.messages : [];
 
@@ -65,6 +76,7 @@ export function exportCheckResultPdf(result: CheckResults) {
     y = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? y + 28;
   });
 
-  const safeId = result.submission_id.replace(/[^a-zA-Z0-9-_]/g, '_');
-  doc.save(`hasil-pengecekan-${safeId}.pdf`);
+  const rawName = sourceFileName ? sourceFileName.replace(/\.[^.]+$/, '') : result.submission_id;
+  const safeName = rawName.replace(/[^a-zA-Z0-9-_]+/g, '_').replace(/^_+|_+$/g, '') || result.submission_id;
+  doc.save(`hasil-pengecekan-${safeName}.pdf`);
 }
