@@ -471,9 +471,28 @@ class StructureChecker:
     def _collect_forbidden(
         self, found: list[FoundSection]
     ) -> list[ForbiddenFinding]:
+        # Batas scope "before_lampiran": paragraf heading LAMPIRAN body (bila
+        # ketemu). Kemunculan forbidden di dalam LAMPIRAN diabaikan untuk rule
+        # ber-forbidden_scope — isi lampiran (salinan artikel, poster, dsb.)
+        # bukan bagian struktur isi utama.
+        lampiran_idx = next(
+            (f.paragraph_index for f in found
+             if f.rule_name == "LAMPIRAN" and not f.is_forbidden),
+            None,
+        )
+        scope_by_rule = {
+            r.name: getattr(r, "forbidden_scope", None) for r in self.rules.sections
+        }
+
         forbidden: list[ForbiddenFinding] = []
         for f in found:
             if not f.is_forbidden:
+                continue
+            if (
+                scope_by_rule.get(f.rule_name) == "before_lampiran"
+                and lampiran_idx is not None
+                and f.paragraph_index >= lampiran_idx
+            ):
                 continue
             forbidden.append(
                 ForbiddenFinding(

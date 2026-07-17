@@ -24,6 +24,8 @@ from app.services.schema_rules import (
     get_pkm_pi_proposal_rules,
     get_pkm_pm_proposal_rules,
     get_pkm_gft_proposal_rules,
+    get_pkm_laporan_kemajuan_rules,
+    get_pkm_laporan_akhir_rules,
 )
 from app.services.budget_rules import (
     get_pkm_kc_budget_rules,
@@ -205,6 +207,17 @@ _SCIENTIFIC_ARTICLE_SCHEMAS = {
     "PKM-KI",
     "PKM-AI",
 }
+# Skema pendanaan yang punya Laporan Kemajuan & Laporan Akhir
+_LAPORAN_SCHEMAS = {
+    "PKM-K",
+    "PKM-KC",
+    "PKM-KI",
+    "PKM-PI",
+    "PKM-PM",
+    "PKM-RE",
+    "PKM-RSH",
+    "PKM-VGK",
+}
 
 
 def _log_timing(key: str, t0: float, sink: dict[str, float] | None = None) -> None:
@@ -260,6 +273,12 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
         return _run_pkm_pm(parser)
     elif req.competition == "PKM" and req.report_type == "SCIENTIFIC_ARTICLE" and req.schema_code in _SCIENTIFIC_ARTICLE_SCHEMAS:
         return _run_pkm_ai(parser)
+    elif (
+        req.competition == "PKM"
+        and req.report_type in ("PROGRESS_REPORT", "FINAL_REPORT")
+        and req.schema_code in _LAPORAN_SCHEMAS
+    ):
+        return _run_pkm_laporan(parser, report_type=req.report_type, schema_code=req.schema_code)
     elif key == ("PKM", "PROPOSAL", "PKM-GFT"):
         return _run_pkm_gft(parser)
     else:
@@ -273,7 +292,8 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
             "PKM/SCIENTIFIC_ARTICLE/PKM-RE, PKM/SCIENTIFIC_ARTICLE/PKM-RSH, "
             "PKM/SCIENTIFIC_ARTICLE/PKM-K, PKM/SCIENTIFIC_ARTICLE/PKM-PM, "
             "PKM/SCIENTIFIC_ARTICLE/PKM-PI, PKM/SCIENTIFIC_ARTICLE/PKM-KI, "
-            "PKM/SCIENTIFIC_ARTICLE/PKM-AI."
+            "PKM/SCIENTIFIC_ARTICLE/PKM-AI, serta PROGRESS_REPORT/FINAL_REPORT "
+            "untuk skema pendanaan PKM (K, KC, KI, PI, PM, RE, RSH, VGK)."
         )
 
 
@@ -831,6 +851,122 @@ def _run_pkm_gft(parser: DocxParser) -> dict[str, Any]:
     # Pindahkan undetected similarity ke pesan lampiran (konsisten dengan KC-like).
     _move_similarity_undetected_to_lampiran(results, statuses)
 
+    results["overall_status"] = _aggregate_status(statuses)
+    return results
+
+
+# ============================================================================
+# Runner Laporan Kemajuan & Laporan Akhir (8 skema pendanaan)
+# ============================================================================
+#
+# Pipeline lebih ringkas dari proposal — checker yang relevan saja:
+#   1. Structure       — bab per skema/jenis laporan, forbidden sampul/pengesahan
+#                        (+ ringkasan utk kemajuan; ringkasan WAJIB utk akhir)
+#   2. Physical Sheet  — bagian inti maks 10 halaman (sama dengan proposal)
+#   3. Format          — TNR 12, spasi 1,15, justify, margin 4/3/3/3, A4
+#   4. Page Numbering  — roman bawah utk front matter, arab atas utk inti
+#   5. Reference       — Harvard style
+#   6. Lampiran        — Penggunaan Dana + Bukti Pendukung (KI kemajuan
+#                        +Draft Dokumen Teknis), OCR fallback via index
+# Modul yang SKIP: budget/justifikasi, luaran proposal, biodata_date,
+# surat_pernyataan, signature_crop, schedule, similarity — item tersebut
+# bagian dari proposal, tidak dipersyaratkan pada berkas laporan.
+
+
+def _run_pkm_laporan(
+    parser: DocxParser, *, report_type: str, schema_code: str
+) -> dict[str, Any]:
+    suffix = schema_code.removeprefix("PKM-")
+    if report_type == "PROGRESS_REPORT":
+        schema = get_pkm_laporan_kemajuan_rules(suffix)
+        log_label = f"{schema_code} Laporan Kemajuan"
+    else:
+        schema = get_pkm_laporan_akhir_rules(suffix)
+        log_label = f"{schema_code} Laporan Akhir"
+
+    results: dict[str, Any] = {}
+    statuses: list[str] = []
+    timings: dict[str, float] = {}
+
+    # 1. Structure
+    structure_result = None
+    _t0 = time.perf_counter()
+    try:
+        structure_result = StructureChecker(parser, schema).check()
+        results["structure"] = structure_result.to_dict()
+        statuses.append(_extract_status(results["structure"]))
+    except Exception as e:
+        results["structure"] = _module_error_payload(e)
+        statuses.append("error")
+    _log_timing("structure", _t0, timings)
+
+    # 2. Physical Sheet (bagian inti maks 10 halaman)
+    _physical_result = None
+    _t0 = time.perf_counter()
+    try:
+        _physical_result = PhysicalSheetCounter(parser, schema).check()
+        results["physical_sheet"] = _physical_result.to_dict()
+        statuses.append(_extract_status(results["physical_sheet"]))
+    except Exception as e:
+        results["physical_sheet"] = _module_error_payload(e)
+        statuses.append("error")
+    _log_timing("physical_sheet", _t0, timings)
+
+    # 3. Format (mulai Bab 1 s.d. sebelum Lampiran)
+    _t0 = time.perf_counter()
+    try:
+        if _physical_result and not _physical_result.pdf_path:
+            _physical_result.pdf_path = _render_pdf_for_format(str(parser.file_path))
+        _pdf_texts = _load_pdf_sheet_texts(_physical_result) if _physical_result else None
+        r = FormatChecker(parser, schema=schema, pdf_sheet_texts=_pdf_texts).check(
+            start_para_idx=_find_core_start_idx(structure_result)
+        )
+        results["format"] = r.to_dict()
+        statuses.append(_extract_status(results["format"]))
+    except Exception as e:
+        results["format"] = _module_error_payload(e)
+        statuses.append("error")
+    _log_timing("format", _t0, timings)
+
+    # 4. Page Numbering
+    _t0 = time.perf_counter()
+    try:
+        r = PageNumberingChecker(parser, schema).check()
+        results["page_numbering"] = r.to_dict()
+        statuses.append(_extract_status(results["page_numbering"]))
+    except Exception as e:
+        results["page_numbering"] = _module_error_payload(e)
+        statuses.append("error")
+    _log_timing("page_numbering", _t0, timings)
+
+    # 5. Reference (Harvard style)
+    _t0 = time.perf_counter()
+    try:
+        r = ReferenceValidator(parser, schema).check()
+        results["reference"] = r.to_dict()
+        statuses.append(_extract_status(results["reference"]))
+    except Exception as e:
+        results["reference"] = _module_error_payload(e)
+        statuses.append("error")
+    _log_timing("reference", _t0, timings)
+
+    # 6. Lampiran laporan — Penggunaan Dana + Bukti Pendukung, OCR fallback
+    _t0 = time.perf_counter()
+    try:
+        lampiran_index = LampiranOcrIndex(parser)
+        r = LampiranChecker.for_pkm_laporan(parser, suffix, report_type).check(
+            index=lampiran_index
+        )
+        results["lampiran"] = r.to_dict()
+        statuses.append(_extract_status(results["lampiran"]))
+    except Exception as e:
+        results["lampiran"] = _module_error_payload(e)
+        statuses.append("error")
+    _log_timing("lampiran", _t0, timings)
+
+    results["_timings"] = {**timings, "total": round(sum(timings.values()), 3)}
+    if _TIMING_ENABLED:
+        print(f"[timing] TOTAL {log_label}: {results['_timings']['total']:.2f}s", flush=True)
     results["overall_status"] = _aggregate_status(statuses)
     return results
 

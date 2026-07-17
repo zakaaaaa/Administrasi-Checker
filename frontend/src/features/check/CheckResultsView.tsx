@@ -81,8 +81,10 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
 
   switch (module) {
     case 'structure': {
-      if (/halaman[_\s]judul|sampul|pengesahan|ringkasan|abstrak|abstract/.test(m))
-        return 'Kesalahan terdapat lembar judul / halaman sampul / lembar pengesahan / ringkasan / abstrak di proposal';
+      // Pesan "tidak ditemukan" (section wajib hilang, mis. RINGKASAN di
+      // laporan akhir) jangan tertangkap regex forbidden di bawah.
+      if (/halaman[_\s]judul|sampul|pengesahan|ringkasan|abstrak|abstract/.test(m) && !/tidak ditemukan/.test(m))
+        return 'Kesalahan terdapat lembar judul / halaman sampul / lembar pengesahan / ringkasan / abstrak di dokumen';
       if (/daftar[_\s]isi/.test(m))
         return 'Kesalahan tidak terdapat daftar isi';
       if (/luaran/.test(m))
@@ -476,12 +478,23 @@ type SummaryDef = { label: string; detect: (items: ErrorItem[]) => boolean };
 
 const SUMMARY_DEFS: SummaryDef[] = [
   {
-    label: 'Kesalahan terdapat lembar judul / halaman sampul / lembar pengesahan / ringkasan / abstrak di proposal',
+    label: 'Kesalahan terdapat lembar judul / halaman sampul / lembar pengesahan / ringkasan / abstrak di dokumen',
     detect: (items) =>
       items.some(
         (it) =>
           it.module === 'structure' &&
-          /terdapat lembar judul|halaman sampul|pengesahan|ringkasan|abstrak/i.test(it.masalah),
+          /terdapat lembar judul|halaman sampul|pengesahan|ringkasan|abstrak/i.test(it.masalah) &&
+          !/tidak ditemukan/i.test(it.masalah),
+      ),
+  },
+  {
+    label: 'Kesalahan tidak terdapat ringkasan (wajib pada laporan akhir)',
+    detect: (items) =>
+      items.some(
+        (it) =>
+          it.module === 'structure' &&
+          /ringkasan/i.test(it.masalah) &&
+          /tidak ditemukan/i.test(it.masalah),
       ),
   },
   {
@@ -604,7 +617,7 @@ const SUMMARY_DEFS: SummaryDef[] = [
       ),
   },
   {
-    label: 'Kesalahan jumlah halaman bagian inti proposal (Bab 1 Pendahuluan – Daftar Pustaka lebih dari 10 halaman)',
+    label: 'Kesalahan jumlah halaman bagian inti dokumen (Bab 1 Pendahuluan – Daftar Pustaka lebih dari 10 halaman)',
     detect: (items) =>
       items.some((it) => it.module === 'physical_sheet' && /melebihi/i.test(it.masalah)),
   },

@@ -36,12 +36,27 @@ _INDONESIAN_MONTHS: dict[str, int] = {
     "september": 9, "oktober": 10, "november": 11, "desember": 12,
 }
 
-# "Kota, DD Bulan YYYY" — kota harus proper-case (Awalan Kapital + huruf kecil)
-# (?-i:...) menonaktifkan IGNORECASE untuk bagian kota saja agar "AI" / "dengan" tidak ikut match
+# "Kota, DD Bulan YYYY" — kota boleh proper-case ATAU ALL CAPS (min 3 huruf untuk
+# menghindari "AI", "IV", dsb). (?-i:...) tetap menonaktifkan IGNORECASE di bagian
+# kota agar kata lowercase seperti "dengan" / "atau" tidak ikut match.
 _DATE_RE = re.compile(
     r"(?<!\w)"
-    r"(?-i:[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})"   # Kota: proper noun, case-sensitive
+    r"(?-i:"
+    r"(?:[A-Z][a-z]{1,}|[A-Z]{3,})"                        # kata pertama: ProperCase atau ALLCAPS≥3
+    r"(?:\s+(?:[A-Z][a-z]{1,}|[A-Z]{2,})){0,2}"            # kata kedua/ketiga (opsional)
+    r")"
     r"\s*[,;]\s*"
+    r"(\d{1,2})\s+"
+    r"(Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus"
+    r"|September|Oktober|November|Desember)\s+"
+    r"(\d{4})",
+    re.IGNORECASE,
+)
+
+# Fallback: tanggal TANPA prefix kota — hanya digunakan untuk tahun valid (2026)
+# agar false positive dari tahun lain tidak tertangkap.
+_DATE_RE_BARE = re.compile(
+    r"(?<!\d)"
     r"(\d{1,2})\s+"
     r"(Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus"
     r"|September|Oktober|November|Desember)\s+"
@@ -339,9 +354,15 @@ def _load_image_rels(zf: zipfile.ZipFile) -> dict[str, str]:
 #   C. "Tempat,Tanggal Lahir" / "Tempat / Tanggal Lahir"             (punctuation variant)
 #   D. "Tanggal Lahir"                                                (label pendek)
 #   E. "T.T.L." / "TTL"                                               (singkatan)
-# Window 0..500 char (was 300) — Vision yang baca tabel kolom kadang menaruh
-# 1-2 baris label/value lain di antara label birth date dan value tanggalnya.
+#   F. "Tgl Lahir" / "Tgl. Lahir"                                     (singkatan Tgl)
+# Window 0..800 char — Vision yang baca tabel kolom kadang menaruh konten
+# panjang antara label dan nilai. Aman karena tahun dibatasi 1900–2025
+# (tidak bisa menstripping tanggal tanda tangan 2026).
 # Mendukung "Tempat" misread OCR sebagai "Tcmpat".
+# Hanya strip tanggal dengan tahun lahir (< 2026) agar tanggal tanda tangan
+# 2026 tidak pernah ikut terhapus, seberapa pun lebar window-nya.
+_BIRTH_YEAR_RE = r"(?:19\d{2}|20[01]\d|202[0-5])"  # 1900–2025
+
 _TTL_RE = re.compile(
     r"(?:"
     r"t[ce]?mpat\s*[,/&]?\s*dan\s+tanggal(?:\s+lahir)?"   # A: tempat dan tanggal [lahir]
@@ -349,11 +370,13 @@ _TTL_RE = re.compile(
     r"|t[ce]?mpat\s*[,/]\s*tanggal(?:\s+lahir)?"           # C: tempat,tanggal / tempat/tanggal
     r"|tanggal\s+lahir"                                     # D: tanggal lahir
     r"|t\.?\s*t\.?\s*l\.?"                                  # E: T.T.L. abbr
+    r"|tgl\.?\s*lahir"                                      # F: Tgl Lahir / Tgl. Lahir
     r")"
-    r"[\s\S]{0,500}?"
+    r"[\s\S]{0,800}?"
     r"\d{1,2}\s+"
     r"(?:Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus"
-    r"|September|Oktober|November|Desember)\s+\d{4}",
+    r"|September|Oktober|November|Desember)\s+"
+    + _BIRTH_YEAR_RE,
     re.IGNORECASE,
 )
 
@@ -364,27 +387,41 @@ def _strip_birthdate_lines(text: str) -> str:
 
 
 def _extract_dates(text: str) -> list[tuple[date, str]]:
-    """Ekstrak semua tanggal format 'Kota, DD Bulan YYYY' dari teks (tanggal lahir dikecualikan).
-    Setiap kemunculan dihitung terpisah sehingga bisa mendeteksi tanggal per orang.
+    """Ekstrak semua tanggal tanda tangan dari teks (tanggal lahir dikecualikan).
+
+    Pass 1 — _DATE_RE: format 'Kota, DD Bulan YYYY' (kota proper-case / ALL-CAPS).
+    Pass 2 — _DATE_RE_BARE: format 'DD Bulan YYYY' tanpa prefix kota, hanya untuk
+             tahun valid (2026) supaya tidak menangkap tanggal lahir atau referensi lama.
     """
     clean = _strip_birthdate_lines(text)
     results: list[tuple[date, str]] = []
+    seen_spans: set[int] = set()
 
-    for m in _DATE_RE.finditer(clean):
-        day_str   = m.group(1)
-        month_str = m.group(2).lower()
-        year_str  = m.group(3)
-
-        month = _INDONESIAN_MONTHS.get(month_str)
+    def _parse_match(day_s: str, month_s: str, year_s: str, day_pos: int) -> None:
+        if day_pos in seen_spans:
+            return
+        month = _INDONESIAN_MONTHS.get(month_s.lower())
         if month is None:
-            continue
+            return
         try:
-            d = date(int(year_str), month, int(day_str))
+            d = date(int(year_s), month, int(day_s))
         except ValueError:
-            continue
+            return
+        # Abaikan tahun yang jelas bukan tahun tanda tangan (mis. tahun lahir).
+        if d.year < _VALID_FROM.year:
+            return
+        seen_spans.add(day_pos)
+        results.append((d, f"{day_s} {month_s} {year_s}"))
 
-        # Simpan hanya bagian tanggalnya (tanpa prefix kota/tempat) untuk pesan.
-        date_only = f"{m.group(1)} {m.group(2)} {year_str}"
-        results.append((d, date_only))
+    # Pass 1: dengan prefix kota (semua tahun ≥ 2026)
+    for m in _DATE_RE.finditer(clean):
+        _parse_match(m.group(1), m.group(2), m.group(3), m.start(1))
+
+    # Pass 2: tanpa prefix kota — hanya tahun valid agar tidak double-count atau false positive
+    for m in _DATE_RE_BARE.finditer(clean):
+        year_val = int(m.group(3))
+        if year_val < _VALID_FROM.year:
+            continue
+        _parse_match(m.group(1), m.group(2), m.group(3), m.start(1))
 
     return results

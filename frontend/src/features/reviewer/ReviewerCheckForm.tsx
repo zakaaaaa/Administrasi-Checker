@@ -1,7 +1,7 @@
 'use client';
 
 import type { ChangeEvent, DragEvent, FormEvent } from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { CheckResultsView } from '@/features/check/CheckResultsView';
 import type { CheckResults } from '@/features/check/types';
 import { exportCheckResultPdf } from '@/features/check/exportCheckResultPdf';
@@ -17,6 +17,7 @@ import {
 } from '@/features/check/form/checkFormConstants';
 import { CheckFormSection } from '@/features/check/form/CheckFormSection';
 import { CheckFormSelectCard } from '@/features/check/form/CheckFormSelectCard';
+import { CheckProgressModal, PROGRESS_WAIT_CAP } from '@/features/check/CheckProgressModal';
 
 type Props = {
   adminId: string;
@@ -35,6 +36,12 @@ export function ReviewerCheckForm({ adminId, adminUsername, onLogout }: Props) {
   const [errorMsg, setErrorMsg] = useState('');
   const [view, setView] = useState<ViewState>('form');
   const [result, setResult] = useState<CheckResults | null>(null);
+  const [progress, setProgress] = useState(0);
+  const progressTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    return () => { if (progressTimer.current) clearInterval(progressTimer.current); };
+  }, []);
 
   useEffect(() => {
     const validCodes = SKEMA_LAPORAN_MAP[skema];
@@ -80,6 +87,20 @@ export function ReviewerCheckForm({ adminId, adminUsername, onLogout }: Props) {
     if (!file) { setErrorMsg('File laporan belum diunggah.'); return; }
 
     setView('submitting');
+    setProgress(0);
+    const SIM_DURATION_MS = 180000;
+    const TICK_MS = 150;
+    const WAIT_HOLD = PROGRESS_WAIT_CAP - 1;
+    const stepPerTick = (PROGRESS_WAIT_CAP / SIM_DURATION_MS) * TICK_MS;
+    if (progressTimer.current) clearInterval(progressTimer.current);
+    progressTimer.current = setInterval(() => {
+      setProgress((p) => Math.min(WAIT_HOLD, p + stepPerTick));
+    }, TICK_MS);
+
+    const stopTimer = () => {
+      if (progressTimer.current) { clearInterval(progressTimer.current); progressTimer.current = null; }
+    };
+
     const fd = new FormData();
     fd.append('admin_id', adminId);
     fd.append('competition', 'PKM');
@@ -91,6 +112,7 @@ export function ReviewerCheckForm({ adminId, adminUsername, onLogout }: Props) {
       const res = await fetch(`${API_URL}/api/reviewer/check`, { method: 'POST', body: fd });
       const data = await res.json();
       if (!res.ok) {
+        stopTimer();
         if (res.status === 401) {
           onLogout();
           return;
@@ -100,9 +122,15 @@ export function ReviewerCheckForm({ adminId, adminUsername, onLogout }: Props) {
         setView('form');
         return;
       }
+      stopTimer();
+      setProgress(PROGRESS_WAIT_CAP);
+      await new Promise((r) => setTimeout(r, 450));
+      setProgress(100);
+      await new Promise((r) => setTimeout(r, 550));
       setResult(data as CheckResults);
       setView('result');
     } catch (err) {
+      stopTimer();
       setErrorMsg(`Tidak bisa terhubung ke server: ${err instanceof Error ? err.message : String(err)}`);
       setView('form');
     }
@@ -118,6 +146,7 @@ export function ReviewerCheckForm({ adminId, adminUsername, onLogout }: Props) {
 
   return (
     <div className="relative min-h-screen">
+      {view === 'submitting' && <CheckProgressModal progress={progress} />}
       {/* Header */}
       <header className="sticky top-0 z-10 border-b border-border bg-surface-elevated print:hidden">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3 sm:px-6">
@@ -176,18 +205,6 @@ export function ReviewerCheckForm({ adminId, adminUsername, onLogout }: Props) {
       </header>
 
       <main className="mx-auto max-w-5xl px-4 pb-24 pt-8 sm:px-6">
-        {view === 'submitting' && (
-          <div className="flex flex-col items-center justify-center py-32 text-center">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-brand-100">
-              <svg className="h-6 w-6 animate-spin text-brand-600" viewBox="0 0 24 24" fill="none">
-                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" opacity="0.25" />
-                <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-              </svg>
-            </div>
-            <p className="mt-4 text-base font-semibold text-foreground">Memproses dokumen…</p>
-            <p className="mt-1 text-sm text-foreground-muted">Biasanya membutuhkan 1–2 menit</p>
-          </div>
-        )}
 
         {view === 'result' && result && (
           <div>

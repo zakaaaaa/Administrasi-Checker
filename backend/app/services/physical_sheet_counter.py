@@ -556,6 +556,18 @@ class PhysicalSheetCounter:
                         "(bukan halaman sampul terpisah)."
                     ),
                 ))
+        elif self.rules.report_type_code == "FINAL_REPORT":
+            # Laporan akhir diawali RINGKASAN (tanpa nomor halaman) sebelum
+            # Daftar Isi — halaman pertama sah memuat salah satunya.
+            if not (self._RINGKASAN_RE.search(page1) or self._DAFTAR_ISI_RE.search(page1)):
+                msgs.append(CheckMessage(
+                    level="fail",
+                    text=(
+                        "Halaman pertama tidak memuat 'Ringkasan' maupun 'Daftar Isi'. "
+                        "Pastikan halaman pertama laporan akhir adalah Ringkasan, "
+                        "bukan halaman sampul atau halaman lain."
+                    ),
+                ))
         else:
             if not self._DAFTAR_ISI_RE.search(page1):
                 msgs.append(CheckMessage(
@@ -766,6 +778,7 @@ class PhysicalSheetCounter:
 
     _DAFTAR_ISI_RE = re.compile(r"daftar\s+isi", re.IGNORECASE)
     _ABSTRAK_RE = re.compile(r"(?:^|\n)\s*(?:ABSTRAK|ABSTRACT)\s*(?:\n|$)", re.IGNORECASE)
+    _RINGKASAN_RE = re.compile(r"(?:^|\n)\s*RINGKASAN\s*(?:\n|$)", re.IGNORECASE)
 
     def _check_first_page_structure(self, sheet_texts: list[str]) -> list[CheckMessage]:
         """

@@ -32,6 +32,10 @@ class SectionRule:
         order: urutan relatif (integer naik). Section dengan order lebih kecil
                harus muncul lebih dulu di dokumen. Hanya digunakan untuk
                required section (forbidden tidak punya order).
+        forbidden_scope: None = forbidden dicek di seluruh dokumen (default).
+               "before_lampiran" = kemunculan di dalam body LAMPIRAN diabaikan —
+               dipakai rules laporan, karena bukti pendukung kegiatan lazim
+               memuat salinan artikel/abstrak yang bukan pelanggaran struktur.
     """
     name: str
     aliases: list[str] = field(default_factory=list)
@@ -39,6 +43,7 @@ class SectionRule:
     forbidden: bool = False
     is_core: bool = False
     order: Optional[int] = None
+    forbidden_scope: Optional[str] = None
 
     def __post_init__(self):
         if self.required and self.forbidden:
@@ -939,6 +944,310 @@ def get_pkm_ai_proposal_rules() -> SchemaRules:
 #   → "Jika isi utama proposal ada halaman sampul, lembar pengesahan,
 #      ringkasan atau abstrak, maka gagasan tersebut TIDAK LOLOS tahap 1."
 # ============================================================================
+
+
+# ============================================================================
+# HARDCODED RULES — Laporan Kemajuan & Laporan Akhir PKM 2026
+# ============================================================================
+#
+# Sumber: PDF panduan per skema 2026 folder panduan/ (§Sistematika Laporan
+# Kemajuan & §Sistematika Laporan Akhir). Berlaku untuk 8 skema pendanaan:
+# K, KC, KI, PI, PM, RE, RSH, VGK.
+#
+# Laporan Kemajuan — 6 BAB identik antarskema, hanya judul BAB 3 yang beda:
+#   BAB 1 PENDAHULUAN → BAB 2 TARGET LUARAN → BAB 3 (METODE PELAKSANAAN:
+#   K/PI/PM; TAHAP PELAKSANAAN: KC/KI/VGK; METODE PENELITIAN: RE/RSH) →
+#   BAB 4 HASIL YANG DICAPAI → BAB 5 POTENSI HASIL →
+#   BAB 6 RENCANA TAHAPAN BERIKUTNYA → DAFTAR PUSTAKA → LAMPIRAN
+#   TANPA ringkasan (forbidden, sama seperti proposal).
+#
+# Laporan Akhir — RINGKASAN WAJIB (tanpa nomor halaman) + 5 BAB
+# (VGK 6 BAB), variasi di BAB 2–4:
+#   K   : GAMBARAN UMUM USAHA / METODE PELAKSANAAN / HASIL...PENGEMBANGAN USAHA
+#   KC,KI: TINJAUAN PUSTAKA / TAHAP PELAKSANAAN / HASIL...POTENSI KHUSUS
+#   PI  : TINJAUAN PUSTAKA / METODE PELAKSANAAN / HASIL...POTENSI KHUSUS
+#   PM  : GAMBARAN UMUM MASYARAKAT MITRA / METODE PELAKSANAAN /
+#         HASIL...POTENSI KEBERLANJUTAN
+#   RE,RSH: TINJAUAN PUSTAKA / METODE PENELITIAN / HASIL...POTENSI KHUSUS
+#   VGK : GAGASAN / SKENARIO KONTEN / TAHAP PELAKSANAAN /
+#         HASIL...POTENSI KHUSUS / PENUTUP (BAB 6)
+#
+# Ketentuan lain sama dengan proposal: bagian inti maks 10 halaman, tanpa
+# halaman sampul & pengesahan, penomoran romawi/arab, format TNR 12 spasi
+# 1,15 margin 4/3/3/3, daftar pustaka Harvard.
+# ============================================================================
+
+_ROMAN = {1: "I", 2: "II", 3: "III", 4: "IV", 5: "V", 6: "VI"}
+
+_LAPORAN_SCHEMA_NAMES = {
+    "K": "Kewirausahaan",
+    "KC": "Karsa Cipta",
+    "KI": "Karya Inovatif",
+    "PI": "Penerapan IPTEK",
+    "PM": "Pengabdian kepada Masyarakat",
+    "RE": "Riset Eksakta",
+    "RSH": "Riset Sosial Humaniora",
+    "VGK": "Video Gagasan Konstruktif",
+}
+
+# Judul BAB 3 Laporan Kemajuan per skema (satu-satunya variasi antarskema)
+_KEMAJUAN_BAB3 = {
+    "K": "METODE PELAKSANAAN",
+    "PI": "METODE PELAKSANAAN",
+    "PM": "METODE PELAKSANAAN",
+    "KC": "TAHAP PELAKSANAAN",
+    "KI": "TAHAP PELAKSANAAN",
+    "VGK": "TAHAP PELAKSANAAN",
+    "RE": "METODE PENELITIAN",
+    "RSH": "METODE PENELITIAN",
+}
+
+# Judul BAB 2 & BAB 4 Laporan Akhir per skema (BAB 3 reuse _KEMAJUAN_BAB3;
+# VGK dirakit khusus karena punya 6 BAB)
+_AKHIR_BAB2 = {
+    "K": "GAMBARAN UMUM USAHA",
+    "KC": "TINJAUAN PUSTAKA",
+    "KI": "TINJAUAN PUSTAKA",
+    "PI": "TINJAUAN PUSTAKA",
+    "PM": "GAMBARAN UMUM MASYARAKAT MITRA",
+    "RE": "TINJAUAN PUSTAKA",
+    "RSH": "TINJAUAN PUSTAKA",
+}
+_AKHIR_BAB4 = {
+    "K": "HASIL YANG DICAPAI DAN POTENSI PENGEMBANGAN USAHA",
+    "PM": "HASIL YANG DICAPAI DAN POTENSI KEBERLANJUTAN",
+    # default skema lain: HASIL YANG DICAPAI DAN POTENSI KHUSUS
+}
+
+
+def _bab3_field_variants(canonical: str) -> tuple[str, ...]:
+    """Alias BAB 3 laporan utk variasi lapangan (judul antarskema kerap tertukar,
+    dan dokumen riset lazim menulis 'METODE RISET')."""
+    pool = {
+        "METODE PELAKSANAAN",
+        "TAHAP PELAKSANAAN",
+        "METODE PENELITIAN",
+        "METODE RISET",
+    } - {canonical}
+    return tuple(f"BAB {n}. {t}" for t in sorted(pool) for n in ("3", "III"))
+
+
+def _laporan_bab_rule(
+    num: int,
+    title: str,
+    *,
+    order: int,
+    extra_aliases: tuple[str, ...] = (),
+) -> SectionRule:
+    """SectionRule 'BAB N. JUDUL' dengan permutasi alias arab/romawi standar."""
+    roman = _ROMAN[num]
+    return SectionRule(
+        name=f"BAB {num}. {title}",
+        aliases=[
+            f"BAB {roman}. {title}",
+            f"BAB {num} {title}",
+            f"BAB {roman} {title}",
+            *extra_aliases,
+        ],
+        required=True,
+        is_core=True,
+        order=order,
+    )
+
+
+def _laporan_forbidden_sections(
+    schema_label: str, doc_label: str, *, forbid_ringkasan: bool
+) -> list[SectionRule]:
+    """Section terlarang laporan: sampul & pengesahan (+ ringkasan utk kemajuan).
+
+    Semua di-scope "before_lampiran": bukti pendukung kegiatan di LAMPIRAN
+    lazim memuat salinan artikel/poster (ada ABSTRAK) — bukan pelanggaran.
+    doc_label sengaja TIDAK dipakai telanjang sebagai alias sampul: frasa
+    "Laporan Kemajuan" muncul wajar di body (mis. daftar luaran Bab 4).
+    """
+    sections = [
+        SectionRule(
+            name="HALAMAN SAMPUL",
+            aliases=[
+                "COVER",
+                "SAMPUL",
+                f"{doc_label} PKM",
+                f"{doc_label} {schema_label}",
+                f"{doc_label} PROGRAM KREATIVITAS MAHASISWA",
+            ],
+            forbidden=True,
+            forbidden_scope="before_lampiran",
+        ),
+        SectionRule(
+            name="HALAMAN PENGESAHAN",
+            aliases=[
+                "LEMBAR PENGESAHAN",
+                "PENGESAHAN LAPORAN",
+                "PENGESAHAN PKM",
+                "PENGESAHAN USULAN",
+            ],
+            forbidden=True,
+            forbidden_scope="before_lampiran",
+        ),
+    ]
+    if forbid_ringkasan:
+        sections.append(
+            SectionRule(
+                name="RINGKASAN",
+                aliases=["ABSTRAK", "ABSTRACT"],
+                forbidden=True,
+                forbidden_scope="before_lampiran",
+            )
+        )
+    return sections
+
+
+def get_pkm_laporan_kemajuan_rules(schema_code: str) -> SchemaRules:
+    """
+    Aturan Laporan Kemajuan PKM 2026 untuk satu skema pendanaan.
+
+    schema_code: kode pendek tanpa prefix — "K", "KC", "KI", "PI", "PM",
+    "RE", "RSH", "VGK".
+    """
+    code = schema_code.upper().removeprefix("PKM-")
+    if code not in _LAPORAN_SCHEMA_NAMES:
+        raise ValueError(f"Skema tidak dikenal untuk laporan kemajuan: {schema_code!r}")
+    bab3 = _KEMAJUAN_BAB3[code]
+    # Toleransi variasi lapangan: judul BAB 3 skema lain lazim tertukar,
+    # dan dokumen riset kerap menulis "METODE RISET" alih-alih "METODE PENELITIAN"
+    bab3_variants = _bab3_field_variants(bab3)
+    return SchemaRules(
+        competition_code="PKM",
+        schema_code=code,
+        report_type_code="PROGRESS_REPORT",
+        schema_name=_LAPORAN_SCHEMA_NAMES[code],
+        year=2026,
+        sections=[
+            # --- SECTION WAJIB ---
+            SectionRule(name="DAFTAR ISI", required=True, order=1),
+            SectionRule(
+                name="DAFTAR LAMPIRAN",
+                aliases=["DAFTAR LAMPIRAN-LAMPIRAN"],
+                required=True,
+                order=4,
+            ),
+            _laporan_bab_rule(1, "PENDAHULUAN", order=5),
+            _laporan_bab_rule(2, "TARGET LUARAN", order=6),
+            _laporan_bab_rule(3, bab3, order=7, extra_aliases=bab3_variants),
+            _laporan_bab_rule(4, "HASIL YANG DICAPAI", order=8),
+            _laporan_bab_rule(5, "POTENSI HASIL", order=9),
+            _laporan_bab_rule(
+                6,
+                "RENCANA TAHAPAN BERIKUTNYA",
+                order=10,
+                extra_aliases=("BAB 6. RENCANA TAHAP BERIKUTNYA", "BAB VI. RENCANA TAHAP BERIKUTNYA"),
+            ),
+            SectionRule(name="DAFTAR PUSTAKA", required=True, is_core=True, order=11),
+            SectionRule(
+                name="LAMPIRAN",
+                aliases=["LAMPIRAN 1", "LAMPIRAN 1.", "LAMPIRAN-LAMPIRAN"],
+                required=True,
+                order=12,
+            ),
+            # --- SECTION OPSIONAL ---
+            SectionRule(name="DAFTAR GAMBAR", required=False, order=2),
+            SectionRule(name="DAFTAR TABEL", required=False, order=3),
+            # --- SECTION TERLARANG ---
+            *_laporan_forbidden_sections(
+                f"PKM-{code}", "LAPORAN KEMAJUAN", forbid_ringkasan=True
+            ),
+        ],
+    )
+
+
+def get_pkm_laporan_akhir_rules(schema_code: str) -> SchemaRules:
+    """
+    Aturan Laporan Akhir PKM 2026 untuk satu skema pendanaan.
+
+    Berbeda dari kemajuan: RINGKASAN wajib (bukan terlarang), 5 BAB
+    (VGK 6 BAB) diakhiri PENUTUP.
+    """
+    code = schema_code.upper().removeprefix("PKM-")
+    if code not in _LAPORAN_SCHEMA_NAMES:
+        raise ValueError(f"Skema tidak dikenal untuk laporan akhir: {schema_code!r}")
+
+    if code == "VGK":
+        bab_rules = [
+            _laporan_bab_rule(1, "PENDAHULUAN", order=6),
+            _laporan_bab_rule(2, "GAGASAN", order=7),
+            _laporan_bab_rule(3, "SKENARIO KONTEN", order=8),
+            _laporan_bab_rule(4, "TAHAP PELAKSANAAN", order=9),
+            _laporan_bab_rule(
+                5,
+                "HASIL YANG DICAPAI DAN POTENSI KHUSUS",
+                order=10,
+                extra_aliases=("BAB 5. HASIL YANG DICAPAI", "BAB V. HASIL YANG DICAPAI"),
+            ),
+            _laporan_bab_rule(
+                6, "PENUTUP", order=11,
+                extra_aliases=("BAB 6. KESIMPULAN DAN SARAN", "BAB VI. KESIMPULAN DAN SARAN"),
+            ),
+        ]
+        dp_order, lamp_order = 12, 13
+    else:
+        bab4 = _AKHIR_BAB4.get(code, "HASIL YANG DICAPAI DAN POTENSI KHUSUS")
+        bab_rules = [
+            _laporan_bab_rule(1, "PENDAHULUAN", order=6),
+            _laporan_bab_rule(2, _AKHIR_BAB2[code], order=7),
+            _laporan_bab_rule(
+                3,
+                _KEMAJUAN_BAB3[code],
+                order=8,
+                extra_aliases=_bab3_field_variants(_KEMAJUAN_BAB3[code]),
+            ),
+            _laporan_bab_rule(
+                4,
+                bab4,
+                order=9,
+                # alias pendek: heading dokumen sering ditulis tanpa frasa potensi
+                extra_aliases=("BAB 4. HASIL YANG DICAPAI", "BAB IV. HASIL YANG DICAPAI"),
+            ),
+            _laporan_bab_rule(
+                5, "PENUTUP", order=10,
+                extra_aliases=("BAB 5. KESIMPULAN DAN SARAN", "BAB V. KESIMPULAN DAN SARAN"),
+            ),
+        ]
+        dp_order, lamp_order = 11, 12
+
+    return SchemaRules(
+        competition_code="PKM",
+        schema_code=code,
+        report_type_code="FINAL_REPORT",
+        schema_name=_LAPORAN_SCHEMA_NAMES[code],
+        year=2026,
+        sections=[
+            # --- SECTION WAJIB ---
+            # RINGKASAN di awal berkas, tanpa nomor halaman (panduan §A)
+            SectionRule(name="RINGKASAN", required=True, order=1),
+            SectionRule(name="DAFTAR ISI", required=True, order=2),
+            SectionRule(
+                name="DAFTAR LAMPIRAN",
+                aliases=["DAFTAR LAMPIRAN-LAMPIRAN"],
+                required=True,
+                order=5,
+            ),
+            *bab_rules,
+            SectionRule(name="DAFTAR PUSTAKA", required=True, is_core=True, order=dp_order),
+            SectionRule(
+                name="LAMPIRAN",
+                aliases=["LAMPIRAN 1", "LAMPIRAN 1.", "LAMPIRAN-LAMPIRAN"],
+                required=True,
+                order=lamp_order,
+            ),
+            # --- SECTION OPSIONAL ---
+            SectionRule(name="DAFTAR GAMBAR", required=False, order=3),
+            SectionRule(name="DAFTAR TABEL", required=False, order=4),
+            # --- SECTION TERLARANG ---
+            *_laporan_forbidden_sections(
+                f"PKM-{code}", "LAPORAN AKHIR", forbid_ringkasan=False
+            ),
+        ],
+    )
 
 
 def get_pkm_gft_proposal_rules() -> SchemaRules:

@@ -2,15 +2,15 @@
 
 // Batas progress selama MENUNGGU respons. Bar parkir di sini (tahap OCR),
 // bukan di "Menyusun hasil". 100% hanya saat respons betulan datang.
-export const PROGRESS_WAIT_CAP = 85;
+export const PROGRESS_WAIT_CAP = 100;
 
 // Tahap-tahap yang berjalan SELAMA proses. Bobot = alokasi waktu relatif;
 // OCR 20% lebih lama (1.2) dari lainnya (1.0).
 const PROCESSING_STAGES: { label: string; weight: number }[] = [
-  { label: 'Mengunggah dokumen', weight: 1 },
-  { label: 'Membaca struktur dokumen', weight: 1 },
-  { label: 'Memeriksa format & penomoran', weight: 1 },
-  { label: 'Memindai lampiran (OCR)', weight: 1.2 },
+  { label: 'Mengunggah dokumen', weight: 0.1 },
+  { label: 'Membaca struktur dokumen', weight: 0.1 },
+  { label: 'Memeriksa format & penomoran', weight: 0.1 },
+  { label: 'Memindai lampiran', weight: 1.2 },
 ];
 
 // Threshold `at` tahap proses dihitung dari bobot, diskala ke PROGRESS_WAIT_CAP →

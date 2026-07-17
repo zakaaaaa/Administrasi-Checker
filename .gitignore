@@ -28,6 +28,17 @@ out/
 # User uploads (file mentah, jangan di-commit)
 backend/storage/
 
+# Dokumen uji lokal — berisi data pribadi mahasiswa, jangan di-commit
+/*.docx
+~$*
+/test/
+
+# PDF panduan resmi (besar, unduh sendiri dari simbelmawa)
+/panduan/
+
+# Claude Code settings lokal
+.claude/
+
 # Google Cloud service account keys — JANGAN commit
 *service-account*.json
 *-credentials*.json

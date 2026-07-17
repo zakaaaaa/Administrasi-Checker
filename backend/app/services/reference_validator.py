@@ -609,13 +609,17 @@ class ReferenceValidator:
             preview = e.raw_text[: self.PREVIEW_CHARS]
             para_idx = e.paragraph_index
             if e.has_etal_violation or e.has_dkk_violation:
+                author_label = (
+                    e.author_first
+                    or e.raw_text.split(".")[0].strip()[:60]
+                )
                 issues.append(
                     FormatIssue(
                         entry_index=i,
                         text_preview=preview,
                         severity="fail",
                         issue=(
-                            "Nama penulis di daftar pustaka tidak boleh ditulis "
+                            f'Nama penulis "{author_label}" di daftar pustaka tidak boleh ditulis '
                             "dkk atau et al, tuliskan semua nama penulis."
                         ),
                         paragraph_index=para_idx,
@@ -1021,19 +1025,16 @@ class ReferenceValidator:
             return
 
         # Format issues
-        dkk_emitted = False
         for fi in result.format_issues:
             if fi.severity == "fail":
                 has_fail = True
             else:
                 has_warning = True
-            # dkk/et al: dedup — cukup satu pesan tanpa prefix/lokasi
+            # dkk/et al: emit per-entry tanpa prefix/lokasi
             if "dkk atau et al" in fi.issue:
-                if not dkk_emitted:
-                    result.messages.append(
-                        CheckMessage(level=fi.severity, text=fi.issue)
-                    )
-                    dkk_emitted = True
+                result.messages.append(
+                    CheckMessage(level=fi.severity, text=fi.issue)
+                )
                 continue
             para = fi.paragraph_index
             if para is None and fi.entry_index >= 0 and fi.entry_index < len(

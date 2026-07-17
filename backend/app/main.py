@@ -32,7 +32,7 @@ app = FastAPI(title="Administrasi Checker API", version="0.1.0", lifespan=lifesp
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://192.168.1.20:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -52,8 +52,8 @@ COMPETITIONS = [
 REPORT_TYPES = {
     "PKM": [
         {"code": "PROPOSAL", "name": "Proposal", "active": True},
-        {"code": "PROGRESS_REPORT", "name": "Laporan Kemajuan", "active": False},
-        {"code": "FINAL_REPORT", "name": "Laporan Akhir", "active": False},
+        {"code": "PROGRESS_REPORT", "name": "Laporan Kemajuan", "active": True},
+        {"code": "FINAL_REPORT", "name": "Laporan Akhir", "active": True},
         {"code": "SCIENTIFIC_ARTICLE", "name": "Artikel Ilmiah", "active": True},
     ],
 }
@@ -80,6 +80,20 @@ SCHEMAS = {
         {"code": "PKM-AI", "name": "Artikel Ilmiah", "active": True},
     ],
 }
+
+# Laporan Kemajuan & Laporan Akhir: 8 skema pendanaan yang sama.
+_LAPORAN_SCHEMAS_CATALOG = [
+    {"code": "PKM-KC", "name": "Karsa Cipta", "active": True},
+    {"code": "PKM-K", "name": "Kewirausahaan", "active": True},
+    {"code": "PKM-RE", "name": "Riset Eksakta", "active": True},
+    {"code": "PKM-RSH", "name": "Riset Sosial Humaniora", "active": True},
+    {"code": "PKM-PM", "name": "Pengabdian kepada Masyarakat", "active": True},
+    {"code": "PKM-PI", "name": "Penerapan Iptek", "active": True},
+    {"code": "PKM-KI", "name": "Karya Inovatif", "active": True},
+    {"code": "PKM-VGK", "name": "Video Gagasan Konstruktif", "active": True},
+]
+SCHEMAS[("PKM", "PROGRESS_REPORT")] = _LAPORAN_SCHEMAS_CATALOG
+SCHEMAS[("PKM", "FINAL_REPORT")] = _LAPORAN_SCHEMAS_CATALOG
 
 
 # ---------------------------------------------------------------------------

@@ -151,6 +151,20 @@ _REQUIRED_LAMPIRAN_GFT: list[tuple[int, list[str], str]] = [
     (4, ["uji", "similar"],                              "Hasil Uji Periksa Similaritas Proposal"),
 ]
 
+# Laporan Kemajuan & Laporan Akhir (semua skema pendanaan): hanya 2 lampiran
+# sesuai §Sistematika Laporan panduan 2026 — Penggunaan Dana + Bukti Pendukung.
+_REQUIRED_LAMPIRAN_LAPORAN: list[tuple[int, list[str], str]] = [
+    (1, ["penggunaan", "dana"],                          "Penggunaan Dana"),
+    (2, ["bukti", "pendukung"],                          "Bukti-Bukti Pendukung Kegiatan"),
+]
+
+# PKM-KI Laporan Kemajuan: + lampiran terakhir "Draft dokumen teknis produk
+# karya inovatif" (luaran kemajuan KI ditempatkan sebagai lampiran laporan).
+_REQUIRED_LAMPIRAN_LAPORAN_KI_KEMAJUAN: list[tuple[int, list[str], str]] = [
+    *_REQUIRED_LAMPIRAN_LAPORAN,
+    (3, ["dokumen", "teknis"],                           "Draft Dokumen Teknis Produk Karya Inovatif"),
+]
+
 
 # =============================================================================
 # Regex
@@ -271,6 +285,24 @@ class LampiranChecker:
         # PKM-GFT: Daftar Lampiran gabung di Daftar Isi (tidak ada section
         # terpisah) → require_daftar=False, validasi hanya pada body LAMPIRAN.
         return cls(parser, _REQUIRED_LAMPIRAN_GFT, "PKM-GFT", require_daftar=False)
+
+    @classmethod
+    def for_pkm_laporan(
+        cls, parser: DocxParser, schema_code: str, report_type: str
+    ) -> "LampiranChecker":
+        """Laporan Kemajuan/Akhir semua skema pendanaan.
+
+        schema_code tanpa prefix ("KC", "KI", ...); report_type
+        "PROGRESS_REPORT" | "FINAL_REPORT". Lampiran sama untuk semua skema
+        kecuali KI kemajuan (+draft dokumen teknis produk).
+        """
+        code = schema_code.upper().removeprefix("PKM-")
+        required = (
+            _REQUIRED_LAMPIRAN_LAPORAN_KI_KEMAJUAN
+            if (code == "KI" and report_type == "PROGRESS_REPORT")
+            else _REQUIRED_LAMPIRAN_LAPORAN
+        )
+        return cls(parser, required, f"PKM-{code}")
 
     # -------------------------------------------------------------------------
     # Public
