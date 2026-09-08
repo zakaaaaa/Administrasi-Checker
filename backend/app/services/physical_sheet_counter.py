@@ -43,6 +43,10 @@ from pypdf import PdfReader
 from app.services.docx_parser import DocxParser
 from app.services.pdf_converter import PdfConverter
 from app.services.schema_rules import SchemaRules
+# Satu sumber kebenaran untuk "baris ini entri Daftar Isi". Sinyal utamanya
+# style bawaan Word ('toc 1'..'toc 9') yang dibaca DocxParser; dot/tab leader
+# cuma cadangan untuk Daftar Isi yang diketik manual.
+from app.services.structure_checker import _looks_like_toc_line
 
 
 # ============================================================================
@@ -500,7 +504,7 @@ class PhysicalSheetCounter:
             t = para.text.strip()
             if not t:
                 continue
-            if self._CORE_BAB1_RE.match(t) and not re.search(r"\.{3,}", t):
+            if self._CORE_BAB1_RE.match(t) and not _looks_like_toc_line(t, para=para):
                 bab1 = para.index
                 break
         if bab1 is None and self.rules.schema_code == "AI":

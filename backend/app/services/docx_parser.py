@@ -71,9 +71,16 @@ class ParagraphInfo:
     alignment: Optional[str] = None           # 'left', 'center', 'right', 'justify', None
     line_spacing: Optional[float] = None      # spasi baris (1.0, 1.15, 1.5, 2.0, dst.)
     runs: list[RunInfo] = field(default_factory=list)
-    is_heading: bool = False                  # heuristik: True jika style 'Heading N' atau pola UPPERCASE
+    is_heading: bool = False                  # True jika style 'Heading N'/outlineLvl, atau pola UPPERCASE
     heading_level: Optional[int] = None       # 1, 2, 3, ... jika is_heading
     ind_left_dxa: Optional[int] = None        # indentasi kiri paragraf dalam DXA (0 = normal)
+    # Entri Daftar Isi / Daftar Gambar / Daftar Tabel. Word menandai paragraf ini
+    # dengan style bawaan 'toc 1'..'toc 9' / 'table of figures' — deklarasi
+    # eksplisit di dalam file, bukan tebakan dari titik-titik & tab.
+    is_toc_entry: bool = False
+    # Dari mana is_toc_entry disimpulkan: 'style' (otoritatif) | 'leader' (heuristik
+    # cadangan untuk Daftar Isi yang diketik manual) | None.
+    toc_evidence: Optional[str] = None
 
 
 @dataclass
@@ -116,6 +123,10 @@ class SectionInfo:
     # Reference ke header/footer (rId yang dipakai untuk lookup di header_xmls/footer_xmls)
     header_refs: dict[str, str] = field(default_factory=dict)  # {'default': 'rId4', 'first': 'rId5', 'even': 'rId6'}
     footer_refs: dict[str, str] = field(default_factory=dict)
+    # <w:titlePg/> — kalau False, header/footer ber-type "first" TIDAK dirender
+    # Word sama sekali (ECMA-376 §17.10.6). Banyak dokumen menyimpan sisa part
+    # 'first' dari editan lama; tanpa flag ini part mati itu ikut terbaca.
+    title_pg: bool = False
 
 
 @dataclass
@@ -184,6 +195,7 @@ class DocxParser:
         self._header_xmls: Optional[dict[str, etree._Element]] = None
         self._footer_xmls: Optional[dict[str, etree._Element]] = None
         self._images: Optional[list[ImageInfo]] = None
+        self._even_and_odd_headers: Optional[bool] = None
         self._document_xml: Optional[etree._Element] = None
         self._styles_xml: Optional[etree._Element] = None
         self._numbering_xml: Optional[etree._Element] = None
@@ -268,6 +280,20 @@ class DocxParser:
         if self._footer_xmls is None:
             self._footer_xmls = self._read_header_footer_xmls(prefix="word/footer")
         return self._footer_xmls
+
+    @property
+    def even_and_odd_headers(self) -> bool:
+        """<w:evenAndOddHeaders/> di word/settings.xml.
+
+        Kalau False (default), header/footer ber-type "even" TIDAK pernah
+        dirender Word — halaman genap ikut memakai part "default".
+        """
+        if self._even_and_odd_headers is None:
+            raw = self.read_raw_part("word/settings.xml")
+            self._even_and_odd_headers = bool(
+                raw and b"evenAndOddHeaders" in raw
+            )
+        return self._even_and_odd_headers
 
     @property
     def images(self) -> list[ImageInfo]:
@@ -507,21 +533,75 @@ class DocxParser:
                     break
         return result
 
+    # Style bawaan Word untuk entri daftar otomatis. Word menulis nama style ini
+    # dalam bahasa Inggris apa pun bahasa UI-nya, jadi aman dicocokkan langsung.
+    _TOC_STYLE_RE = re.compile(
+        r"^(?:toc\s*\d*|table\s+of\s+(?:figures|authorities)|"
+        r"daftar\s+isi\s*\d*|indeks\s*\d*)$",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _detect_toc_entry(
+        cls, text: str, style_name: Optional[str]
+    ) -> tuple[bool, Optional[str]]:
+        """Apakah paragraf ini entri daftar otomatis? Return (hasil, sumber bukti).
+
+        Bukti diurut dari yang pasti ke yang menerka:
+
+        1. 'style'  — style bawaan Word ('toc 1'..'toc 9', 'table of figures').
+                      Ini deklarasi eksplisit di dalam file: kalau Word yang
+                      membuat daftarnya, paragrafnya PASTI ber-style ini.
+        2. 'leader' — cadangan untuk Daftar Isi yang diketik manual: dot leader
+                      atau TAB diikuti nomor halaman. Perlu dipertahankan karena
+                      banyak dokumen mahasiswa mengetik Daftar Isi dengan tangan.
+
+        Dulu hanya (2) yang ada, dan versinya berbeda-beda di tiap modul —
+        sumber false positive: entri ToC dikira heading section sungguhan.
+        """
+        t = (text or "").strip()
+        if not t:
+            return False, None
+        if style_name and cls._TOC_STYLE_RE.match(style_name.strip()):
+            return True, "style"
+        if re.search(r"\t+\s*([ivxlcdm]+|\d+)\s*$", t, flags=re.IGNORECASE):
+            return True, "leader"
+        if re.search(r"[.\s]{4,}\s*(\d+|[ivxlcdm]+)\s*$", t, flags=re.IGNORECASE):
+            return True, "leader"
+        return False, None
+
     @staticmethod
     def _looks_like_toc_entry(text: str) -> bool:
+        """Kompatibilitas: versi lama yang hanya melihat bentuk teks.
+
+        Dipertahankan karena masih dipanggil `find_section_boundaries`. Untuk
+        pengecekan baru pakai `ParagraphInfo.is_toc_entry` yang membaca style.
         """
-        Heuristik baris daftar isi/lampiran:
-        - ada tab + nomor halaman Romawi/angka di akhir
-        - atau ada dot leader + nomor halaman di akhir
+        return DocxParser._detect_toc_entry(text, None)[0]
+
+    @staticmethod
+    def _read_outline_level(para) -> Optional[int]:
+        """<w:outlineLvl w:val="N"/> dari pPr paragraf (0-based), atau None.
+
+        Dipakai style heading kustom yang namanya bukan 'Heading N' — lazim di
+        template kampus. Tanpa ini, heading semacam itu hanya terdeteksi lewat
+        heuristik bentuk (rasio kapital / bold).
         """
-        t = text.strip()
-        if not t:
-            return False
-        if re.search(r"\t+\s*([ivxlcdm]+|\d+)\s*$", t, flags=re.IGNORECASE):
-            return True
-        if re.search(r"[.\s]{4,}\s*(\d+|[ivxlcdm]+)\s*$", t, flags=re.IGNORECASE):
-            return True
-        return False
+        try:
+            ppr = para._element.find(qn("w:pPr"))
+            if ppr is None:
+                return None
+            el = ppr.find(qn("w:outlineLvl"))
+            if el is None:
+                return None
+            val = el.get(qn("w:val"))
+            if val is None or not str(val).lstrip("-").isdigit():
+                return None
+            lvl = int(val)
+            # 9 = "body text" (bukan heading) menurut ECMA-376.
+            return lvl if 0 <= lvl <= 8 else None
+        except Exception:
+            return None
 
     @staticmethod
     def _looks_like_heading_fallback(text: str, para=None) -> bool:
@@ -666,7 +746,18 @@ class DocxParser:
             )
             runs.append(run_info)
 
-        # Heading detection: cek style name dulu, fallback ke heuristik UPPERCASE
+        # --- Entri Daftar Isi ---------------------------------------------
+        # Dibaca dari deklarasi Word lebih dulu; heuristik dot/tab leader hanya
+        # cadangan untuk Daftar Isi yang diketik manual tanpa style.
+        is_toc_entry, toc_evidence = self._detect_toc_entry(
+            para.text or "", style_name
+        )
+
+        # --- Heading -------------------------------------------------------
+        # Urutan bukti: style bawaan → outlineLvl eksplisit → heuristik bentuk.
+        # Entri Daftar Isi TIDAK PERNAH heading: teksnya kerap UPPERCASE
+        # ("DAFTAR PUSTAKA\t12") sehingga lolos heuristik bentuk dan bikin
+        # checker mengira section-nya dimulai di halaman Daftar Isi.
         is_heading = False
         heading_level: Optional[int] = None
         if style_name:
@@ -682,6 +773,18 @@ class DocxParser:
             elif sn_lower in ("title", "subtitle"):
                 is_heading = True
                 heading_level = 0  # judul
+
+        if not is_heading and not is_toc_entry:
+            # <w:outlineLvl w:val="0"/> — dipakai style heading kustom yang
+            # namanya bukan "Heading N" (lazim di template kampus).
+            outline = self._read_outline_level(para)
+            if outline is not None:
+                is_heading = True
+                heading_level = outline + 1
+
+        if is_toc_entry:
+            is_heading = False
+            heading_level = None
 
         # Paragraph left indentation (dari XML pPr/ind@w:left)
         ind_left_dxa: Optional[int] = None
@@ -706,6 +809,8 @@ class DocxParser:
             is_heading=is_heading,
             heading_level=heading_level,
             ind_left_dxa=ind_left_dxa,
+            is_toc_entry=is_toc_entry,
+            toc_evidence=toc_evidence,
         )
 
     def _safe_font_name(self, run) -> Optional[str]:
@@ -845,6 +950,9 @@ class DocxParser:
             start = pg_num_type.get(qn("w:start"))
             if start and start.lstrip("-").isdigit():
                 info.page_num_start = int(start)
+
+        # <w:titlePg/> — mengaktifkan header/footer ber-type "first"
+        info.title_pg = sect_pr.find(qn("w:titlePg")) is not None
 
         # Header references: <w:headerReference w:type="default" r:id="rId4"/>
         for ref in sect_pr.findall(qn("w:headerReference")):

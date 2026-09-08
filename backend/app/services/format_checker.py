@@ -87,6 +87,14 @@ def get_pkm_ai_format_rules() -> FormatRules:
 # Kalau kata-kata ini muncul di teks dan TIDAK italic → flag warning.
 
 
+# Entri yang SENGAJA tidak ada di sini: kata yang sudah masuk KBBI V sebagai
+# lema Indonesia (serapan), mis. "sensor", "server", "input", "monitoring".
+# Kata serapan bukan kata asing, jadi tidak wajib italic — memasukkannya bikin
+# false positive. Ungkapan Latin yang KBBI tandai kelas "Ungkapan; Latin"
+# (ad hoc, in situ, status quo, dst.) TETAP di sini karena KBBI sendiri
+# menandainya sebagai ungkapan asing.
+# Diverifikasi 2026-09-07 terhadap dataset KBBI V (186.588 lema); lihat
+# tests/test_foreign_words_kbbi.py.
 FOREIGN_WORDS = {
     # ----------------------------------------------------------------
     # AI / Machine Learning (PKM-KC, RE)
@@ -123,7 +131,7 @@ FOREIGN_WORDS = {
     "software", "hardware", "framework", "open source",
     "website", "web application", "mobile application",
     "user interface", "user experience", "dashboard", "prototype",
-    "database", "server", "client", "input", "output",
+    "database", "client", "output",
     "real time", "real-time", "chatbot",
     "online", "offline", "e-commerce", "marketplace",
     "supply chain", "microservices", "devops", "agile", "scrum",
@@ -156,7 +164,7 @@ FOREIGN_WORDS = {
     # ----------------------------------------------------------------
     # Kesehatan / Biologi / Lingkungan (PKM-RE, PM, PI)
     # ----------------------------------------------------------------
-    "in vivo", "in vitro", "in situ", "ex situ",
+    "in situ", "ex situ",
     "clinical trial", "randomized controlled trial",
     "placebo", "biomarker", "screening", "follow-up",
     "body mass index", "informed consent", "ethical clearance",
@@ -164,7 +172,7 @@ FOREIGN_WORDS = {
     "carbon footprint", "sustainability", "biodiversity",
     "ecosystem services", "food security",
     "water treatment", "wastewater treatment",
-    "biomass", "biofuel", "biogas",
+    "biomass", "biofuel",
     "hydroponics", "aquaponics", "vertical farming",
     "precision agriculture",
     # ----------------------------------------------------------------
@@ -207,16 +215,16 @@ FOREIGN_WORDS = {
     # ----------------------------------------------------------------
     # Latin / Akademik
     # ----------------------------------------------------------------
-    "et cetera", "id est", "exempli gratia", "circa", "versus",
+    "et cetera", "id est", "exempli gratia", "circa",
     "a priori", "a posteriori", "ad hoc", "de facto", "de jure",
     "status quo", "vice versa", "per se", "ipso facto",
     "nota bene", "ibid", "op cit",
     "bona fide", "prima facie", "caveat", "addendum",
     "curriculum vitae", "ex officio", "pro rata",
     "mutatis mutandis",
-    "modus operandi", "ad libitum", "ad infinitum",
+    "ad libitum", "ad infinitum",
     "in press", "sui generis", "passim", "loc cit", "et seq",
-    "inter alia", "in toto", "ad valorem", "pro bono", "a fortiori",
+    "inter alia", "in toto", "ad valorem", "a fortiori",
     # NOTE: "et al" / "et al." TIDAK dimasukkan karena sitasi in-text Harvard
     # diperbolehkan pakai et al.; larangan hanya di Daftar Pustaka (validator
     # terpisah di reference_validator.py).
@@ -244,30 +252,30 @@ FOREIGN_WORDS = {
     "sign-in", "sign-up", "sign in", "sign up",
     "upload", "download", "browser",
     "responsive", "single page application", "progressive web app",
-    "sidebar", "navbar", "popup", "modal", "tooltip", "dropdown",
-    "smart contract", "metaverse",
-    "monitoring", "tracking", "scanning",
+    "sidebar", "navbar", "popup", "tooltip", "dropdown",
+    "smart contract",
+    "tracking", "scanning",
     "firmware", "middleware",
-    "sensor", "actuator",
+    "actuator",
     "wireframe", "mockup",
     "deployment", "rollout",
     # ----------------------------------------------------------------
     # Medis / Biologi — addendum (PKM-RE, PM, PI)
     # ----------------------------------------------------------------
-    "antimicrobial", "antibacterial", "antiviral", "antifungal",
+    "antimicrobial", "antibacterial", "antifungal",
     "vaccine", "vaccination", "immunization",
     "telehealth", "ehealth", "mhealth",
     "preventive", "curative", "rehabilitative",
     "diagnostic", "therapeutic", "prognostic",
     "pathogen", "outbreak", "epidemic", "pandemic", "endemic",
     "zoonotic", "vector-borne",
-    "antibody", "antigen",
+    "antibody",
     # ----------------------------------------------------------------
     # Bisnis / Startup — addendum (PKM-K)
     # ----------------------------------------------------------------
     "unicorn", "scale-up", "scaleup", "bootstrapping",
     "founder", "co-founder", "early adopter",
-    "pivot", "lean startup", "growth hacking",
+    "lean startup", "growth hacking",
     "churn rate", "customer acquisition cost",
     "lifetime value", "annual recurring revenue",
     "monthly recurring revenue", "burn rate",
@@ -304,8 +312,8 @@ FOREIGN_WORDS = {
     # ----------------------------------------------------------------
     # Kimia / Material Sains (PKM-RE)
     # ----------------------------------------------------------------
-    "solvent", "catalyst", "monomer", "polymer", "biopolymer",
-    "nanoparticle", "nanomaterial", "graphene", "biodegradable",
+    "solvent", "catalyst", "polymer", "biopolymer",
+    "nanoparticle", "graphene", "biodegradable",
     "composite", "hydrogel", "scaffolding", "biocompatibility",
     # ----------------------------------------------------------------
     # Epidemiologi / Public Health (PKM-RE, PM)
@@ -337,7 +345,7 @@ FOREIGN_WORDS = {
     "lifelong learning", "soft skills", "hard skills",
     "upskilling", "reskilling",
     "competency-based", "learning outcome",
-    "stem", "steam",
+    "steam",
     # ----------------------------------------------------------------
     # Statistik — addendum (PKM-RE, RSH)
     # ----------------------------------------------------------------

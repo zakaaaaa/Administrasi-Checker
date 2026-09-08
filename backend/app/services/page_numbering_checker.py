@@ -441,7 +441,7 @@ class PageNumberingChecker:
             (field PAGE tanpa teks, tidak terpakai Word) tidak ikut dianalisis.
             """
             candidates = []
-            for ref_type, rid in self._ordered_refs(refs):
+            for ref_type, rid in self._ordered_refs(refs, sec):
                 part = rid_map.get(rid)
                 if part is None:
                     continue
@@ -699,11 +699,25 @@ class PageNumberingChecker:
 
         return font_name, font_size
 
-    @staticmethod
-    def _ordered_refs(refs: dict) -> list:
-        """Urutkan ref header/footer berdasarkan prioritas: default → first → even."""
+    def _ordered_refs(self, refs: dict, sec: Optional[SectionInfo] = None) -> list:
+        """Ref header/footer yang BENAR-BENAR dirender, urut default → first → even.
+
+        Word hanya merender part ber-type "first" bila section itu punya
+        <w:titlePg/>, dan part ber-type "even" bila dokumen punya
+        <w:evenAndOddHeaders/> (ECMA-376 §17.10.6 & §17.15.1.29). Part yang
+        syaratnya tidak terpenuhi adalah sisa mati — kerap tertinggal dari
+        editan lama — dan kalau ikut dibaca bikin vonis posisi nomor halaman
+        yang salah. `sec=None` mempertahankan perilaku lama (semua ref dipakai).
+        """
         order = {"default": 0, "first": 1, "even": 2}
-        return sorted(refs.items(), key=lambda kv: order.get(kv[0], 9))
+        items = refs.items()
+        if sec is not None:
+            items = [
+                (t, rid) for t, rid in items
+                if not (t == "first" and not sec.title_pg)
+                and not (t == "even" and not self.parser.even_and_odd_headers)
+            ]
+        return sorted(items, key=lambda kv: order.get(kv[0], 9))
 
     def _resolve_para_alignment(self, ppr: Optional[etree._Element]) -> Optional[str]:
         """Alignment paragraf: w:jc langsung → w:jc dari style chain → None.
