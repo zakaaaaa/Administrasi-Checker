@@ -24,6 +24,7 @@ from app.services.physical_sheet_counter import (
 )
 from app.services.schema_rules import (
     get_pkm_kc_proposal_rules,
+    get_pkm_laporan_kemajuan_rules,
     SchemaRules,
 )
 
@@ -323,6 +324,95 @@ class TestAnomalyDetectionSynthetic(unittest.TestCase):
         missing = [a for a in anomalies if a.type == "missing"]
         self.assertEqual(len(missing), 1)
         self.assertEqual(missing[0].detail["sheet_index"], 3)
+
+
+# ============================================================================
+# Test: entri Daftar Isi tidak boleh dikira awal bagian inti
+# ============================================================================
+#
+# Daftar Isi otomatis Word memakai TAB + tab stop ber-dot-leader. Titik-titiknya
+# dirender dari definisi tab stop, TIDAK tersimpan sebagai karakter — teks
+# paragrafnya cuma "BAB 1. PENDAHULUAN\t1". Filter lama hanya menolak baris
+# ber-titik literal (r"\.{3,}"), jadi entri Daftar Isi bertab lolos dan dikira
+# awal BAB 1. Akibatnya front matter ikut terhitung sebagai bagian inti dan
+# dokumen divonis melebihi batas 10 halaman.
+# ============================================================================
+
+LAPKEM_RE_FILE = SAMPLE_DIR / "lapkem_pkm_re.docx"
+
+
+class TestTocEntryNotMistakenForCoreStart(unittest.TestCase):
+    def _counter(self, headings):
+        from app.services.docx_parser import ParagraphInfo
+
+        class _FakeParser:
+            paragraphs = [
+                ParagraphInfo(index=i, text=t, is_heading=False)
+                for i, t in headings
+            ]
+
+        return PhysicalSheetCounter(
+            _FakeParser(), get_pkm_laporan_kemajuan_rules("RE")
+        )
+
+    def test_tab_leader_toc_entry_skipped(self):
+        """REGRESI: entri Daftar Isi bertab, bukan bertitik."""
+        c = self._counter([
+            (0, "DAFTAR ISI"),
+            (1, "BAB 1. PENDAHULUAN\t1"),      # entri Daftar Isi
+            (2, "BAB 2. TARGET LUARAN\t2"),
+            (3, "BAB 1. PENDAHULUAN"),          # heading sungguhan
+            (4, "lampiran"),
+        ])
+        bab1, lampiran = c._locate_core_paragraphs()
+        self.assertEqual(bab1, 3)
+        self.assertEqual(lampiran, 4)
+
+    def test_dot_leader_toc_entry_still_skipped(self):
+        """Perilaku lama (dot leader literal) tidak boleh hilang."""
+        c = self._counter([
+            (0, "DAFTAR ISI"),
+            (1, "BAB 1. PENDAHULUAN ............ 1"),
+            (2, "BAB 1. PENDAHULUAN"),
+        ])
+        bab1, _ = c._locate_core_paragraphs()
+        self.assertEqual(bab1, 2)
+
+    def test_core_start_found_without_toc(self):
+        """Tanpa Daftar Isi, heading pertama tetap terpakai."""
+        c = self._counter([(0, "BAB 1. PENDAHULUAN"), (1, "lampiran")])
+        bab1, _ = c._locate_core_paragraphs()
+        self.assertEqual(bab1, 0)
+
+
+class TestLapkemReRealDoc(unittest.TestCase):
+    """Laporan Kemajuan PKM-RE asli yang salah divonis >10 halaman.
+
+    Bagian intinya BAB 1 (halaman 4) s.d. sebelum LAMPIRAN (halaman 14) =
+    10 halaman, persis di batas. Sebelum perbaikan, entri Daftar Isi di
+    halaman 1 dikira awal BAB 1 sehingga terhitung 13 halaman.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if not LAPKEM_RE_FILE.exists():
+            raise unittest.SkipTest(
+                f"Sampel {LAPKEM_RE_FILE.name} tidak tersedia di sandbox."
+            )
+        cls.parser = DocxParser(LAPKEM_RE_FILE)
+        cls.result = PhysicalSheetCounter(
+            cls.parser, get_pkm_laporan_kemajuan_rules("RE")
+        ).check()
+
+    def test_core_starts_at_real_bab1_not_toc(self):
+        self.assertEqual(self.result.core_first_sheet, 4)
+
+    def test_core_is_ten_sheets(self):
+        self.assertEqual(self.result.core_physical_sheets, 10)
+
+    def test_status_is_pass(self):
+        self.assertEqual(self.result.status, "pass")
+
 
 
 if __name__ == "__main__":

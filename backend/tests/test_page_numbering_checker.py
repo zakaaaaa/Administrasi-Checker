@@ -18,11 +18,15 @@ from app.services.page_numbering_checker import (
     ZoneFinding,
     get_pkm_page_numbering_rules,
 )
-from app.services.schema_rules import get_pkm_kc_proposal_rules
+from app.services.schema_rules import (
+    get_pkm_kc_proposal_rules,
+    get_pkm_laporan_kemajuan_rules,
+)
 
 SAMPLE_DIR = Path(__file__).parent / "sample_docs"
 DUMMY_FILE = SAMPLE_DIR / "dummy_pkm_kc.docx"
 REAL_FILE = SAMPLE_DIR / "A410170082.docx"
+LAPKEM_RE_FILE = SAMPLE_DIR / "lapkem_pkm_re.docx"
 
 
 # ============================================================================
@@ -245,6 +249,121 @@ class TestValidationLogic(unittest.TestCase):
         findings = c._validate_section_against_zone(analysis, c.rules.core_matter)
         font_findings = [f for f in findings if f.aspect == "font"]
         self.assertEqual(len(font_findings), 1)
+
+
+# ============================================================================
+# Test: header/footer "first" & "even" yang tidak aktif harus diabaikan
+# ============================================================================
+#
+# ECMA-376: part ber-type "first" hanya dirender kalau section punya
+# <w:titlePg/>; part ber-type "even" hanya kalau dokumen punya
+# <w:evenAndOddHeaders/>. Part yang syaratnya tidak terpenuhi adalah sisa mati
+# — lazim tertinggal dari editan lama. Sebelum perbaikan, part mati itu ikut
+# dibaca sehingga posisi nomor halaman divonis 'top' padahal yang benar-benar
+# dirender adalah footer 'default' di 'bottom'.
+# ============================================================================
+
+
+class _FakeSection:
+    """SectionInfo minimal untuk menguji _ordered_refs."""
+
+    def __init__(self, header_refs=None, footer_refs=None, title_pg=False):
+        self.index = 0
+        self.header_refs = header_refs or {}
+        self.footer_refs = footer_refs or {}
+        self.title_pg = title_pg
+
+
+class _FakeParser:
+    def __init__(self, even_and_odd=False):
+        self.even_and_odd_headers = even_and_odd
+        self.sections = []
+        self.paragraphs = []
+
+
+class TestInactiveHeaderRefsIgnored(unittest.TestCase):
+    def _checker(self, even_and_odd=False):
+        checker = PageNumberingChecker.__new__(PageNumberingChecker)
+        checker.parser = _FakeParser(even_and_odd)
+        return checker
+
+    def test_first_ref_dropped_without_titlepg(self):
+        """REGRESI: headerReference type='first' tanpa <w:titlePg/> = mati."""
+        c = self._checker()
+        sec = _FakeSection(header_refs={"first": "rId9"}, title_pg=False)
+        self.assertEqual(c._ordered_refs(sec.header_refs, sec), [])
+
+    def test_first_ref_kept_with_titlepg(self):
+        c = self._checker()
+        sec = _FakeSection(header_refs={"first": "rId9"}, title_pg=True)
+        self.assertEqual(c._ordered_refs(sec.header_refs, sec), [("first", "rId9")])
+
+    def test_even_ref_dropped_without_setting(self):
+        c = self._checker(even_and_odd=False)
+        sec = _FakeSection(header_refs={"even": "rId5"}, title_pg=True)
+        self.assertEqual(c._ordered_refs(sec.header_refs, sec), [])
+
+    def test_even_ref_kept_with_setting(self):
+        c = self._checker(even_and_odd=True)
+        sec = _FakeSection(header_refs={"even": "rId5"}, title_pg=True)
+        self.assertEqual(c._ordered_refs(sec.header_refs, sec), [("even", "rId5")])
+
+    def test_default_ref_always_kept_and_ordered_first(self):
+        c = self._checker(even_and_odd=True)
+        sec = _FakeSection(
+            header_refs={"even": "rId5", "first": "rId9", "default": "rId4"},
+            title_pg=True,
+        )
+        self.assertEqual(
+            c._ordered_refs(sec.header_refs, sec),
+            [("default", "rId4"), ("first", "rId9"), ("even", "rId5")],
+        )
+
+    def test_sec_none_keeps_legacy_behaviour(self):
+        """Tanpa konteks section, semua ref dipakai (perilaku lama)."""
+        c = self._checker()
+        refs = {"first": "rId9", "default": "rId4"}
+        self.assertEqual(
+            c._ordered_refs(refs), [("default", "rId4"), ("first", "rId9")]
+        )
+
+
+class TestLapkemReRealDoc(unittest.TestCase):
+    """Laporan Kemajuan PKM-RE asli yang salah divonis letak nomor halaman.
+
+    Section #0 punya footerReference 'default' (footer1.xml, kanan bawah) DAN
+    headerReference 'first' (header1.xml) tanpa <w:titlePg/>. Yang benar-benar
+    dirender Word cuma footernya, jadi zona awal sudah benar: roman di bawah.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if not LAPKEM_RE_FILE.exists():
+            raise unittest.SkipTest(
+                f"Sampel {LAPKEM_RE_FILE.name} tidak tersedia di sandbox."
+            )
+        cls.parser = DocxParser(LAPKEM_RE_FILE)
+        cls.result = PageNumberingChecker(
+            cls.parser, get_pkm_laporan_kemajuan_rules("RE")
+        ).check()
+
+    def test_section0_has_first_header_without_titlepg(self):
+        """Prasyarat dokumen: kondisi yang memicu bug memang ada."""
+        sec0 = self.parser.sections[0]
+        self.assertFalse(sec0.title_pg)
+        self.assertIn("first", sec0.header_refs)
+        self.assertIn("default", sec0.footer_refs)
+
+    def test_front_matter_position_read_from_footer(self):
+        sec0 = next(
+            s for s in self.result.sections_analysis if s.section_index == 0
+        )
+        self.assertEqual(sec0.actual_position, "bottom")
+        self.assertFalse(sec0.has_header_with_page)
+
+    def test_status_is_pass(self):
+        self.assertEqual(self.result.status, "pass")
+
 
 
 if __name__ == "__main__":

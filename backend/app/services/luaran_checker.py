@@ -78,7 +78,9 @@ _PKM_MITRA_REQUIRED: list[tuple[str, re.Pattern]] = [
 ]
 
 _LUARAN_LABEL_RE = re.compile(r"\bluaran\b", re.IGNORECASE)
-_TOC_LINE_RE = re.compile(r"\.{3,}|\t\s*\d+\s*$")
+# Entri Daftar Isi dideteksi lewat ParagraphInfo.is_toc_entry (style Word +
+# cadangan dot/tab leader). Regex lokal yang lama melewatkan nomor halaman
+# romawi ("DAFTAR ISI\ti") sehingga entri ToC dikira label Luaran sungguhan.
 _NUMBERED_ITEM_RE = re.compile(r"\(\s*(\d+)\s*\)")
 _NEXT_HEADING_RE = re.compile(
     r"^(?:BAB\s+[IVXLCM0-9]+|\d+\.\d+\s|\d+\s+[A-Z]|[A-Z][A-Z\s]{2,}$)",
@@ -255,7 +257,7 @@ class LuaranChecker:
             text = para.text.strip()
             if not text:
                 continue
-            if _TOC_LINE_RE.search(text):
+            if para.is_toc_entry:
                 continue
             if not _LUARAN_LABEL_RE.search(text):
                 continue
