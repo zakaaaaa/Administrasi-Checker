@@ -34,8 +34,16 @@ class SectionRule:
                required section (forbidden tidak punya order).
         forbidden_scope: None = forbidden dicek di seluruh dokumen (default).
                "before_lampiran" = kemunculan di dalam body LAMPIRAN diabaikan —
-               dipakai rules laporan, karena bukti pendukung kegiatan lazim
-               memuat salinan artikel/abstrak yang bukan pelanggaran struktur.
+               bukti pendukung kegiatan lazim memuat salinan artikel/abstrak
+               yang bukan pelanggaran struktur.
+               "front_matter" = hanya kemunculan SEBELUM section inti pertama
+               (BAB 1 / "Pendahuluan" utk PKM-AI) yang dihitung pelanggaran.
+               Dipakai sampul/pengesahan/ringkasan: ketiganya didefinisikan oleh
+               LETAK (lembar depan), bukan sekadar kata kuncinya. Tanpa scope ini
+               sub-bab sah seperti "Ringkasan Hasil yang Dicapai" di BAB 4 ikut
+               ter-flag. Kalau batas zona depan tidak bisa ditegakkan (BAB 1
+               tidak ter-detect), StructureChecker tetap melapor tapi dengan
+               severity 'warning' — perlu cek manual, bukan vonis.
     """
     name: str
     aliases: list[str] = field(default_factory=list)
@@ -228,6 +236,7 @@ def get_pkm_kc_proposal_rules() -> SchemaRules:
                     "PROPOSAL PROGRAM KREATIVITAS MAHASISWA",
                 ],
                 forbidden=True,
+                forbidden_scope="front_matter",
             ),
             SectionRule(
                 name="HALAMAN PENGESAHAN",
@@ -238,11 +247,13 @@ def get_pkm_kc_proposal_rules() -> SchemaRules:
                     "PENGESAHAN USULAN",
                 ],
                 forbidden=True,
+                forbidden_scope="front_matter",
             ),
             SectionRule(
                 name="RINGKASAN",
                 aliases=["ABSTRAK", "ABSTRACT"],
                 forbidden=True,
+                forbidden_scope="front_matter",
             ),
         ],
     )
@@ -399,6 +410,7 @@ def get_pkm_vgk_proposal_rules() -> SchemaRules:
                     "PROPOSAL PROGRAM KREATIVITAS MAHASISWA",
                 ],
                 forbidden=True,
+                forbidden_scope="front_matter",
             ),
             SectionRule(
                 name="HALAMAN PENGESAHAN",
@@ -409,11 +421,13 @@ def get_pkm_vgk_proposal_rules() -> SchemaRules:
                     "PENGESAHAN USULAN",
                 ],
                 forbidden=True,
+                forbidden_scope="front_matter",
             ),
             SectionRule(
                 name="RINGKASAN",
                 aliases=["ABSTRAK", "ABSTRACT"],
                 forbidden=True,
+                forbidden_scope="front_matter",
             ),
         ],
     )
@@ -529,6 +543,7 @@ def _build_pkm_riset_sections() -> list[SectionRule]:
                 "PROPOSAL PROGRAM KREATIVITAS MAHASISWA",
             ],
             forbidden=True,
+            forbidden_scope="front_matter",
         ),
         SectionRule(
             name="HALAMAN PENGESAHAN",
@@ -539,11 +554,13 @@ def _build_pkm_riset_sections() -> list[SectionRule]:
                 "PENGESAHAN USULAN",
             ],
             forbidden=True,
+            forbidden_scope="front_matter",
         ),
         SectionRule(
             name="RINGKASAN",
             aliases=["ABSTRAK", "ABSTRACT"],
             forbidden=True,
+            forbidden_scope="front_matter",
         ),
     ]
 
@@ -679,6 +696,7 @@ def _build_pkm_kc_like_sections(
                 "PROPOSAL PROGRAM KREATIVITAS MAHASISWA",
             ],
             forbidden=True,
+            forbidden_scope="front_matter",
         ),
         SectionRule(
             name="HALAMAN PENGESAHAN",
@@ -689,11 +707,13 @@ def _build_pkm_kc_like_sections(
                 "PENGESAHAN USULAN",
             ],
             forbidden=True,
+            forbidden_scope="front_matter",
         ),
         SectionRule(
             name="RINGKASAN",
             aliases=["ABSTRAK", "ABSTRACT"],
             forbidden=True,
+            forbidden_scope="front_matter",
         ),
     ]
 
@@ -902,6 +922,7 @@ def get_pkm_ai_proposal_rules() -> SchemaRules:
                 name="HALAMAN SAMPUL",
                 aliases=["COVER", "SAMPUL", "PROPOSAL PKM-AI"],
                 forbidden=True,
+                forbidden_scope="front_matter",
             ),
             SectionRule(
                 name="HALAMAN PENGESAHAN",
@@ -911,10 +932,12 @@ def get_pkm_ai_proposal_rules() -> SchemaRules:
                     "PENGESAHAN PKM",
                 ],
                 forbidden=True,
+                forbidden_scope="front_matter",
             ),
             SectionRule(
                 name="RINGKASAN",
                 forbidden=True,
+                forbidden_scope="front_matter",
             ),
         ],
     )
@@ -1060,9 +1083,11 @@ def _laporan_forbidden_sections(
 ) -> list[SectionRule]:
     """Section terlarang laporan: sampul & pengesahan (+ ringkasan utk kemajuan).
 
-    Semua di-scope "before_lampiran": bukti pendukung kegiatan di LAMPIRAN
-    lazim memuat salinan artikel/poster (ada ABSTRAK) — bukan pelanggaran.
-    doc_label sengaja TIDAK dipakai telanjang sebagai alias sampul: frasa
+    Semua di-scope "front_matter": ketiganya pelanggaran hanya bila muncul di
+    lembar depan (sebelum BAB 1). Ini sekaligus menutup dua kelas false positive
+    yang dulu lolos scope "before_lampiran": salinan artikel/poster ber-ABSTRAK
+    di LAMPIRAN, dan sub-bab sah seperti "Ringkasan Hasil yang Dicapai" di BAB 4.
+    doc_label tetap TIDAK dipakai telanjang sebagai alias sampul: frasa
     "Laporan Kemajuan" muncul wajar di body (mis. daftar luaran Bab 4).
     """
     sections = [
@@ -1076,7 +1101,7 @@ def _laporan_forbidden_sections(
                 f"{doc_label} PROGRAM KREATIVITAS MAHASISWA",
             ],
             forbidden=True,
-            forbidden_scope="before_lampiran",
+            forbidden_scope="front_matter",
         ),
         SectionRule(
             name="HALAMAN PENGESAHAN",
@@ -1087,7 +1112,7 @@ def _laporan_forbidden_sections(
                 "PENGESAHAN USULAN",
             ],
             forbidden=True,
-            forbidden_scope="before_lampiran",
+            forbidden_scope="front_matter",
         ),
     ]
     if forbid_ringkasan:
@@ -1096,7 +1121,7 @@ def _laporan_forbidden_sections(
                 name="RINGKASAN",
                 aliases=["ABSTRAK", "ABSTRACT"],
                 forbidden=True,
-                forbidden_scope="before_lampiran",
+                forbidden_scope="front_matter",
             )
         )
     return sections
@@ -1339,6 +1364,7 @@ def get_pkm_gft_proposal_rules() -> SchemaRules:
                     "PROPOSAL PROGRAM KREATIVITAS MAHASISWA",
                 ],
                 forbidden=True,
+                forbidden_scope="front_matter",
             ),
             SectionRule(
                 name="HALAMAN PENGESAHAN",
@@ -1349,11 +1375,13 @@ def get_pkm_gft_proposal_rules() -> SchemaRules:
                     "PENGESAHAN USULAN",
                 ],
                 forbidden=True,
+                forbidden_scope="front_matter",
             ),
             SectionRule(
                 name="RINGKASAN",
                 aliases=["ABSTRAK", "ABSTRACT"],
                 forbidden=True,
+                forbidden_scope="front_matter",
             ),
         ],
     )

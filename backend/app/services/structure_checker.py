@@ -14,7 +14,7 @@ Input:
 
 Output:
     - StructureCheckResult dengan:
-        * status: 'pass' | 'warning' | 'fail'
+        * status: 'pass' | 'fail'
         * found_sections: list section yang teridentifikasi (urut sesuai dokumen)
         * missing_required: list section wajib yang tidak ditemukan
         * forbidden_found: list section terlarang yang ditemukan (RED FLAG)
@@ -47,6 +47,27 @@ class FoundSection:
     is_forbidden: bool = False
     is_required: bool = False
     is_core: bool = False
+    # Dasar pengenalan section ini:
+    #   'style' — style Heading N / Title / outlineLvl (deklarasi Word, PASTI)
+    #   'shape' — heuristik bentuk teks (rasio kapital / bold / pola "BAB N")
+    #   'sdt'   — node content control (TOC field), posisinya perkiraan
+    # Temuan yang bersandar pada 'shape'/'sdt' tidak bisa dibuktikan langsung.
+    # Vonis di sistem ini biner (salah / benar), jadi temuan semacam itu TIDAK
+    # dilaporkan sama sekali — lebih baik terlewat daripada memvonis salah.
+    evidence: str = "shape"
+    # 'exact' = teks heading persis nama section; 'prefix' = hanya diawali.
+    match_quality: str = "prefix"
+
+    @property
+    def is_authoritative(self) -> bool:
+        """Cukup kuat untuk jadi vonis?
+
+        Butuh salah satu: Word menyatakan paragraf ini heading (style/outlineLvl),
+        ATAU teksnya persis nama section. Yang tidak punya keduanya — dikenali
+        cuma dari bentuk teks DAN cocok sebagai awalan saja — bisa jadi paragraf
+        biasa yang kebetulan berawalan sama, jadi tidak dipakai memvonis.
+        """
+        return self.evidence == "style" or self.match_quality == "exact"
 
 
 @dataclass
@@ -91,14 +112,14 @@ class FormatViolation:
 @dataclass
 class CheckMessage:
     """Pesan feedback yang akan ditampilkan ke user."""
-    level: str    # 'pass' | 'warning' | 'fail'
+    level: str    # 'pass' | 'fail'
     text: str
 
 
 @dataclass
 class StructureCheckResult:
     """Hasil pengecekan struktur — siap dikonversi ke JSON."""
-    status: str  # 'pass' | 'warning' | 'fail'
+    status: str  # 'pass' | 'fail'
     schema_competition: str
     schema_code: str
     report_type: str
@@ -126,11 +147,17 @@ class StructureCheckResult:
                     "is_required": s.is_required,
                     "is_core": s.is_core,
                     "is_forbidden": s.is_forbidden,
+                    "evidence": s.evidence,
+                    "match_quality": s.match_quality,
                 }
                 for s in self.found_sections
             ],
             "missing_required": [
-                {"rule_name": m.rule_name, "expected_order": m.expected_order, "message": m.message}
+                {
+                    "rule_name": m.rule_name,
+                    "expected_order": m.expected_order,
+                    "message": m.message,
+                }
                 for m in self.missing_required
             ],
             "forbidden_found": [
@@ -191,30 +218,45 @@ def _normalize(text: str) -> str:
     return t.strip()
 
 
+def _heading_match_quality(heading_text: str, rule: SectionRule) -> Optional[str]:
+    """Mutu kecocokan heading dengan rule: 'exact' | 'prefix' | None.
+
+    'exact'  — seluruh teks heading persis nama/alias section. Tidak ambigu.
+    'prefix' — heading hanya DIAWALI nama section, ada lanjutannya. Perlu untuk
+               "BAB 1. PENDAHULUAN ... 5" dan judul ber-ekor, tapi juga pintu
+               masuk false positive: sub-bab "Ringkasan Hasil yang Dicapai"
+               ikut cocok dengan section terlarang "RINGKASAN".
+    """
+    norm_heading = _normalize(heading_text)
+    best: Optional[str] = None
+    for cand in [rule.name] + rule.aliases:
+        norm_cand = _normalize(cand)
+        if norm_heading == norm_cand:
+            return "exact"
+        if norm_heading.startswith(norm_cand):
+            best = "prefix"
+    return best
+
+
 def _heading_matches_rule(heading_text: str, rule: SectionRule) -> bool:
     """
     Cek apakah teks heading match dengan rule (canonical name atau aliases).
     Pencocokan: heading dimulai dengan name atau salah satu alias (setelah normalisasi).
     """
-    norm_heading = _normalize(heading_text)
-    candidates = [rule.name] + rule.aliases
-    for cand in candidates:
-        norm_cand = _normalize(cand)
-        if norm_heading.startswith(norm_cand):
-            return True
-    return False
+    return _heading_match_quality(heading_text, rule) is not None
 
 
-def _looks_like_toc_line(text: str) -> bool:
-    """Heuristik sederhana untuk entri daftar isi/lampiran."""
-    t = text.strip()
-    if not t:
-        return False
-    if re.search(r"\t+\s*([ivxlcdm]+|\d+)\s*$", t, flags=re.IGNORECASE):
+def _looks_like_toc_line(text: str, para=None) -> bool:
+    """Apakah baris ini entri daftar isi/lampiran?
+
+    Kalau ParagraphInfo tersedia, pakai `is_toc_entry` dari parser — sinyalnya
+    dibaca dari style bawaan Word ('toc 1'..'toc 9', 'table of figures'), yaitu
+    deklarasi eksplisit di dalam file, bukan tebakan. Argumen `text` saja tetap
+    didukung untuk pemanggil yang tidak punya paragraf (mis. node SDT).
+    """
+    if para is not None and getattr(para, "is_toc_entry", False):
         return True
-    if re.search(r"[.\s]{4,}\s*(\d+|[ivxlcdm]+)\s*$", t, flags=re.IGNORECASE):
-        return True
-    return False
+    return DocxParser._detect_toc_entry(text, None)[0]
 
 
 def _looks_like_heading_candidate(text: str, para=None) -> bool:
@@ -312,7 +354,8 @@ class StructureChecker:
             if _looks_like_toc_line(text):
                 continue
             for rule in self.rules.sections:
-                if not _heading_matches_rule(text, rule):
+                quality = _heading_match_quality(text, rule)
+                if quality is None:
                     continue
                 if rule.required and rule.name in already_matched_required:
                     break
@@ -326,6 +369,8 @@ class StructureChecker:
                         is_forbidden=rule.forbidden,
                         is_required=rule.required,
                         is_core=rule.is_core,
+                        evidence="sdt",
+                        match_quality=quality,
                     )
                 )
                 break
@@ -335,16 +380,23 @@ class StructureChecker:
             if not text:
                 continue
             # Skip baris daftar isi yang sering false-positive.
-            if _looks_like_toc_line(text):
+            if _looks_like_toc_line(text, para=para):
                 continue
-            if not para.is_heading and not _looks_like_heading_candidate(text, para=para):
+            # is_heading = style Heading/Title atau outlineLvl → deklarasi Word.
+            # Selain itu hanya lolos lewat heuristik bentuk → bukti lemah.
+            if para.is_heading:
+                evidence = "style"
+            elif _looks_like_heading_candidate(text, para=para):
+                evidence = "shape"
+            else:
                 continue
             # Dokumen real sering pakai style Normal untuk judul section.
             # Tetap izinkan selama text cocok rule.
 
             # Cek terhadap semua rule
             for rule in self.rules.sections:
-                if not _heading_matches_rule(text, rule):
+                quality = _heading_match_quality(text, rule)
+                if quality is None:
                     continue
 
                 # Required: ambil kemunculan pertama saja
@@ -361,6 +413,8 @@ class StructureChecker:
                         is_forbidden=rule.forbidden,
                         is_required=rule.required,
                         is_core=rule.is_core,
+                        evidence=evidence,
+                        match_quality=quality,
                     )
                 )
                 # Satu paragraf cukup match satu rule (rule paling spesifik
@@ -416,6 +470,9 @@ class StructureChecker:
         for section in found:
             if section.is_forbidden:
                 continue
+            # Bukti pengenalan lemah → tidak cukup untuk memvonis format judulnya.
+            if not section.is_authoritative:
+                continue
             if not section.rule_name.upper().startswith("BAB "):
                 continue
 
@@ -451,6 +508,11 @@ class StructureChecker:
     def _find_missing_required(
         self, found: list[FoundSection]
     ) -> list[MissingSection]:
+        """Section wajib yang tidak ketemu.
+
+        Pencarian memakai style heading DAN heuristik bentuk, jadi "tidak ketemu
+        oleh keduanya" sudah dasar yang cukup untuk memvonis.
+        """
         found_required_names = {f.rule_name for f in found if f.is_required}
         missing: list[MissingSection] = []
         for rule in self.rules.required_sections():
@@ -468,6 +530,32 @@ class StructureChecker:
     # Step 3: Kumpulkan red flag
     # ------------------------------------------------------------------------
 
+    def _find_front_zone_end(
+        self, found: list[FoundSection]
+    ) -> tuple[Optional[int], bool]:
+        """Batas akhir zona depan dokumen, plus apakah batas itu tepercaya.
+
+        Batasnya = paragraf section inti paling awal yang ditemukan. Tepercaya
+        hanya bila section inti PERTAMA menurut aturan (BAB 1, atau "Pendahuluan"
+        utk PKM-AI) memang ter-detect; kalau yang ketemu cuma section inti
+        belakangan (mis. DAFTAR PUSTAKA saja), batasnya terlalu lebar untuk
+        dipakai memvonis — temuannya tidak dilaporkan.
+
+        Return: (paragraph_index batas, tepercaya). None = tidak ada acuan sama
+        sekali, seluruh dokumen dianggap zona depan.
+        """
+        core_found = [f for f in found if f.is_core and not f.is_forbidden]
+        if not core_found:
+            return None, False
+
+        core_rules = [
+            r for r in self.rules.sections
+            if r.is_core and not r.forbidden and r.order is not None
+        ]
+        first_core_rule = min(core_rules, key=lambda r: r.order).name if core_rules else None
+        trusted = any(f.rule_name == first_core_rule for f in core_found)
+        return min(f.paragraph_index for f in core_found), trusted
+
     def _collect_forbidden(
         self, found: list[FoundSection]
     ) -> list[ForbiddenFinding]:
@@ -480,6 +568,12 @@ class StructureChecker:
              if f.rule_name == "LAMPIRAN" and not f.is_forbidden),
             None,
         )
+        # Batas scope "front_matter": section inti pertama. Sampul, pengesahan
+        # dan ringkasan didefinisikan oleh LETAK — hanya pelanggaran bila muncul
+        # sebelum batas ini. Kalau batas tidak bisa ditegakkan (BAB 1 tidak
+        # ter-detect: dokumen rusak / hasil scan), posisinya tidak bisa
+        # diverifikasi sehingga tidak cukup untuk memvonis.
+        front_zone_end, front_zone_trusted = self._find_front_zone_end(found)
         scope_by_rule = {
             r.name: getattr(r, "forbidden_scope", None) for r in self.rules.sections
         }
@@ -488,24 +582,40 @@ class StructureChecker:
         for f in found:
             if not f.is_forbidden:
                 continue
+            scope = scope_by_rule.get(f.rule_name)
+
             if (
-                scope_by_rule.get(f.rule_name) == "before_lampiran"
+                scope == "before_lampiran"
                 and lampiran_idx is not None
                 and f.paragraph_index >= lampiran_idx
             ):
                 continue
+            if scope == "front_matter":
+                if front_zone_end is not None and f.paragraph_index >= front_zone_end:
+                    continue
+                # Batas zona depan tidak bisa ditegakkan (BAB 1 tidak ter-detect):
+                # posisinya tak terverifikasi, jadi tidak cukup untuk memvonis.
+                if not front_zone_trusted:
+                    continue
+            # Bukti pengenalan lemah: bukan heading ber-style DAN teksnya cuma
+            # berawalan nama section. Bisa jadi paragraf biasa yang kebetulan
+            # berawalan sama — tidak cukup untuk memvonis.
+            if not f.is_authoritative:
+                continue
+
+            message = (
+                f"Red flag: dokumen memuat '{f.rule_name}' "
+                f"(\"{f.matched_text[:60]}\") yang DILARANG di "
+                f"{self.rules.competition_code}-{self.rules.schema_code} "
+                f"{self.rules.report_type_code}."
+            )
+
             forbidden.append(
                 ForbiddenFinding(
                     rule_name=f.rule_name,
                     matched_text=f.matched_text,
                     paragraph_index=f.paragraph_index,
-                    severity="fail",
-                    message=(
-                        f"Red flag: dokumen memuat '{f.rule_name}' "
-                        f"(\"{f.matched_text[:60]}\") yang DILARANG di "
-                        f"{self.rules.competition_code}-{self.rules.schema_code} "
-                        f"{self.rules.report_type_code}."
-                    ),
+                    message=message,
                 )
             )
         return forbidden
@@ -529,8 +639,10 @@ class StructureChecker:
             for r in self.rules.sections
             if r.required and r.order is not None
         }
-        # Required sections yang ditemukan, urut sesuai dokumen
-        actual = [f for f in found if f.is_required]
+        # Required sections yang ditemukan, urut sesuai dokumen. Section dengan
+        # bukti pengenalan lemah dikeluarkan: posisinya belum tentu posisi
+        # section sungguhan, jadi tidak layak dipakai memvonis urutan.
+        actual = [f for f in found if f.is_required and f.is_authoritative]
 
         violations: list[OrderViolation] = []
         # Bandingkan setiap pasangan
@@ -583,11 +695,10 @@ class StructureChecker:
                 f"(global #{paragraph_index}))"
             )
 
-        # Status logic:
-        # - fail jika ada forbidden ATAU ada missing required ATAU ada out_of_order
-        # - pass jika semua bersih
-        # (warning belum dipakai — di skema struktur, semuanya jelas pass/fail)
-
+        # Status logic: BINER — 'fail' kalau ada temuan apa pun, 'pass' kalau
+        # bersih. Temuan yang buktinya tidak cukup kuat sudah disaring lebih
+        # awal (tidak dilaporkan sama sekali), sehingga apa pun yang sampai ke
+        # sini adalah pelanggaran yang bisa dibuktikan.
         has_fail = bool(
             result.forbidden_found
             or result.missing_required
