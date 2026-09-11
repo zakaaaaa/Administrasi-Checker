@@ -4,14 +4,20 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import re
+import uuid
 from contextlib import asynccontextmanager
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from app.auth import verify_password, generate_token
+import psycopg2
+
+from app.auth import hash_password, verify_password, generate_token
 from app.db import get_cursor
+from app.storage import upload_docx_async
 
 
 @asynccontextmanager
@@ -131,8 +137,18 @@ class GenerateBulkTokenResponse(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _is_uuid(value: Optional[str]) -> bool:
+    try:
+        uuid.UUID(str(value))
+        return True
+    except ValueError:
+        return False
+
+
 def _verify_admin(admin_id: str) -> dict:
     """Pastikan admin_id valid; return row admin."""
+    if not _is_uuid(admin_id):
+        raise HTTPException(401, "Admin tidak ditemukan / tidak login")
     with get_cursor() as cur:
         cur.execute("SELECT id, username FROM admins WHERE id = %s", (admin_id,))
         row = cur.fetchone()
@@ -182,6 +198,20 @@ def admin_login(req: AdminLoginRequest):
             (req.username,),
         )
         row = cur.fetchone()
+        if not row:
+            # Akun reviewer tidak punya akses Admin Panel. Beri tahu dengan
+            # jelas — tapi hanya kalau password-nya benar.
+            cur.execute(
+                "SELECT password_hash FROM reviewers WHERE username = %s",
+                (req.username.strip().lower(),),
+            )
+            reviewer = cur.fetchone()
+            if reviewer and verify_password(req.password, reviewer["password_hash"]):
+                raise HTTPException(
+                    403,
+                    "Akun reviewer tidak punya akses ke Admin Panel. "
+                    "Silakan masuk lewat halaman /reviewer.",
+                )
     if not row or not verify_password(req.password, row["password_hash"]):
         raise HTTPException(401, "Username atau password salah")
     return AdminLoginResponse(admin_id=str(row["id"]), username=row["username"])
@@ -561,9 +591,17 @@ def get_overview(admin_id: str):
     }
 
 
+@app.get("/api/admin/server-stats")
+def get_server_stats(admin_id: str):
+    """Metrik real-time VPS (CPU, RAM, disk, jaringan, service, proses)."""
+    _verify_admin(admin_id)
+    from app.services.server_monitor import collect_server_stats
+    return collect_server_stats()
+
+
 UPLOAD_DIR = Path(__file__).parent.parent / "storage" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
+MAX_FILE_SIZE = 35 * 1024 * 1024  # 35 MB — samakan dengan MAX_FILE_MB frontend & nginx
 
 
 @app.post("/api/check")
@@ -621,6 +659,13 @@ def submit_check(
             (submission_id, token_id),
         )
 
+    # 6b. Salin ke R2 di background (file lokal tetap dipakai checker)
+    upload_docx_async(
+        file_path, submission_id,
+        original_filename=file.filename, competition=competition,
+        report_type=report_type, schema_code=schema_code, source="token",
+    )
+
     # 7. Run checks (outside DB transaction — bisa lama)
     try:
         req = CheckRequest(
@@ -656,12 +701,12 @@ def submit_check(
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (submission_id,
-             json.dumps(results["structure"]),
-             json.dumps(results["physical_sheet"]),
-             json.dumps(results["format"]),
-             json.dumps(results["page_numbering"]),
-             json.dumps(results["budget"]),
-             json.dumps(results["reference"]),
+             json.dumps(results.get("structure") or {}),
+             json.dumps(results.get("physical_sheet") or {}),
+             json.dumps(results.get("format") or {}),
+             json.dumps(results.get("page_numbering") or {}),
+             json.dumps(results.get("budget") or {}),
+             json.dumps(results.get("reference") or {}),
              results["overall_status"]),
         )
         cur.execute(
@@ -674,13 +719,13 @@ def submit_check(
         "status": "completed",
         "overall_status": results["overall_status"],
         "results": {
-            "structure": results["structure"],
+            "structure": results.get("structure"),
             "ai_front_matter": results.get("ai_front_matter"),
-            "physical_sheet": results["physical_sheet"],
-            "format": results["format"],
-            "page_numbering": results["page_numbering"],
-            "budget": results["budget"],
-            "reference": results["reference"],
+            "physical_sheet": results.get("physical_sheet"),
+            "format": results.get("format"),
+            "page_numbering": results.get("page_numbering"),
+            "budget": results.get("budget"),
+            "reference": results.get("reference"),
             "luaran": results.get("luaran"),
             "lampiran": results.get("lampiran"),
             "surat_pernyataan": results.get("surat_pernyataan"),
@@ -693,18 +738,268 @@ def submit_check(
 
 
 # ---------------------------------------------------------------------------
-# Reviewer endpoint (no token required, authenticated via admin_id)
+# Akun reviewer: CRUD oleh admin + login di halaman /reviewer
+# ---------------------------------------------------------------------------
+# Admin tetap boleh login di /reviewer dengan akun admin-nya (perilaku lama),
+# jadi username reviewer tidak boleh bentrok dengan username admin.
+
+_REVIEWER_USERNAME_RE = re.compile(r"^[a-z0-9._-]{3,50}$")
+_REVIEWER_PASSWORD_MIN = 8
+_REVIEWER_PASSWORD_MAX = 72  # batas bcrypt (byte)
+_REVIEWER_NAME_MAX = 120
+
+
+class ReviewerCreateRequest(BaseModel):
+    admin_id: str
+    username: str
+    full_name: str
+    password: str
+
+
+class ReviewerUpdateRequest(BaseModel):
+    admin_id: str
+    username: Optional[str] = None
+    full_name: Optional[str] = None
+    password: Optional[str] = None  # None / "" = password tidak diganti
+    is_active: Optional[bool] = None
+
+
+class ReviewerLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+def _clean_reviewer_username(raw: str) -> str:
+    username = raw.strip().lower()
+    if not _REVIEWER_USERNAME_RE.match(username):
+        raise HTTPException(
+            400,
+            "Username 3–50 karakter, hanya huruf kecil, angka, titik (.), "
+            "garis bawah (_), atau tanda hubung (-).",
+        )
+    return username
+
+
+def _clean_reviewer_name(raw: str) -> str:
+    name = " ".join(raw.split())
+    if not name:
+        raise HTTPException(400, "Nama lengkap wajib diisi.")
+    if len(name) > _REVIEWER_NAME_MAX:
+        raise HTTPException(400, f"Nama lengkap maksimal {_REVIEWER_NAME_MAX} karakter.")
+    return name
+
+
+def _check_reviewer_password(password: str) -> str:
+    if len(password) < _REVIEWER_PASSWORD_MIN:
+        raise HTTPException(400, f"Password minimal {_REVIEWER_PASSWORD_MIN} karakter.")
+    if len(password.encode("utf-8")) > _REVIEWER_PASSWORD_MAX:
+        raise HTTPException(400, f"Password maksimal {_REVIEWER_PASSWORD_MAX} karakter.")
+    return password
+
+
+def _ensure_reviewer_username_free(cur, username: str, exclude_id: Optional[str] = None) -> None:
+    cur.execute("SELECT 1 FROM admins WHERE lower(username) = %s", (username,))
+    if cur.fetchone():
+        raise HTTPException(409, "Username sudah dipakai akun admin.")
+    cur.execute(
+        "SELECT 1 FROM reviewers WHERE username = %s AND id IS DISTINCT FROM %s",
+        (username, exclude_id),
+    )
+    if cur.fetchone():
+        raise HTTPException(409, "Username sudah dipakai reviewer lain.")
+
+
+def _reviewer_to_dict(row: dict) -> dict:
+    return {
+        "id":            str(row["id"]),
+        "username":      row["username"],
+        "full_name":     row["full_name"],
+        "is_active":     row["is_active"],
+        "created_at":    row["created_at"].isoformat() if row["created_at"] else None,
+        "updated_at":    row["updated_at"].isoformat() if row["updated_at"] else None,
+        "check_count":   row.get("check_count") or 0,
+        "last_check_at": row["last_check_at"].isoformat() if row.get("last_check_at") else None,
+    }
+
+
+def _verify_reviewer(reviewer_id: Optional[str]) -> dict:
+    """Akun yang boleh memakai /api/reviewer/check: reviewer aktif, atau admin."""
+    if not _is_uuid(reviewer_id):
+        raise HTTPException(401, "Reviewer tidak ditemukan / tidak login")
+    with get_cursor() as cur:
+        cur.execute("SELECT id, is_active FROM reviewers WHERE id = %s", (reviewer_id,))
+        row = cur.fetchone()
+        if row:
+            if not row["is_active"]:
+                raise HTTPException(401, "Akun reviewer dinonaktifkan. Hubungi admin.")
+            return {"id": row["id"]}
+        cur.execute("SELECT id FROM admins WHERE id = %s", (reviewer_id,))
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(401, "Reviewer tidak ditemukan / tidak login")
+    return {"id": row["id"]}
+
+
+@app.get("/api/admin/reviewers")
+def list_reviewers(admin_id: str, q: str = ""):
+    _verify_admin(admin_id)
+    query = q.strip()
+    like = f"%{query}%"
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT r.id, r.username, r.full_name, r.is_active, r.created_at, r.updated_at,
+                   COUNT(s.id)       AS check_count,
+                   MAX(s.created_at) AS last_check_at
+            FROM reviewers r
+            LEFT JOIN submissions s ON s.reviewer_user_id = r.id
+            WHERE (%s = '' OR r.username ILIKE %s OR r.full_name ILIKE %s)
+            GROUP BY r.id
+            ORDER BY r.created_at DESC
+            """,
+            (query, like, like),
+        )
+        rows = cur.fetchall()
+    reviewers = [_reviewer_to_dict(r) for r in rows]
+    return {
+        "reviewers": reviewers,
+        "total": len(reviewers),
+        "active_count": sum(1 for r in reviewers if r["is_active"]),
+    }
+
+
+@app.post("/api/admin/reviewers", status_code=201)
+def create_reviewer(req: ReviewerCreateRequest):
+    admin = _verify_admin(req.admin_id)
+    username = _clean_reviewer_username(req.username)
+    full_name = _clean_reviewer_name(req.full_name)
+    password_hash = hash_password(_check_reviewer_password(req.password))
+    try:
+        with get_cursor() as cur:
+            _ensure_reviewer_username_free(cur, username)
+            cur.execute(
+                """
+                INSERT INTO reviewers (username, full_name, password_hash, created_by)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id, username, full_name, is_active, created_at, updated_at
+                """,
+                (username, full_name, password_hash, admin["id"]),
+            )
+            row = cur.fetchone()
+    except psycopg2.errors.UniqueViolation:
+        raise HTTPException(409, "Username sudah dipakai reviewer lain.")
+    return {"reviewer": _reviewer_to_dict(row)}
+
+
+@app.patch("/api/admin/reviewers/{reviewer_id}")
+def update_reviewer(reviewer_id: str, req: ReviewerUpdateRequest):
+    _verify_admin(req.admin_id)
+    if not _is_uuid(reviewer_id):
+        raise HTTPException(404, "Reviewer tidak ditemukan")
+
+    sets: list[str] = []
+    params: list = []
+    username = None
+    if req.username is not None:
+        username = _clean_reviewer_username(req.username)
+        sets.append("username = %s")
+        params.append(username)
+    if req.full_name is not None:
+        sets.append("full_name = %s")
+        params.append(_clean_reviewer_name(req.full_name))
+    if req.password:
+        sets.append("password_hash = %s")
+        params.append(hash_password(_check_reviewer_password(req.password)))
+    if req.is_active is not None:
+        sets.append("is_active = %s")
+        params.append(req.is_active)
+    if not sets:
+        raise HTTPException(400, "Tidak ada perubahan yang dikirim.")
+
+    try:
+        with get_cursor() as cur:
+            if username is not None:
+                _ensure_reviewer_username_free(cur, username, exclude_id=reviewer_id)
+            cur.execute(
+                f"""
+                UPDATE reviewers SET {", ".join(sets)}, updated_at = NOW()
+                WHERE id = %s
+                RETURNING id, username, full_name, is_active, created_at, updated_at
+                """,
+                (*params, reviewer_id),
+            )
+            row = cur.fetchone()
+    except psycopg2.errors.UniqueViolation:
+        raise HTTPException(409, "Username sudah dipakai reviewer lain.")
+    if not row:
+        raise HTTPException(404, "Reviewer tidak ditemukan")
+    return {"reviewer": _reviewer_to_dict(row)}
+
+
+@app.delete("/api/admin/reviewers/{reviewer_id}")
+def delete_reviewer(reviewer_id: str, admin_id: str):
+    _verify_admin(admin_id)
+    if not _is_uuid(reviewer_id):
+        raise HTTPException(404, "Reviewer tidak ditemukan")
+    # Riwayat upload reviewer tetap disimpan (submissions.reviewer_user_id
+    # tidak ber-FK); hanya akunnya yang dihapus sehingga tidak bisa login lagi.
+    with get_cursor() as cur:
+        cur.execute("DELETE FROM reviewers WHERE id = %s RETURNING id", (reviewer_id,))
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(404, "Reviewer tidak ditemukan")
+    return {"deleted": True, "id": str(row["id"])}
+
+
+@app.post("/api/reviewer/login")
+def reviewer_login(req: ReviewerLoginRequest):
+    username = req.username.strip()
+    with get_cursor() as cur:
+        cur.execute(
+            "SELECT id, username, full_name, password_hash, is_active FROM reviewers WHERE username = %s",
+            (username.lower(),),
+        )
+        row = cur.fetchone()
+        if row:
+            if not verify_password(req.password, row["password_hash"]):
+                raise HTTPException(401, "Username atau password salah")
+            if not row["is_active"]:
+                raise HTTPException(403, "Akun reviewer dinonaktifkan. Hubungi admin.")
+            return {
+                "reviewer_id": str(row["id"]),
+                "username": row["username"],
+                "full_name": row["full_name"],
+                "role": "reviewer",
+            }
+        cur.execute(
+            "SELECT id, username, password_hash FROM admins WHERE username = %s",
+            (username,),
+        )
+        row = cur.fetchone()
+    if not row or not verify_password(req.password, row["password_hash"]):
+        raise HTTPException(401, "Username atau password salah")
+    return {
+        "reviewer_id": str(row["id"]),
+        "username": row["username"],
+        "full_name": row["username"],
+        "role": "admin",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Reviewer endpoint (no token required, authenticated via reviewer_id)
 # ---------------------------------------------------------------------------
 
 @app.post("/api/reviewer/check")
 def reviewer_check(
-    admin_id: str = Form(...),
     competition: str = Form(...),
     report_type: str = Form(...),
     schema_code: str = Form(...),
     file: UploadFile = File(...),
+    reviewer_id: Optional[str] = Form(None),
+    admin_id: Optional[str] = Form(None),  # nama field lama — frontend versi sebelumnya
 ):
-    admin = _verify_admin(admin_id)
+    reviewer = _verify_reviewer(reviewer_id or admin_id)
 
     if not file.filename or not file.filename.lower().endswith(".docx"):
         raise HTTPException(400, "File harus berformat .docx")
@@ -728,8 +1023,14 @@ def reviewer_check(
             VALUES (%s, NULL, %s, %s, %s, %s, %s, %s, 'processing', %s)
             """,
             (submission_id, competition, report_type, schema_code,
-             file.filename, str(file_path), len(content), admin["id"]),
+             file.filename, str(file_path), len(content), reviewer["id"]),
         )
+
+    upload_docx_async(
+        file_path, submission_id,
+        original_filename=file.filename, competition=competition,
+        report_type=report_type, schema_code=schema_code, source="reviewer",
+    )
 
     try:
         req = CheckRequest(
@@ -764,12 +1065,12 @@ def reviewer_check(
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (submission_id,
-             json.dumps(results["structure"]),
-             json.dumps(results["physical_sheet"]),
-             json.dumps(results["format"]),
-             json.dumps(results["page_numbering"]),
-             json.dumps(results["budget"]),
-             json.dumps(results["reference"]),
+             json.dumps(results.get("structure") or {}),
+             json.dumps(results.get("physical_sheet") or {}),
+             json.dumps(results.get("format") or {}),
+             json.dumps(results.get("page_numbering") or {}),
+             json.dumps(results.get("budget") or {}),
+             json.dumps(results.get("reference") or {}),
              results["overall_status"]),
         )
         cur.execute(
@@ -782,13 +1083,13 @@ def reviewer_check(
         "status": "completed",
         "overall_status": results["overall_status"],
         "results": {
-            "structure": results["structure"],
+            "structure": results.get("structure"),
             "ai_front_matter": results.get("ai_front_matter"),
-            "physical_sheet": results["physical_sheet"],
-            "format": results["format"],
-            "page_numbering": results["page_numbering"],
-            "budget": results["budget"],
-            "reference": results["reference"],
+            "physical_sheet": results.get("physical_sheet"),
+            "format": results.get("format"),
+            "page_numbering": results.get("page_numbering"),
+            "budget": results.get("budget"),
+            "reference": results.get("reference"),
             "luaran": results.get("luaran"),
             "lampiran": results.get("lampiran"),
             "surat_pernyataan": results.get("surat_pernyataan"),

@@ -145,3 +145,28 @@ Pengujian setelah perbaikan:
    - section boundaries terdeteksi
    - tabel yang dipilih parser (Bab 4/Lampiran 2)
 3. Tambah test fixture lebih banyak dari dokumen real agar regresi lebih cepat terdeteksi.
+
+## Penyimpanan Dokumen di Cloudflare R2 (Sep 2026)
+
+Masa transisi: dokumen upload **tetap** disimpan di `storage/uploads/` (engine checker
+butuh path lokal), dan salinannya dikirim ke R2 di background oleh `app/storage.py`
+dengan key `uploads/<submission_id>.docx`. Gagal upload ke R2 hanya dicatat di log
+(`[r2] GAGAL ...`) dan tidak menggagalkan pengecekan. Tanpa env di bawah, fitur ini mati.
+
+Env (di `/etc/administrasi-checker/backend.env`, **jangan** di-commit):
+
+```
+R2_ENDPOINT_URL=https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
+R2_BUCKET=<nama-bucket>
+R2_PREFIX=uploads/        # opsional
+```
+
+Menyalin file lama yang sudah ada di VPS ke R2 (idempotent, file lokal tidak dihapus):
+
+```
+set -a; . /etc/administrasi-checker/backend.env; set +a
+.venv/bin/python scripts/sync_uploads_to_r2.py --dry-run   # cek dulu
+.venv/bin/python scripts/sync_uploads_to_r2.py
+```
