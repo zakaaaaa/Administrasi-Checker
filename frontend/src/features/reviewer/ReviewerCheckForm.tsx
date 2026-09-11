@@ -1,10 +1,11 @@
 'use client';
 
 import type { ChangeEvent, DragEvent, FormEvent } from 'react';
+import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
-import { CheckResultsView } from '@/features/check/CheckResultsView';
+import { CheckResultReport } from '@/features/check/CheckResultReport';
 import type { CheckResults } from '@/features/check/types';
-import { exportCheckResultPdf } from '@/features/check/exportCheckResultPdf';
+import { ExportCheckResultButton } from '@/features/check/ExportCheckResultButton';
 import {
   ALL_REPORTS,
   API_URL,
@@ -20,14 +21,15 @@ import { CheckFormSelectCard } from '@/features/check/form/CheckFormSelectCard';
 import { CheckProgressModal, PROGRESS_WAIT_CAP } from '@/features/check/CheckProgressModal';
 
 type Props = {
-  adminId: string;
-  adminUsername: string;
+  reviewerId: string;
+  displayName: string;
+  isAdmin?: boolean;
   onLogout: () => void;
 };
 
 type ViewState = 'form' | 'submitting' | 'result';
 
-export function ReviewerCheckForm({ adminId, adminUsername, onLogout }: Props) {
+export function ReviewerCheckForm({ reviewerId, displayName, isAdmin = false, onLogout }: Props) {
   const [skema, setSkema] = useState<SkemaCode>('PKM-KC');
   const [reportCode, setReportCode] = useState<ReportCode>('PROPOSAL');
   const [file, setFile] = useState<File | null>(null);
@@ -102,7 +104,7 @@ export function ReviewerCheckForm({ adminId, adminUsername, onLogout }: Props) {
     };
 
     const fd = new FormData();
-    fd.append('admin_id', adminId);
+    fd.append('reviewer_id', reviewerId);
     fd.append('competition', 'PKM');
     fd.append('report_type', reportCode);
     fd.append('schema_code', skema);
@@ -159,26 +161,20 @@ export function ReviewerCheckForm({ adminId, adminUsername, onLogout }: Props) {
             />
             <div>
               <p className="font-mono text-[10px] uppercase tracking-widest text-foreground-subtle">
-                Reviewer Mode
+                {isAdmin ? 'Reviewer Mode · Admin' : 'Reviewer Mode'}
               </p>
-              <p className="text-sm font-semibold text-foreground">{adminUsername}</p>
+              <p className="text-sm font-semibold text-foreground">{displayName}</p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
             {view === 'result' && result && (
-              <button
-                type="button"
-                onClick={() => exportCheckResultPdf(result)}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-brand-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-brand-700 print:hidden"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="7 10 12 15 17 10" />
-                  <line x1="12" y1="15" x2="12" y2="3" />
-                </svg>
-                Export PDF
-              </button>
+              <ExportCheckResultButton
+                result={result}
+                sourceFileName={file?.name}
+                schemaLabel={skema}
+                reportLabel={selectedReport.label}
+              />
             )}
             {view === 'result' && (
               <button
@@ -192,6 +188,14 @@ export function ReviewerCheckForm({ adminId, adminUsername, onLogout }: Props) {
                 </svg>
                 Cek Dokumen Lain
               </button>
+            )}
+            {isAdmin && (
+              <Link
+                href="/admin"
+                className="rounded-xl border border-black/10 px-3 py-2 text-xs font-medium text-foreground-muted transition hover:border-brand-300 hover:text-brand-700"
+              >
+                Admin Panel
+              </Link>
             )}
             <button
               type="button"
@@ -207,20 +211,12 @@ export function ReviewerCheckForm({ adminId, adminUsername, onLogout }: Props) {
       <main className="mx-auto max-w-5xl px-4 pb-24 pt-8 sm:px-6">
 
         {view === 'result' && result && (
-          <div>
-            <div className="mb-6">
-              <p className="font-mono text-xs uppercase tracking-[0.18em] text-foreground-subtle">
-                Hasil Pengecekan
-              </p>
-              <h1 className="mt-1.5 text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
-                <span className="font-display text-gradient-brand">{file?.name ?? 'Dokumen'}</span>
-              </h1>
-              <p className="mt-1 text-sm text-foreground-muted">
-                {skema} · {selectedReport.label}
-              </p>
-            </div>
-            <CheckResultsView result={result} />
-          </div>
+          <CheckResultReport
+            result={result}
+            sourceFileName={file?.name}
+            schemaLabel={skema}
+            reportLabel={selectedReport.label}
+          />
         )}
 
         {view === 'form' && (
@@ -280,7 +276,7 @@ export function ReviewerCheckForm({ adminId, adminUsername, onLogout }: Props) {
                 )}
               </CheckFormSection>
 
-              <CheckFormSection number={3} title="Upload Dokumen" description="Hanya menerima file .docx, maksimal 25 MB.">
+              <CheckFormSection number={3} title="Upload Dokumen" description={`Hanya menerima file .docx, maksimal ${MAX_FILE_MB} MB.`}>
                 {!file ? (
                   <label
                     onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}

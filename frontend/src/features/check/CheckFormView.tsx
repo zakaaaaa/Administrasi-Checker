@@ -268,7 +268,7 @@ export function CheckFormView() {
           <CheckFormSection
             number={3}
             title="Upload Laporan"
-            description="Hanya menerima file .docx, maksimal 25 MB."
+            description={`Hanya menerima file .docx, maksimal ${MAX_FILE_MB} MB.`}
           >
             {!file ? (
               <label

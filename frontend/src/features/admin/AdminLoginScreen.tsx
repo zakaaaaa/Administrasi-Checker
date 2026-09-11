@@ -12,6 +12,7 @@ type Props = {
   onPasswordChange: (v: string) => void;
   onTogglePassword: () => void;
   onLogin: () => void;
+  footerPrompt?: string;
 };
 
 export function AdminLoginScreen({
@@ -24,6 +25,7 @@ export function AdminLoginScreen({
   onPasswordChange,
   onTogglePassword,
   onLogin,
+  footerPrompt = 'Bukan admin?',
 }: Props) {
   return (
     <main className="relative flex min-h-[calc(100vh-4rem)] items-center justify-center px-4 py-10 sm:px-6">
@@ -173,7 +175,7 @@ export function AdminLoginScreen({
             </div>
 
             <p className="text-center text-sm text-foreground-muted">
-              Bukan admin?{' '}
+              {footerPrompt}{' '}
               <Link href="/" className="font-semibold text-brand-600 hover:text-brand-700">
                 Kembali ke beranda
               </Link>

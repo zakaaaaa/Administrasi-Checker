@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckResultsView } from '@/features/check/CheckResultsView';
-import { exportCheckResultPdf } from '@/features/check/exportCheckResultPdf';
+import { ExportCheckResultButton } from '@/features/check/ExportCheckResultButton';
 import type { CheckResults, ModuleResult } from '@/features/check/types';
 import { API_URL } from './constants';
 
@@ -93,24 +93,6 @@ function FileIcon() {
   );
 }
 
-function DownloadIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="h-3.5 w-3.5"
-    >
-      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-      <polyline points="7 10 12 15 17 10" />
-      <line x1="12" y1="15" x2="12" y2="3" />
-    </svg>
-  );
-}
-
 function SearchIcon() {
   return (
     <svg
@@ -154,11 +136,6 @@ function UploadHistoryItem({ record }: { record: UploadRecord }) {
     setOpen((current) => !current);
   }
 
-  function handleDownload() {
-    if (!hasResults) return;
-    exportCheckResultPdf(checkResult, record.original_filename);
-  }
-
   return (
     <div className="overflow-hidden rounded-2xl border border-border bg-surface-elevated">
       <div className="flex flex-col gap-3 px-4 py-3.5 sm:flex-row sm:items-center">
@@ -196,14 +173,14 @@ function UploadHistoryItem({ record }: { record: UploadRecord }) {
           )}
           <StatusBadge status={record.overall_status} />
           {hasResults && (
-            <button
-              type="button"
-              onClick={handleDownload}
+            <ExportCheckResultButton
+              result={checkResult}
+              sourceFileName={record.original_filename}
+              schemaLabel={record.schema_code}
+              reportLabel={REPORT_LABELS[record.report_type] ?? record.report_type}
+              label="Download"
               className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-brand-200 bg-brand-50 px-3 text-xs font-semibold text-brand-700 transition hover:bg-brand-100"
-            >
-              <DownloadIcon />
-              Download
-            </button>
+            />
           )}
           {hasResults && (
             <button

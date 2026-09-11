@@ -3,11 +3,48 @@
 import { useEffect, useState } from 'react';
 import { AdminLoginScreen } from '@/features/admin/AdminLoginScreen';
 import { ReviewerCheckForm } from './ReviewerCheckForm';
-import { API_URL, STORAGE_KEY } from '@/features/admin/constants';
+import { API_URL, STORAGE_KEY as ADMIN_STORAGE_KEY } from '@/features/admin/constants';
+
+// Akses: reviewer hanya panel reviewer; admin boleh panel reviewer juga.
+// Sesi reviewer disimpan terpisah supaya tidak ikut "masuk" ke /admin,
+// sedangkan admin memakai sesi admin yang sama dengan /admin — login di
+// salah satu panel berlaku di keduanya.
+const REVIEWER_STORAGE_KEY = 'reviewer_session_v1';
+
+type ReviewerSession = {
+  reviewerId: string;
+  displayName: string;
+  role: 'reviewer' | 'admin';
+};
+
+function readStoredSession(): ReviewerSession | null {
+  try {
+    const reviewerRaw = localStorage.getItem(REVIEWER_STORAGE_KEY);
+    if (reviewerRaw) {
+      const parsed = JSON.parse(reviewerRaw) as { reviewer_id?: string; username?: string; full_name?: string };
+      if (parsed.reviewer_id && parsed.username) {
+        return {
+          reviewerId: parsed.reviewer_id,
+          displayName: parsed.full_name || parsed.username,
+          role: 'reviewer',
+        };
+      }
+    }
+    const adminRaw = localStorage.getItem(ADMIN_STORAGE_KEY);
+    if (adminRaw) {
+      const parsed = JSON.parse(adminRaw) as { admin_id?: string; username?: string };
+      if (parsed.admin_id && parsed.username) {
+        return { reviewerId: parsed.admin_id, displayName: parsed.username, role: 'admin' };
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
 
 export function ReviewerPanel() {
-  const [adminId, setAdminId] = useState('');
-  const [adminUsername, setAdminUsername] = useState('');
+  const [session, setSession] = useState<ReviewerSession | null>(null);
 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -16,18 +53,8 @@ export function ReviewerPanel() {
   const [loginLoading, setLoginLoading] = useState(false);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as { admin_id: string; username: string };
-        if (parsed.admin_id && parsed.username) {
-          setAdminId(parsed.admin_id);
-          setAdminUsername(parsed.username);
-        }
-      }
-    } catch {
-      // ignore
-    }
+    const stored = readStoredSession();
+    if (stored) setSession(stored);
   }, []);
 
   async function handleLogin() {
@@ -38,7 +65,7 @@ export function ReviewerPanel() {
     }
     setLoginLoading(true);
     try {
-      const res = await fetch(`${API_URL}/api/admin/login`, {
+      const res = await fetch(`${API_URL}/api/reviewer/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
@@ -48,9 +75,29 @@ export function ReviewerPanel() {
         setLoginError(typeof data?.detail === 'string' ? data.detail : 'Login gagal');
         return;
       }
-      setAdminId(data.admin_id);
-      setAdminUsername(data.username);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ admin_id: data.admin_id, username: data.username }));
+      const isAdmin = data.role === 'admin';
+      try {
+        if (isAdmin) {
+          // Sesi reviewer lama didahulukan saat memuat ulang — buang.
+          localStorage.removeItem(REVIEWER_STORAGE_KEY);
+          localStorage.setItem(
+            ADMIN_STORAGE_KEY,
+            JSON.stringify({ admin_id: data.reviewer_id, username: data.username }),
+          );
+        } else {
+          localStorage.setItem(
+            REVIEWER_STORAGE_KEY,
+            JSON.stringify({ reviewer_id: data.reviewer_id, username: data.username, full_name: data.full_name }),
+          );
+        }
+      } catch {
+        // sesi tetap berlaku sampai tab ditutup
+      }
+      setSession({
+        reviewerId: data.reviewer_id,
+        displayName: isAdmin ? data.username : data.full_name || data.username,
+        role: isAdmin ? 'admin' : 'reviewer',
+      });
       setPassword('');
     } catch (err) {
       setLoginError(`Tidak bisa terhubung ke server: ${err instanceof Error ? err.message : String(err)}`);
@@ -60,12 +107,17 @@ export function ReviewerPanel() {
   }
 
   function handleLogout() {
-    localStorage.removeItem(STORAGE_KEY);
-    setAdminId('');
-    setAdminUsername('');
+    try {
+      // Keluar dari sesi yang sedang dipakai saja. Untuk admin, ini juga
+      // mengeluarkan dari /admin (sesinya memang satu).
+      localStorage.removeItem(session?.role === 'admin' ? ADMIN_STORAGE_KEY : REVIEWER_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+    setSession(null);
   }
 
-  if (!adminId) {
+  if (!session) {
     return (
       <AdminLoginScreen
         username={username}
@@ -77,9 +129,17 @@ export function ReviewerPanel() {
         onPasswordChange={setPassword}
         onTogglePassword={() => setShowPassword((p) => !p)}
         onLogin={handleLogin}
+        footerPrompt="Bukan reviewer?"
       />
     );
   }
 
-  return <ReviewerCheckForm adminId={adminId} adminUsername={adminUsername} onLogout={handleLogout} />;
+  return (
+    <ReviewerCheckForm
+      reviewerId={session.reviewerId}
+      displayName={session.displayName}
+      isAdmin={session.role === 'admin'}
+      onLogout={handleLogout}
+    />
+  );
 }

@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { AdminMenuIcon } from './AdminMenuIcon';
 import type { MenuItem, MenuKey } from './types';
 import { MENU_ITEMS } from './constants';
@@ -67,7 +68,15 @@ export function AdminSidebar({ activeMenu, onSelectMenu, onLogout }: Props) {
         ))}
       </nav>
 
-      <div className="border-t border-white/40 px-3 py-4">
+      <div className="space-y-1 border-t border-white/40 px-3 py-4">
+        <Link
+          href="/reviewer"
+          className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-foreground-muted transition hover:bg-white/50 hover:text-foreground"
+        >
+          <AdminMenuIcon name="reviewers" className="h-4 w-4 shrink-0" />
+          <span className="flex-1 truncate text-left">Buka Panel Reviewer</span>
+          <span aria-hidden className="text-xs">↗</span>
+        </Link>
         <button
           type="button"
           onClick={onLogout}

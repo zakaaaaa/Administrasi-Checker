@@ -10,6 +10,7 @@ import { AdminSidebar } from './AdminSidebar';
 import { API_URL, MENU_ITEMS, STORAGE_KEY } from './constants';
 import { TokenGeneratePanel } from './TokenGeneratePanel';
 import { TokenMonitoringPanel } from './TokenMonitoringPanel';
+import { ReviewerManagementPanel } from './ReviewerManagementPanel';
 import { UploadHistoryPanel } from './UploadHistoryPanel';
 import type { MenuKey } from './types';
 
@@ -290,6 +291,8 @@ export function AdminPanel() {
               <TokenMonitoringPanel adminId={adminId} />
             ) : activeMenu === 'uploads' ? (
               <UploadHistoryPanel adminId={adminId} />
+            ) : activeMenu === 'reviewers' ? (
+              <ReviewerManagementPanel adminId={adminId} />
             ) : (
               <AdminComingSoonPanel
                 activeItem={activeItem}

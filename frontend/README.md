@@ -48,15 +48,23 @@ Path: `/check/new/result`
 
 ## Export PDF
 
-Fitur export PDF dibuat menggunakan:
-
-- `jspdf`
-- `jspdf-autotable`
+PDF dibuat di server Next.js dengan `puppeteer-core` dan browser yang dibundel
+oleh `@sparticuz/chromium`. Tombol mengirim hasil ke `POST /export/pdf`, lalu
+langsung mengunduh respons PDF tanpa dialog cetak.
 
 Perilaku:
 
-- Nama file: `hasil-pengecekan-{submission_id}.pdf`
-- Konten: judul laporan, submission ID, status keseluruhan, serta tabel catatan per modul.
+- Nama file: `hasil-pengecekan-{nama_dokumen}.pdf` (fallback: submission ID).
+- Konten menggunakan `CheckResultReport` yang sama dengan interface, dengan semua detail terbuka.
+- Teks tetap dapat diseleksi, disalin, dan dicari; bukan tangkapan layar.
+- Data hanya digunakan selama rendering, tidak disimpan sebagai dokumen server.
+
+Renderer membuka halaman lokal `/export/report` pada `http://127.0.0.1:3000`.
+Jika menjalankan Next.js pada port lain, set `PDF_RENDER_ORIGIN` ke alamat lokal
+tersebut, misalnya `http://127.0.0.1:3105`. Jangan arahkan variabel ini ke layanan lain.
+Node.js minimal 22.17 diperlukan; browser diekstrak ke direktori sementara yang
+harus dapat ditulis oleh akun layanan. Tidak perlu menginstal Chrome terpisah.
+Endpoint dibatasi dua rendering bersamaan, payload 2 MiB, dan 4.000 pesan.
 
 ## Perubahan UI yang Sudah Diterapkan
 

@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { AdminMenuIcon } from './AdminMenuIcon';
 import type { MenuKey } from './types';
 import { MENU_ITEMS } from './constants';
@@ -21,13 +22,21 @@ export function AdminMobileNav({ activeMenu, onSelectMenu, onLogout }: Props) {
           />
           <span className="text-sm font-semibold tracking-tight text-foreground">KelasPKM Admin</span>
         </div>
-        <button
-          type="button"
-          onClick={onLogout}
-          className="rounded-full px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-50"
-        >
-          Logout
-        </button>
+        <div className="flex items-center gap-1">
+          <Link
+            href="/reviewer"
+            className="rounded-full px-3 py-1 text-xs font-semibold text-foreground-muted hover:bg-white/50"
+          >
+            Panel Reviewer
+          </Link>
+          <button
+            type="button"
+            onClick={onLogout}
+            className="rounded-full px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-50"
+          >
+            Logout
+          </button>
+        </div>
       </div>
       <nav className="flex gap-2 overflow-x-auto px-4 pb-3">
         {MENU_ITEMS.map((item) => {

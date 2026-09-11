@@ -81,19 +81,22 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
 
   switch (module) {
     case 'structure': {
-      // Pesan "tidak ditemukan" (section wajib hilang, mis. RINGKASAN di
-      // laporan akhir) jangan tertangkap regex forbidden di bawah.
-      if (/halaman[_\s]judul|sampul|pengesahan|ringkasan|abstrak|abstract/.test(m) && !/tidak ditemukan/.test(m))
-        return 'Kesalahan terdapat lembar judul / halaman sampul / lembar pengesahan / ringkasan / abstrak di dokumen';
-      if (/daftar[_\s]isi/.test(m))
-        return 'Kesalahan tidak terdapat daftar isi';
-      if (/luaran/.test(m))
-        return 'Kesalahan menuliskan 4 luaran wajib PKM di proposal pada Bab 1 Pendahuluan';
+      // Kata kunci dicocokkan ke NAMA section yang dipersoalkan (kutipan
+      // pertama), bukan ke seluruh pesan. Pesan urutan menyebut dua judul —
+      // "'LAMPIRAN' muncul sebelum 'BAB 2. TARGET LUARAN'" dulu dilabeli vonis
+      // 4 luaran wajib, dan "... sebelum 'DAFTAR ISI'" dilabeli daftar isi
+      // tidak ada, padahal keduanya ada.
       const sectionMatch = masalah.match(/'([^']+)'/);
       const section = sectionMatch ? sectionMatch[1] : '';
+      if (/^red flag/i.test(masalah) && /halaman[_\s]judul|sampul|pengesahan|ringkasan|abstrak|abstract/i.test(section))
+        return 'Kesalahan terdapat lembar judul / halaman sampul / lembar pengesahan / ringkasan / abstrak di dokumen';
       if (/tidak ditemukan di dokumen/i.test(masalah)) {
+        if (/daftar[_\s]isi/i.test(section)) return 'Kesalahan tidak terdapat daftar isi';
         return `Tidak Ditemukan ${sectionToDisplay(section)}`;
       }
+      const order = masalah.match(/^Urutan salah: '([^']+)'.*?sebelum '([^']+)'/i);
+      if (order)
+        return `Kesalahan urutan bab: ${sectionToDisplay(order[1])} muncul sebelum ${sectionToDisplay(order[2])}`;
       return `Kesalahan Judul Bab (${section}) tidak sesuai panduan ${schemaCode} 2026`;
     }
 
@@ -186,6 +189,16 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
         return 'Kesalahan format paragraf tidak satu kolom';
       if (/indent|indentasi/.test(m))
         return 'Kesalahan indentasi paragraf berlebihan (paragraf menggeser teks ke kanan)';
+      // Kata yang miring sebagian perlu kalimat sendiri: di layar kata itu
+      // TERLIHAT sudah miring, yang tegak cuma sepotong hurufnya (Word memecah
+      // kata jadi beberapa run saat diedit, dan pemiringan tidak ikut ke
+      // potongan terakhir). Pesan "belum dicetak miring" bikin penulis mengira
+      // pengecekannya keliru dan mengabaikan temuan yang sebenarnya sah.
+      if (/miring sebagian|italic sebagian/.test(m)) {
+        const wordsMatch = masalah.match(/"([^"]+)"/);
+        const words = wordsMatch ? ` '${wordsMatch[1]}'` : '';
+        return `Kata asing${words} baru miring sebagian, masih ada huruf yang tegak — blok seluruh kata lalu miringkan ulang`;
+      }
       if (/italic|asing/.test(m)) {
         const wordsMatch = masalah.match(/"([^"]+)"/);
         const words = wordsMatch ? ` '${wordsMatch[1]}'` : '';
@@ -210,6 +223,15 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
         return 'Kesalahan nomor halaman pada awal halaman, harus ditulis romawi (i, ii, iii)';
       if (/core.matter.*tidak terdeteksi|tidak terdeteksi.*core.matter|arabic.*top.right/.test(m))
         return 'Nomor halaman arab tidak ditemukan di bagian isi dokumen (Bab 1 s.d. Daftar Pustaka)';
+      // Dicek SEBELUM 'letak': pesan nomor dobel memuat kata 'atas'/'bawah'/
+      // 'header'/'footer' juga, padahal posisinya justru sudah benar — yang
+      // salah adalah nomornya tercetak di dua tempat sekaligus.
+      //
+      // Rentang halaman TIDAK ikut di kalimat: di Ringkasan Utama sudah ada
+      // badge "Hal. 5-17", dan di Detail Kesalahan judul grupnya sudah
+      // menyebut halamannya. Menulisnya lagi bikin baris terbaca dobel.
+      if (/2 nomor halaman dalam 1 halaman|tercetak dua kali/.test(m))
+        return 'Terdapat 2 nomor halaman dalam 1 halaman (atas dan bawah)';
       if (/letak|posisi|atas|bawah|header|footer/.test(m))
         return 'Kesalahan letak nomor halaman (harusnya pojok kanan atas untuk isi, pojok kanan bawah untuk awal)';
       if (/jenis|roman|arabic|arab|romawi/.test(m))
@@ -455,6 +477,9 @@ type ErrorItem = {
   level: string;
   masalah: string;
   page: number | null;
+  // Diisi hanya untuk baris ringkasan yang mewakili beberapa halaman
+  // sekaligus, mis. "5-12". Kalau kosong, badge memakai `page`.
+  pageLabel?: string;
 };
 
 type BalanceGroup = { header: string; items: string[] };
@@ -476,6 +501,84 @@ function parseBalanceGroups(notes: string[]): BalanceGroup[] {
 
 type SummaryDef = { label: string; detect: (items: ErrorItem[]) => boolean };
 type SummaryGroup = { def: SummaryDef; items: ErrorItem[] };
+
+/** Rangkai daftar halaman jadi teks ringkas: [5,6,7,9,10] → "5-7, 9-10". */
+function formatPageRanges(pages: number[]): string {
+  const sorted = [...new Set(pages)].sort((a, b) => a - b);
+  const parts: string[] = [];
+  let start = sorted[0];
+  let prev = sorted[0];
+  for (const page of sorted.slice(1)) {
+    if (page === prev + 1) {
+      prev = page;
+      continue;
+    }
+    parts.push(start === prev ? `${start}` : `${start}-${prev}`);
+    start = page;
+    prev = page;
+  }
+  parts.push(start === prev ? `${start}` : `${start}-${prev}`);
+  return parts.join(', ');
+}
+
+/**
+ * Ringkas temuan berkalimat SAMA yang muncul berkali-kali DI SATU HALAMAN
+ * jadi satu baris, dengan jumlahnya disebut.
+ *
+ * Dipakai di Detail Kesalahan. Satu halaman bisa punya belasan paragraf
+ * bermasalah serupa (mis. spasi 1.0 di seluruh halaman); menulisnya satu baris
+ * per paragraf bikin daftarnya panjang tanpa menambah informasi.
+ */
+function condenseWithinPage(items: ErrorItem[]): ErrorItem[] {
+  const groups = new Map<string, ErrorItem[]>();
+  for (const item of items) {
+    const list = groups.get(item.masalah);
+    if (list) list.push(item);
+    else groups.set(item.masalah, [item]);
+  }
+  return [...groups.values()].map((list) =>
+    list.length === 1
+      ? list[0]
+      : { ...list[0], masalah: `${list[0].masalah} (${list.length} temuan)` },
+  );
+}
+
+/**
+ * Ringkas temuan berkalimat SAMA yang tersebar di banyak halaman jadi satu
+ * baris, dengan rentang halamannya di badge.
+ *
+ * Dipakai HANYA di Ringkasan Utama.
+ */
+function condenseByPage(items: ErrorItem[]): ErrorItem[] {
+  const groups = new Map<string, ErrorItem[]>();
+  for (const item of items) {
+    const list = groups.get(item.masalah);
+    if (list) list.push(item);
+    else groups.set(item.masalah, [item]);
+  }
+
+  const condensed: ErrorItem[] = [];
+  for (const list of groups.values()) {
+    const pages = list
+      .map((it) => it.page)
+      .filter((page): page is number => page !== null);
+    if (list.length === 1 || pages.length !== list.length) {
+      condensed.push(...list);
+      continue;
+    }
+    condensed.push({
+      ...list[0],
+      page: Math.min(...pages),
+      pageLabel: formatPageRanges(pages),
+    });
+  }
+  return condensed.sort((a, b) => {
+    if (a.page === null && b.page === null) return 0;
+    if (a.page === null) return -1;
+    if (b.page === null) return 1;
+    return a.page - b.page;
+  });
+}
 type PageErrorGroup = { key: string; page: number | null; items: ErrorItem[] };
 
 function groupErrorsByPage(items: ErrorItem[]): PageErrorGroup[] {
@@ -495,12 +598,14 @@ function groupErrorsByPage(items: ErrorItem[]): PageErrorGroup[] {
     }
   }
 
-  return Array.from(groups.values()).sort((a, b) => {
-    if (a.page === null && b.page === null) return 0;
-    if (a.page === null) return -1;
-    if (b.page === null) return 1;
-    return a.page - b.page;
-  });
+  return Array.from(groups.values())
+    .map((group) => ({ ...group, items: condenseWithinPage(group.items) }))
+    .sort((a, b) => {
+      if (a.page === null && b.page === null) return 0;
+      if (a.page === null) return -1;
+      if (b.page === null) return 1;
+      return a.page - b.page;
+    });
 }
 
 const SUMMARY_DEFS: SummaryDef[] = [
@@ -509,9 +614,7 @@ const SUMMARY_DEFS: SummaryDef[] = [
     detect: (items) =>
       items.some(
         (it) =>
-          it.module === 'structure' &&
-          /terdapat lembar judul|halaman sampul|pengesahan|ringkasan|abstrak/i.test(it.masalah) &&
-          !/tidak ditemukan/i.test(it.masalah),
+          it.module === 'structure' && /^Kesalahan terdapat lembar judul/i.test(it.masalah),
       ),
   },
   {
@@ -519,9 +622,7 @@ const SUMMARY_DEFS: SummaryDef[] = [
     detect: (items) =>
       items.some(
         (it) =>
-          it.module === 'structure' &&
-          /ringkasan/i.test(it.masalah) &&
-          /tidak ditemukan/i.test(it.masalah),
+          it.module === 'structure' && /^Tidak Ditemukan Ringkasan/i.test(it.masalah),
       ),
   },
   {
@@ -564,7 +665,9 @@ const SUMMARY_DEFS: SummaryDef[] = [
   {
     label: 'Kesalahan tidak terdapat daftar isi',
     detect: (items) =>
-      items.some((it) => it.module === 'structure' && /daftar isi/i.test(it.masalah)),
+      items.some(
+        (it) => it.module === 'structure' && /^Kesalahan tidak terdapat daftar isi/i.test(it.masalah),
+      ),
   },
   {
     label: 'Kesalahan judul bab tidak sesuai panduan PKM 2026',
@@ -572,7 +675,10 @@ const SUMMARY_DEFS: SummaryDef[] = [
       items.some(
         (it) =>
           it.module === 'structure' &&
-          !/terdapat lembar judul|halaman sampul|pengesahan|ringkasan|abstrak|daftar isi|luaran wajib/i.test(
+          // Pencocokan persis ke kalimat hasil mapToSentence: label urutan
+          // ("... muncul sebelum Daftar Isi") menyebut nama section lain dan
+          // tidak boleh tersaring keluar karena itu.
+          !/^Kesalahan terdapat lembar judul|^Kesalahan tidak terdapat daftar isi|^Tidak Ditemukan Ringkasan/i.test(
             it.masalah,
           ),
       ),
@@ -595,9 +701,7 @@ const SUMMARY_DEFS: SummaryDef[] = [
     label: 'Kesalahan menuliskan 4 luaran wajib PKM di proposal pada Bab 1 Pendahuluan',
     detect: (items) =>
       items.some(
-        (it) =>
-          it.module === 'luaran' ||
-          (it.module === 'structure' && /luaran wajib/i.test(it.masalah)),
+        (it) => it.module === 'luaran',
       ),
   },
   {
@@ -674,16 +778,29 @@ const SUMMARY_DEFS: SummaryDef[] = [
   },
 ];
 
-export function CheckResultsView({ result }: { result: CheckResults }) {
+export function CheckResultsView({ result, exportMode = false }: { result: CheckResults; exportMode?: boolean }) {
   const resultMap = result.results as Record<string, ModuleData | undefined>;
   const [openDetailPages, setOpenDetailPages] = useState<Set<string>>(() => new Set());
 
-  const { flatItems, budgetItems, referenceItems, balanceNotes, foreignWordsSaran } = useMemo(() => {
+  const {
+    flatItems, budgetItems, referenceItems, balanceNotes,
+    foreignWordsSaran, daftarLampiranSaran, failedModules,
+  } = useMemo(() => {
     const flat: ErrorItem[] = [];
     const budget: ErrorItem[] = [];
     const reference: ErrorItem[] = [];
     const balance: string[] = [];
     const foreignWordsSaran: string[] = [];
+    // Lampiran yang ADA di badan dokumen tapi belum tercantum di halaman
+    // Daftar Lampiran. Lampirannya tidak kurang — hanya daftarnya yang belum
+    // diperbarui, jadi ini saran perbaikan, bukan kesalahan merah.
+    const daftarLampiranSaran: string[] = [];
+    // Modul yang CRASH (status 'error' dari backend) — bukan temuan dokumen.
+    // Pesannya pesan galat Python ("Bad CRC-32 for file ..."); kalau diteruskan
+    // ke mapToSentence, ia berubah jadi vonis palsu seperti "Kesalahan Judul
+    // Bab (word/media/image1.png)". Dikumpulkan terpisah dan ditampilkan
+    // sebagai pemberitahuan.
+    const failedModules: string[] = [];
 
     // Ambil kode skema dari structure result (mis. "KC" → "PKM-KC")
     const structureSchema = resultMap.structure?.schema?.code;
@@ -692,6 +809,10 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
     for (const { key, label } of MODULES) {
       const mod = resultMap[key];
       if (!mod) continue;
+      if (mod.status === 'error') {
+        failedModules.push(label);
+        continue;
+      }
 
       if (key === 'reference') {
         let inBalance = false;
@@ -729,6 +850,42 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
         if (key === 'format' && /\basing\b/i.test(masalah)) {
           foreignWordsSaran.push(mapToSentence(key, masalah, schemaCode));
           continue;
+        }
+        if (key === 'lampiran' && /^Kesalahan kelengkapan Daftar Lampiran/i.test(masalah)) {
+          // Teks dibiarkan apa adanya dari backend — yang berubah hanya
+          // penempatannya: masuk Saran Perbaikan, bukan daftar Kesalahan.
+          daftarLampiranSaran.push(masalah);
+          continue;
+        }
+        // Nomor halaman dobel berlaku untuk SATU RENTANG halaman, bukan satu
+        // halaman. Backend mengirimnya sebagai satu pesan (supaya tidak jadi
+        // belasan baris identik), tapi bagian "detail per halaman"
+        // mengelompokkan berdasarkan satu angka saja — akibatnya temuan cuma
+        // nampak di halaman pertama rentang. Di sini rentangnya dibentangkan
+        // jadi satu entri per halaman.
+        if (key === 'page_numbering') {
+          const dupRange = masalah.match(
+            /pada halaman fisik (\d+)\s*[-–]\s*(\d+)/i,
+          );
+          if (dupRange) {
+            const from = parseInt(dupRange[1], 10);
+            const to = parseInt(dupRange[2], 10);
+            // Batas kewarasan: rentang tak masuk akal jangan sampai
+            // membanjiri tampilan dengan ratusan baris.
+            if (to >= from && to - from <= 200) {
+              const sentence = mapToSentence(key, masalah, schemaCode);
+              for (let pg = from; pg <= to; pg += 1) {
+                flat.push({
+                  module: key,
+                  moduleLabel: label,
+                  level: msg.level,
+                  masalah: sentence,
+                  page: pg,
+                });
+              }
+              continue;
+            }
+          }
         }
         const isBudgetRelokasiWarning =
           key === 'budget' && /Saran relokasi/i.test(masalah);
@@ -818,13 +975,15 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
       referenceItems: reference,
       balanceNotes: balance,
       foreignWordsSaran,
+      daftarLampiranSaran,
+      failedModules,
     };
   }, [resultMap]);
 
   const allErrors = [...flatItems, ...budgetItems, ...referenceItems];
   const activeSummaryGroups = SUMMARY_DEFS.map((def) => ({
     def,
-    items: allErrors.filter((item) => def.detect([item])),
+    items: condenseByPage(allErrors.filter((item) => def.detect([item]))),
   })).filter((group) => group.items.length > 0);
   const flatItemsDetail = flatItems.filter(
     (item) =>
@@ -840,9 +999,14 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
   const foreignWordsGroup: BalanceGroup | null = foreignWordsSaran.length > 0
     ? { header: 'Format', items: [...new Set(foreignWordsSaran)] }
     : null;
-  const allSaranGroups = foreignWordsGroup
-    ? [...balanceGroups, foreignWordsGroup]
-    : balanceGroups;
+  const daftarLampiranGroup: BalanceGroup | null = daftarLampiranSaran.length > 0
+    ? { header: 'Daftar Lampiran', items: [...new Set(daftarLampiranSaran)] }
+    : null;
+  const allSaranGroups = [
+    ...balanceGroups,
+    ...(foreignWordsGroup ? [foreignWordsGroup] : []),
+    ...(daftarLampiranGroup ? [daftarLampiranGroup] : []),
+  ];
 
   function toggleAllDetailPages() {
     setOpenDetailPages((current) => {
@@ -863,9 +1027,11 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
     });
   }
 
-  if (allErrors.length === 0 && allSaranGroups.length === 0) {
+  // Jangan pernah menyatakan "lulus" kalau ada modul yang tidak sempat
+  // memeriksa — itu bukan lulus, itu tidak diperiksa.
+  if (allErrors.length === 0 && allSaranGroups.length === 0 && failedModules.length === 0) {
     return (
-      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-8 text-center">
+      <div data-pdf-keep className="rounded-2xl border border-emerald-200 bg-emerald-50 p-8 text-center">
         <p className="text-xl font-semibold text-emerald-700">Semua pengecekan lulus!</p>
         <p className="mt-1 text-sm text-emerald-600">Tidak ada kesalahan yang ditemukan.</p>
       </div>
@@ -874,8 +1040,10 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
 
   return (
     <div className="space-y-8">
+      {failedModules.length > 0 && <FailedModulesNotice modules={failedModules} />}
+
       {/* Ringkasan Utama */}
-      <RingkasanUtama groups={activeSummaryGroups} />
+      <RingkasanUtama groups={activeSummaryGroups} exportMode={exportMode} />
 
       {/* Detail Kesalahan */}
       {(flatItemsDetail.length > 0 || budgetItems.length > 0 || referenceItems.length > 0 || allSaranGroups.length > 0) && (
@@ -891,6 +1059,7 @@ export function CheckResultsView({ result }: { result: CheckResults }) {
               allPagesOpen={allDetailPagesOpen}
               onToggleAll={toggleAllDetailPages}
               onTogglePage={toggleDetailPage}
+              exportMode={exportMode}
             />
           )}
 
@@ -1037,11 +1206,11 @@ function ErrorRow({ item, showPage = false }: { item: ErrorItem; showPage?: bool
   const pageCls = isFail ? 'text-red-400' : 'text-amber-400';
 
   return (
-    <div className={`flex items-center gap-3 rounded-xl border border-l-4 px-4 py-3 ${rowCls} ${accentCls}`}>
+    <div data-pdf-keep className={`flex items-center gap-3 rounded-xl border border-l-4 px-4 py-3 ${rowCls} ${accentCls}`}>
       <SeverityIcon fail={isFail} />
-      {showPage && item.page !== null && (
+      {showPage && (item.pageLabel ?? item.page) !== null && (
         <span className={`w-20 shrink-0 font-mono text-sm font-medium ${pageCls}`}>
-          Hal. {item.page}
+          Hal. {item.pageLabel ?? item.page}
         </span>
       )}
       <p className={`flex-1 whitespace-pre-line text-base font-medium leading-relaxed ${textCls}`}>{item.masalah}</p>
@@ -1058,21 +1227,23 @@ function DetailErrorsByPageSection({
   allPagesOpen,
   onToggleAll,
   onTogglePage,
+  exportMode = false,
 }: {
   groups: PageErrorGroup[];
   openPages: Set<string>;
   allPagesOpen: boolean;
   onToggleAll: () => void;
   onTogglePage: (key: string) => void;
+  exportMode?: boolean;
 }) {
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
-        <p className="flex items-center gap-1.5 text-[15px] font-semibold uppercase tracking-widest text-black">
+        <p data-pdf-keep data-pdf-heading className="flex items-center gap-1.5 text-[15px] font-semibold uppercase tracking-widest text-black">
           <SectionIcon name="detail" />
           Detail Kesalahan
         </p>
-        <button
+        {!exportMode && <button
           type="button"
           onClick={onToggleAll}
           aria-label={allPagesOpen ? 'Tutup semua detail kesalahan' : 'Buka semua detail kesalahan'}
@@ -1082,22 +1253,24 @@ function DetailErrorsByPageSection({
         >
           <EyeIcon />
           <ChevronDownIcon className={`h-3.5 w-3.5 transition-transform ${allPagesOpen ? 'rotate-180' : ''}`} />
-        </button>
+        </button>}
       </div>
 
       <div className="space-y-3">
         {groups.map((group) => {
-          const isOpen = openPages.has(group.key);
+          const isOpen = exportMode || openPages.has(group.key);
           const pageLabel = group.page === null ? 'Tanpa halaman terdeteksi' : `Halaman ${group.page}`;
           return (
             <div key={group.key} className="overflow-hidden rounded-xl border border-border bg-surface-elevated">
               <button
+                data-pdf-keep
+                data-pdf-heading
                 type="button"
                 onClick={() => onTogglePage(group.key)}
                 aria-expanded={isOpen}
                 className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-surface-sunken"
               >
-                <span className="min-w-0 flex-1 text-sm font-semibold text-foreground sm:text-base">
+                <span className={`min-w-0 flex-1 font-semibold text-foreground ${exportMode ? 'text-base' : 'text-sm sm:text-base'}`}>
                   {pageLabel}
                 </span>
                 <span className="shrink-0 rounded-full bg-brand-50 px-2.5 py-1 text-xs font-semibold text-brand-700">
@@ -1106,7 +1279,7 @@ function DetailErrorsByPageSection({
                 <ChevronDownIcon className={`h-4 w-4 shrink-0 text-foreground-subtle transition-transform ${isOpen ? 'rotate-180' : ''}`} />
               </button>
               {isOpen && (
-                <div className="space-y-2 border-t border-border bg-surface px-3 py-3 sm:px-4">
+                <div className={`space-y-2 border-t border-border bg-surface py-3 ${exportMode ? 'px-4' : 'px-3 sm:px-4'}`}>
                   {group.items.map((item, i) => (
                     <ErrorRow key={`${group.key}-${i}`} item={item} />
                   ))}
@@ -1124,7 +1297,7 @@ function GroupedSection({ label, items, showPage = false }: { label: string; ite
   const iconName = label === 'Audit Anggaran' ? 'budget' : label === 'Daftar Pustaka' ? 'reference' : null;
   return (
     <div>
-      <p className="mb-2.5 flex items-center gap-1.5 text-[15px] font-semibold uppercase tracking-wider text-black">
+      <p data-pdf-keep data-pdf-heading className="mb-2.5 flex items-center gap-1.5 text-[15px] font-semibold uppercase tracking-wider text-black">
         {iconName && <SectionIcon name={iconName} />}
         {label}
       </p>
@@ -1137,11 +1310,11 @@ function GroupedSection({ label, items, showPage = false }: { label: string; ite
   );
 }
 
-function RingkasanUtama({ groups }: { groups: SummaryGroup[] }) {
+function RingkasanUtama({ groups, exportMode = false }: { groups: SummaryGroup[]; exportMode?: boolean }) {
   if (groups.length === 0) return null;
   return (
     <div className="space-y-3">
-      <p className="flex items-center gap-1.5 text-[15px] font-semibold uppercase tracking-widest text-black">
+      <p data-pdf-keep data-pdf-heading className="flex items-center gap-1.5 text-[15px] font-semibold uppercase tracking-widest text-black">
         <SectionIcon name="ringkasan" />
         Ringkasan Utama
       </p>
@@ -1149,8 +1322,8 @@ function RingkasanUtama({ groups }: { groups: SummaryGroup[] }) {
         <ol className="space-y-3">
           {groups.map((group, i) => (
             <li key={group.def.label}>
-              <details className="group rounded-lg border border-red-100 bg-white/45 transition open:bg-red-50/70">
-                <summary className="flex cursor-pointer list-none items-start gap-3 rounded-lg px-2 py-2 transition hover:bg-red-100/60 [&::-webkit-details-marker]:hidden">
+              <details open={exportMode ? true : undefined} className="group rounded-lg border border-red-100 bg-white/45 transition open:bg-red-50/70">
+                <summary data-pdf-keep data-pdf-heading className="flex cursor-pointer list-none items-start gap-3 rounded-lg px-2 py-2 transition hover:bg-red-100/60 [&::-webkit-details-marker]:hidden">
                   <span className="w-6 shrink-0 text-right font-mono text-base font-semibold text-red-900">
                     {i + 1}.
                   </span>
@@ -1176,10 +1349,26 @@ function RingkasanUtama({ groups }: { groups: SummaryGroup[] }) {
   );
 }
 
+function FailedModulesNotice({ modules }: { modules: string[] }) {
+  return (
+    <div data-pdf-keep className="rounded-xl border border-l-4 border-slate-200 border-l-slate-500 bg-slate-50 px-4 py-3">
+      <p className="text-base font-semibold text-slate-800">
+        Sebagian pemeriksaan tidak dapat dijalankan
+      </p>
+      <p className="mt-1 text-sm text-slate-700">
+        Modul berikut gagal membaca dokumen, sehingga hasilnya belum tersedia:{' '}
+        <span className="font-medium">{modules.join(', ')}</span>. Ini bukan
+        kesalahan penulisan dokumen. Coba buka dokumen di Word, simpan ulang,
+        lalu unggah kembali.
+      </p>
+    </div>
+  );
+}
+
 function SaranPerbaikanSection({ groups }: { groups: BalanceGroup[] }) {
   return (
     <div>
-      <p className="mb-3 flex items-center gap-1.5 text-[15px] font-semibold uppercase tracking-wider text-black">
+      <p data-pdf-keep data-pdf-heading className="mb-3 flex items-center gap-1.5 text-[15px] font-semibold uppercase tracking-wider text-black">
         <SectionIcon name="saran" />
         Saran Perbaikan
       </p>
@@ -1187,6 +1376,7 @@ function SaranPerbaikanSection({ groups }: { groups: BalanceGroup[] }) {
         {groups.flatMap((group) => group.items).map((item, i) => (
           <div
             key={i}
+            data-pdf-keep
             className="flex items-center gap-3 rounded-xl border border-l-4 border-amber-100 border-l-amber-400 bg-amber-50/60 px-4 py-3"
           >
             <SeverityIcon fail={false} />

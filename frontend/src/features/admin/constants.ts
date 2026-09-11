@@ -29,6 +29,12 @@ export const MENU_ITEMS: MenuItem[] = [
     active: true,
   },
   {
+    key: 'reviewers',
+    label: 'Kelola Reviewer',
+    description: 'Tambah, ubah, dan hapus akun reviewer.',
+    active: true,
+  },
+  {
     key: 'server',
     label: 'Monitoring Server',
     description: 'CPU, RAM, dan Disk usage.',
