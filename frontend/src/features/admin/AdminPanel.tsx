@@ -11,6 +11,7 @@ import { API_URL, MENU_ITEMS, STORAGE_KEY } from './constants';
 import { TokenGeneratePanel } from './TokenGeneratePanel';
 import { TokenMonitoringPanel } from './TokenMonitoringPanel';
 import { ReviewerManagementPanel } from './ReviewerManagementPanel';
+import { ServerMonitoringPanel } from './ServerMonitoringPanel';
 import { UploadHistoryPanel } from './UploadHistoryPanel';
 import type { MenuKey } from './types';
 
@@ -293,6 +294,8 @@ export function AdminPanel() {
               <UploadHistoryPanel adminId={adminId} />
             ) : activeMenu === 'reviewers' ? (
               <ReviewerManagementPanel adminId={adminId} />
+            ) : activeMenu === 'server' ? (
+              <ServerMonitoringPanel adminId={adminId} />
             ) : (
               <AdminComingSoonPanel
                 activeItem={activeItem}

@@ -38,6 +38,6 @@ export const MENU_ITEMS: MenuItem[] = [
     key: 'server',
     label: 'Monitoring Server',
     description: 'CPU, RAM, dan Disk usage.',
-    active: false,
+    active: true,
   },
 ];

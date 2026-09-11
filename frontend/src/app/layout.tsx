@@ -25,8 +25,8 @@ const poppins = Poppins({
 // ----------------------------------------------------------------------------
 export const metadata: Metadata = {
   title: {
-    default: 'PKM Checker — Pengecekan Otomatis Laporan PKM',
-    template: '%s · PKM Checker',
+    default: 'Administrasi Checker - Kelas PKM',
+    template: '%s · Administrasi Checker - Kelas PKM',
   },
   description:
     'Sistem otomatis pengecekan administrasi laporan PKM: struktur, format, RAB, daftar pustaka, dan biodata. Lulus tahap administrasi sebelum di-submit.',
