@@ -5,7 +5,8 @@ Tugas utama:
 1. Parse file .docx satu kali, expose data ke checker via interface bersih
 2. Berikan akses tingkat tinggi (via python-docx) DAN tingkat rendah (raw OOXML via lxml)
 3. Lazy-load XML hanya saat dibutuhkan, cache hasil parse
-4. Read-only: parser TIDAK memodifikasi dokumen
+4. Read-only: parser TIDAK memodifikasi file (hanya normalisasi in-memory —
+   lihat _hoist_sections_out_of_sdt)
 5. Toleran terhadap dokumen "weird" — simpan warning di self.warnings, return data partial
 
 Dipakai oleh:
@@ -81,6 +82,32 @@ class ParagraphInfo:
     # Dari mana is_toc_entry disimpulkan: 'style' (otoritatif) | 'leader' (heuristik
     # cadangan untuk Daftar Isi yang diketik manual) | None.
     toc_evidence: Optional[str] = None
+    # Label penomoran otomatis yang Word cetak di depan teks, mis. "BAB 1." dari
+    # <w:lvlText w:val="BAB %1."/>. Sengaja TIDAK digabung ke `text`: label ini
+    # bukan ketikan, dan modul format/kemiripan membaca `text` apa adanya.
+    list_label: Optional[str] = None
+
+    @property
+    def heading_text(self) -> str:
+        """Teks judul seperti tercetak: label nomor otomatis + teks paragraf.
+
+        Dipakai pencari judul section. Tanpa label, judul yang diketik
+        "PENDAHULUAN" dengan "BAB 1." dari penomoran style Heading 1 terbaca
+        sebagai "PENDAHULUAN" saja — BAB 1 divonis tidak ada.
+        """
+        if self.list_label:
+            return f"{self.list_label} {self.text.lstrip()}"
+        return self.text
+
+    @property
+    def heading_texts(self) -> tuple[str, ...]:
+        """Bentuk teks yang dicoba pencari judul: seperti tercetak, lalu teks
+        ketikan saja. Label hanya MENAMBAH kecocokan — judul yang cocok lewat
+        teks ketikan tetap cocok, mis. "DAFTAR PUSTAKA" yang lupa dimatikan
+        penomorannya sehingga tercetak "BAB 7. DAFTAR PUSTAKA"."""
+        if self.list_label:
+            return (self.heading_text, self.text)
+        return (self.text,)
 
 
 @dataclass
@@ -159,6 +186,396 @@ def half_points_to_pt(hp: Optional[Union[int, str]]) -> Optional[float]:
         return None
 
 
+def _unlink_quietly(path: str) -> None:
+    """Hapus berkas sementara; diam saja kalau sudah tidak ada."""
+    import os
+
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+# ============================================================================
+# Normalisasi: section yang "terperangkap" di dalam content control
+# ============================================================================
+#
+# Bibliografi Mendeley/Zotero berupa <w:sdt>. Kalau penulis mengetik terus
+# setelah bibliografi, judul LAMPIRAN beserta seluruh isinya ikut masuk ke
+# content control yang sama. Di Word tampilannya normal, tetapi python-docx
+# tidak mengenumerasi paragraf di dalam <w:sdt> — judul LAMPIRAN hilang dari
+# parser.paragraphs, lampiran divonis tidak ada, dan isinya terbaca sebagai
+# entri Daftar Pustaka.
+#
+# Perbaikannya: mulai dari judul pertama di dalam content control, pindahkan
+# sisa isinya ke luar tepat setelah <w:sdt>. Urutan dokumen tidak berubah.
+# Daftar Isi (docPartGallery "Table of Contents") tidak disentuh — judul
+# "DAFTAR ISI" di dalamnya memang bagian dari blok itu.
+
+_TOC_GALLERIES = frozenset({"Table of Contents"})
+_LAMPIRAN_TEXT_RE = re.compile(r"^\s*LAMPIRAN(\s*-\s*LAMPIRAN)?\s*$", re.IGNORECASE)
+
+
+def _heading_style_ids(styles_root: Optional[etree._Element]) -> set[str]:
+    """styleId paragraf yang merupakan judul: nama "Heading N" (nama bawaan,
+    tetap bahasa Inggris walau Word berbahasa lain), punya outlineLvl, atau
+    diturunkan (basedOn) dari style judul."""
+    if styles_root is None:
+        return set()
+    based_on: dict[str, str] = {}
+    heading: set[str] = set()
+    for st in styles_root.findall("w:style", NSMAP):
+        if st.get(qn("w:type")) != "paragraph":
+            continue
+        sid = st.get(qn("w:styleId"))
+        if not sid:
+            continue
+        name_el = st.find("w:name", NSMAP)
+        name = (name_el.get(qn("w:val")) or "") if name_el is not None else ""
+        lvl = st.find("w:pPr/w:outlineLvl", NSMAP)
+        if name.lower().startswith("heading") or (
+            lvl is not None and str(lvl.get(qn("w:val"))) not in ("9", "None")
+        ):
+            heading.add(sid)
+        base = st.find("w:basedOn", NSMAP)
+        if base is not None and base.get(qn("w:val")):
+            based_on[sid] = base.get(qn("w:val"))
+    changed = True
+    while changed:
+        changed = False
+        for sid, base in based_on.items():
+            if sid not in heading and base in heading:
+                heading.add(sid)
+                changed = True
+    return heading
+
+
+def _is_heading_p(p: etree._Element, heading_ids: set[str]) -> bool:
+    style = p.find("w:pPr/w:pStyle", NSMAP)
+    if style is not None and style.get(qn("w:val")) in heading_ids:
+        return True
+    lvl = p.find("w:pPr/w:outlineLvl", NSMAP)
+    if lvl is not None and str(lvl.get(qn("w:val"))) not in ("9", "None"):
+        return True
+    text = "".join(t.text or "" for t in p.iter(qn("w:t")))
+    return bool(_LAMPIRAN_TEXT_RE.match(text))
+
+
+def _hoist_sections_out_of_sdt(
+    body: Optional[etree._Element], heading_ids: set[str]
+) -> int:
+    """Pindahkan isi <w:sdt> body mulai judul pertama (bukan anak pertama) ke
+    luar content control, tepat setelahnya. Return jumlah elemen dipindah."""
+    if body is None:
+        return 0
+    moved = 0
+    for sdt in [c for c in body if c.tag == qn("w:sdt")]:
+        gallery = sdt.find("w:sdtPr/w:docPartObj/w:docPartGallery", NSMAP)
+        if gallery is not None and gallery.get(qn("w:val")) in _TOC_GALLERIES:
+            continue
+        content = sdt.find("w:sdtContent", NSMAP)
+        if content is None:
+            continue
+        kids = list(content)
+        cut = next(
+            (
+                i
+                for i, k in enumerate(kids)
+                if i > 0 and k.tag == qn("w:p") and _is_heading_p(k, heading_ids)
+            ),
+            None,
+        )
+        if cut is None:
+            continue
+        anchor = sdt
+        for k in kids[cut:]:
+            anchor.addnext(k)  # lxml: memindahkan, bukan menyalin
+            anchor = k
+        moved += len(kids) - cut
+    return moved
+
+
+# ============================================================================
+# Label penomoran otomatis (word/numbering.xml)
+# ============================================================================
+#
+# Judul bab kerap diketik "PENDAHULUAN" saja; "BAB 1." di depannya dicetak Word
+# dari daftar bernomor yang diikat ke style Heading 1. Label itu tidak ada di
+# teks paragraf, sehingga pencarian "BAB 1" di teks gagal padahal di layar
+# tercetak jelas. Di sini label dirakit dari deklarasi yang sama dengan yang
+# dipakai Word: numPr paragraf (atau warisan style), definisi level di
+# abstractNum, dan pencacah per daftar menurut urutan dokumen.
+#
+# Format angka yang tidak dikenal (bullet, aksara lain) tidak ditebak — label
+# dibiarkan kosong, sama seperti sebelum fitur ini ada.
+
+_ROMAN_VALUES = (
+    (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"),
+    (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"),
+)
+
+
+def _format_list_counter(n: int, fmt: Optional[str]) -> Optional[str]:
+    """Nilai pencacah dalam numFmt Word, atau None kalau formatnya tak dikenal."""
+    if fmt in (None, "decimal"):
+        return str(n)
+    if fmt == "decimalZero":
+        return f"{n:02d}"
+    if fmt in ("upperRoman", "lowerRoman"):
+        if n <= 0:
+            return None
+        out = []
+        for value, sym in _ROMAN_VALUES:
+            while n >= value:
+                out.append(sym)
+                n -= value
+        roman = "".join(out)
+        return roman if fmt == "upperRoman" else roman.lower()
+    if fmt in ("upperLetter", "lowerLetter"):
+        if n <= 0:
+            return None
+        # Word: A..Z, lalu AA..ZZ, AAA.. (huruf diulang, bukan basis-26).
+        letter = chr(ord("A") + (n - 1) % 26) * ((n - 1) // 26 + 1)
+        return letter if fmt == "upperLetter" else letter.lower()
+    return None
+
+
+@dataclass
+class _ListLevel:
+    start: int
+    fmt: Optional[str]
+    text: Optional[str]
+    is_lgl: bool
+    restart: Optional[int]  # <w:lvlRestart>; None = default Word
+    p_style: Optional[str]
+
+
+class _ListLabeler:
+    """Merakit label nomor otomatis paragraf. Panggil `label_for` untuk SETIAP
+    paragraf dalam urutan dokumen — pencacahnya bergantung pada urutan itu."""
+
+    def __init__(
+        self,
+        styles_root: Optional[etree._Element],
+        numbering_root: Optional[etree._Element],
+    ):
+        # styleId -> (numId, ilvl, basedOn) seperti tertulis di style itu sendiri
+        self._style_numpr: dict[str, tuple[Optional[str], Optional[int], Optional[str]]] = {}
+        # Style yang dipakai paragraf tanpa <w:pStyle> (w:default="1").
+        self._default_style: Optional[str] = None
+        if styles_root is not None:
+            for st in styles_root.findall("w:style", NSMAP):
+                sid = st.get(qn("w:styleId"))
+                if not sid:
+                    continue
+                if (
+                    st.get(qn("w:type")) == "paragraph"
+                    and st.get(qn("w:default")) in ("1", "true")
+                ):
+                    self._default_style = sid
+                num_id, ilvl = self._read_numpr(st.find("w:pPr", NSMAP))
+                base = st.find("w:basedOn", NSMAP)
+                self._style_numpr[sid] = (
+                    num_id, ilvl, base.get(qn("w:val")) if base is not None else None
+                )
+
+        self._num_abs: dict[str, str] = {}
+        self._num_start_override: dict[str, dict[int, int]] = {}
+        self._abs_levels: dict[str, dict[int, _ListLevel]] = {}
+        self._abs_style_link: dict[str, str] = {}
+        if numbering_root is not None:
+            for an in numbering_root.findall("w:abstractNum", NSMAP):
+                aid = an.get(qn("w:abstractNumId"))
+                if aid is None:
+                    continue
+                link = an.find("w:numStyleLink", NSMAP)
+                if link is not None and link.get(qn("w:val")):
+                    self._abs_style_link[aid] = link.get(qn("w:val"))
+                self._abs_levels[aid] = {
+                    lvl_idx: lvl
+                    for lvl_idx, lvl in (self._read_level(el) for el in an.findall("w:lvl", NSMAP))
+                    if lvl_idx is not None
+                }
+            for num in numbering_root.findall("w:num", NSMAP):
+                nid = num.get(qn("w:numId"))
+                abs_el = num.find("w:abstractNumId", NSMAP)
+                if nid is None or abs_el is None:
+                    continue
+                self._num_abs[nid] = abs_el.get(qn("w:val"))
+                overrides: dict[int, int] = {}
+                for ov in num.findall("w:lvlOverride", NSMAP):
+                    ilvl = _to_int(ov.get(qn("w:ilvl")))
+                    start = ov.find("w:startOverride", NSMAP)
+                    if ilvl is not None and start is not None:
+                        val = _to_int(start.get(qn("w:val")))
+                        if val is not None:
+                            overrides[ilvl] = val
+                if overrides:
+                    self._num_start_override[nid] = overrides
+
+        # Pencacah per abstractNum: Word melanjutkan hitungan antar-<w:num> yang
+        # merujuk abstractNum yang sama, kecuali ada startOverride.
+        self._counters: dict[str, dict[int, int]] = {}
+        self._starts: dict[str, dict[int, int]] = {}
+        self._seen_nums: set[str] = set()
+
+    @staticmethod
+    def _read_numpr(ppr: Optional[etree._Element]) -> tuple[Optional[str], Optional[int]]:
+        if ppr is None:
+            return None, None
+        numpr = ppr.find("w:numPr", NSMAP)
+        if numpr is None:
+            return None, None
+        num_el = numpr.find("w:numId", NSMAP)
+        ilvl_el = numpr.find("w:ilvl", NSMAP)
+        num_id = num_el.get(qn("w:val")) if num_el is not None else None
+        ilvl = _to_int(ilvl_el.get(qn("w:val"))) if ilvl_el is not None else None
+        return num_id, ilvl
+
+    @staticmethod
+    def _read_level(el: etree._Element) -> tuple[Optional[int], _ListLevel]:
+        def val(tag: str) -> Optional[str]:
+            child = el.find(tag, NSMAP)
+            return child.get(qn("w:val")) if child is not None else None
+
+        is_lgl_el = el.find("w:isLgl", NSMAP)
+        is_lgl = is_lgl_el is not None and is_lgl_el.get(qn("w:val"), "1") not in ("0", "false")
+        return _to_int(el.get(qn("w:ilvl"))), _ListLevel(
+            start=_to_int(val("w:start")) or 0,  # ECMA-376: tanpa <w:start> = 0
+            fmt=val("w:numFmt"),
+            text=val("w:lvlText"),
+            is_lgl=is_lgl,
+            restart=_to_int(val("w:lvlRestart")),
+            p_style=val("w:pStyle"),
+        )
+
+    @staticmethod
+    def _is_bare_section_break(p: etree._Element, ppr: Optional[etree._Element]) -> bool:
+        """Paragraf kosong yang hanya membawa <w:sectPr> — pemisah section.
+
+        Word tidak mencetak nomor di paragraf ini dan tidak mencacahnya.
+        Kasus nyata: Heading 1 kosong pembawa section break antara halaman
+        romawi dan halaman inti. Kalau ikut dicacah, semua bab bergeser satu
+        ("BAB 2. PENDAHULUAN"), padahal Daftar Isi Word dan render
+        LibreOffice sama-sama mencetak "BAB 1. PENDAHULUAN".
+        """
+        if ppr is None or ppr.find("w:sectPr", NSMAP) is None:
+            return False
+        if any((t.text or "").strip() for t in p.iter(qn("w:t"))):
+            return False
+        return all(
+            p.find(f".//{tag}", NSMAP) is None
+            for tag in ("w:drawing", "w:pict", "w:object")
+        )
+
+    def _style_chain_numpr(self, style_id: Optional[str]) -> tuple[Optional[str], Optional[int], Optional[str]]:
+        """(numId, ilvl, styleId pemilik numId) dari rantai basedOn style."""
+        num_id: Optional[str] = None
+        ilvl: Optional[int] = None
+        owner: Optional[str] = None
+        seen: set[str] = set()
+        sid = style_id
+        while sid and sid not in seen and sid in self._style_numpr:
+            seen.add(sid)
+            s_num, s_ilvl, base = self._style_numpr[sid]
+            if num_id is None and s_num is not None:
+                num_id, owner = s_num, sid
+            if ilvl is None and s_ilvl is not None:
+                ilvl = s_ilvl
+            sid = base
+        return num_id, ilvl, owner
+
+    def _resolve_abs(self, num_id: str) -> Optional[str]:
+        aid = self._num_abs.get(num_id)
+        # numStyleLink: definisi level ada di abstractNum milik style penomoran.
+        if aid is not None and aid in self._abs_style_link:
+            linked_num, _, _ = self._style_chain_numpr(self._abs_style_link[aid])
+            if linked_num is not None and linked_num != num_id:
+                aid = self._num_abs.get(linked_num, aid)
+        return aid
+
+    def label_for(self, p: etree._Element) -> Optional[str]:
+        ppr = p.find("w:pPr", NSMAP)
+        if self._is_bare_section_break(p, ppr):
+            return None
+        p_num, p_ilvl = self._read_numpr(ppr)
+        style_el = ppr.find("w:pStyle", NSMAP) if ppr is not None else None
+        style_id = style_el.get(qn("w:val")) if style_el is not None else None
+        if style_id is None:
+            style_id = self._default_style
+        s_num, s_ilvl, s_owner = self._style_chain_numpr(style_id)
+
+        num_id = p_num if p_num is not None else s_num
+        if num_id is None or num_id == "0":
+            return None  # numId 0 = penomoran dimatikan eksplisit
+        aid = self._resolve_abs(num_id)
+        levels = self._abs_levels.get(aid) if aid is not None else None
+        if not levels:
+            return None
+
+        ilvl = p_ilvl if p_ilvl is not None else s_ilvl
+        if ilvl is None and p_num is None:
+            # Style tertaut ke level lewat <w:lvl><w:pStyle> di abstractNum.
+            ilvl = next(
+                (i for i, lvl in levels.items() if lvl.p_style in (style_id, s_owner)),
+                0,
+            )
+        ilvl = ilvl or 0
+        lvl = levels.get(ilvl)
+        if lvl is None:
+            return None
+
+        counters = self._counters.setdefault(aid, {})
+        starts = self._starts.setdefault(aid, {})
+        if num_id not in self._seen_nums:
+            self._seen_nums.add(num_id)
+            for ov_lvl, start in self._num_start_override.get(num_id, {}).items():
+                starts[ov_lvl] = start
+                counters.pop(ov_lvl, None)
+
+        counters[ilvl] = counters[ilvl] + 1 if ilvl in counters else starts.get(ilvl, lvl.start)
+        for deeper in [k for k in counters if k > ilvl]:
+            restart = levels[deeper].restart if deeper in levels else None
+            # lvlRestart 0 = tidak pernah diulang; N = diulang oleh level ≤ N (1-based).
+            if restart is None or (restart != 0 and ilvl <= restart - 1):
+                del counters[deeper]
+
+        if lvl.text is None:
+            return None
+        # Label nomor mengikuti format penanda paragraf: kalau penanda itu
+        # <w:vanish/>, Word tidak mencetak nomornya (pencacah tetap maju).
+        vanish = ppr.find("w:rPr/w:vanish", NSMAP) if ppr is not None else None
+        if vanish is not None and vanish.get(qn("w:val"), "1") not in ("0", "false"):
+            return None
+
+        def render(match: re.Match) -> str:
+            ref = int(match.group(1)) - 1
+            ref_lvl = levels.get(ref)
+            if ref_lvl is None:
+                raise ValueError
+            value = counters.get(ref, starts.get(ref, ref_lvl.start))
+            fmt = "decimal" if lvl.is_lgl else ref_lvl.fmt
+            out = _format_list_counter(value, fmt)
+            if out is None:
+                raise ValueError
+            return out
+
+        try:
+            label = re.sub(r"%([1-9])", render, lvl.text).strip()
+        except ValueError:
+            return None
+        return label or None
+
+
+def _to_int(val: Optional[str]) -> Optional[int]:
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
 # ============================================================================
 # DocxParser
 # ============================================================================
@@ -187,6 +604,16 @@ class DocxParser:
         # Warning yang dikumpulkan selama parsing (parser tidak melempar error)
         self.warnings: list[str] = []
 
+        # Bagian ZIP yang CRC-nya rusak (biasanya gambar). Kalau ada, dokumen
+        # dibaca dari salinan yang sudah diperbaiki — lihat _repair_if_corrupt.
+        self.original_file_path = self.file_path
+        self.corrupt_parts: list[str] = []
+        self._repair_if_corrupt()
+
+        # Elemen yang dikeluarkan dari content control (lihat
+        # _hoist_sections_out_of_sdt). 0 = dokumen tidak butuh normalisasi.
+        self.hoisted_sdt_elements = 0
+
         # Lazy-load: hanya di-init saat property pertama kali diakses
         self._doc: Optional[DocxDocument] = None
         self._paragraphs: Optional[list[ParagraphInfo]] = None
@@ -207,11 +634,82 @@ class DocxParser:
     # Akses dokumen via python-docx (high-level)
     # ------------------------------------------------------------------------
 
+    # PNG 1x1 transparan — pengganti gambar yang isinya tak bisa dipulihkan.
+    _PLACEHOLDER_PNG = bytes.fromhex(
+        "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+        "1f15c4890000000d49444154789c6300010000050001"
+        "0d0a2db40000000049454e44ae426082"
+    )
+
+    def _repair_if_corrupt(self) -> None:
+        """Pulihkan dokumen yang punya bagian ZIP rusak (CRC tidak cocok).
+
+        Satu gambar rusak di dalam .docx membuat SEMUA modul gagal membuka
+        dokumen ("Bad CRC-32 for file 'word/media/image1.png'"), padahal teks
+        dokumennya utuh dan Word tetap bisa membukanya. Akibatnya tak satu pun
+        pengecekan berjalan — dan pesan galat itu sempat tampil di UI sebagai
+        "Kesalahan Judul Bab (word/media/image1.png)".
+
+        Di sini bagian yang rusak dibaca ulang tanpa pemeriksaan CRC dan ditulis
+        ke salinan sementara yang ZIP-nya sehat. Isi gambarnya mungkin cacat,
+        tapi pemeriksaan administrasi tidak bergantung pada isi gambar. Kalau
+        byte-nya pun tak terbaca, diganti gambar kosong 1x1 supaya relasi
+        dokumen tetap utuh.
+        """
+        import tempfile
+
+        try:
+            zf = zipfile.ZipFile(self.file_path)
+        except zipfile.BadZipFile:
+            return  # bukan ZIP sama sekali — biar Document() yang melapor
+        bad = []
+        for info in zf.infolist():
+            try:
+                zf.read(info.filename)
+            except zipfile.BadZipFile:
+                bad.append(info.filename)
+        if not bad:
+            zf.close()
+            return
+
+        tmp = tempfile.NamedTemporaryFile(
+            prefix="repaired_", suffix=".docx", delete=False
+        )
+        tmp.close()
+        with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as out:
+            for info in zf.infolist():
+                if info.filename not in bad:
+                    out.writestr(info, zf.read(info.filename))
+                    continue
+                try:
+                    ext = zf.open(info)
+                    ext._expected_crc = None  # lewati pemeriksaan CRC
+                    data = ext.read()
+                except Exception:
+                    data = b""
+                if not data and info.filename.lower().endswith(".png"):
+                    data = self._PLACEHOLDER_PNG
+                out.writestr(info.filename, data)
+        zf.close()
+        self.corrupt_parts = bad
+        self.file_path = Path(tmp.name)
+        # Salinan sementara dihapus begitu parser tidak dipakai lagi. Tanpa ini
+        # setiap unggahan dokumen rusak meninggalkan satu berkas di /tmp.
+        import weakref
+
+        weakref.finalize(self, _unlink_quietly, tmp.name)
+        self.warnings.append(
+            f"Bagian dokumen rusak dan diperbaiki otomatis: {', '.join(bad)}"
+        )
+
     @property
     def doc(self) -> DocxDocument:
         """Objek python-docx Document (lazy)."""
         if self._doc is None:
             self._doc = Document(str(self.file_path))
+            self.hoisted_sdt_elements = _hoist_sections_out_of_sdt(
+                self._doc.element.body, _heading_style_ids(self._doc.styles.element)
+            )
         return self._doc
 
     @property
@@ -244,6 +742,12 @@ class DocxParser:
         """Raw XML word/document.xml (lazy)."""
         if self._document_xml is None:
             self._document_xml = self._read_xml_part("word/document.xml")
+            # Harus sama dengan self.doc supaya index paragraf tetap sejajar.
+            if self._document_xml is not None:
+                _hoist_sections_out_of_sdt(
+                    self._document_xml.find("w:body", NSMAP),
+                    _heading_style_ids(self.styles_xml),
+                )
         return self._document_xml
 
     @property
@@ -368,15 +872,17 @@ class DocxParser:
         - Mode non-Word (tanpa lastRenderedPageBreak): fallback ke break manual +
           section break non-continuous — perkiraan terbaik tanpa cache layout Word.
 
-        Catatan tabel/sdt: untuk elemen multi-paragraf (w:tbl, w:sdt), setiap
-        page break menghasilkan SEPASANG LRPB — satu "rest" di sel/paragraf
-        terakhir halaman lama, satu "lead" di sel/paragraf pertama halaman baru.
-        Menghitung keduanya = double-count. Solusi: hanya hitung LEAD LRPB
-        (sebelum teks) untuk tabel/sdt.
+        Catatan sdt: untuk elemen multi-paragraf, setiap page break menghasilkan
+        SEPASANG LRPB — satu "rest" di paragraf terakhir halaman lama, satu
+        "lead" di paragraf pertama halaman baru. Menghitung keduanya =
+        double-count. Solusi: hanya hitung LEAD LRPB (sebelum teks).
+        Tabel punya aturan sendiri per baris — lihat _table_lrpb_breaks.
         """
         if self._document_has_lrpb():
             tag = etree.QName(el).localname
-            if tag in ("tbl", "sdt"):
+            if tag == "tbl":
+                return self._table_lrpb_breaks(el)[0]
+            if tag == "sdt":
                 count = 0
                 for p_el in el.findall(".//w:p", namespaces=NSMAP):
                     lead, _ = self._split_lrpb_around_text(p_el)
@@ -409,6 +915,101 @@ class DocxParser:
             elif el.tag == t_tag and (el.text or "").strip():
                 seen_text = True
         return lead, rest
+
+    def _table_lrpb_breaks(
+        self, tbl_el: etree._Element, after_split_row: bool = False
+    ) -> tuple[int, bool]:
+        """Jumlah halaman baru akibat satu <w:tbl> (mode Word), plus apakah
+        baris terakhirnya terbelah melewati batas halaman.
+
+        Word menulis LRPB setiap kali halaman BERPINDAH menurut urutan dokumen,
+        termasuk perpindahan MUNDUR. Baris tabel dibaca sel demi sel, padahal
+        sel-sel sebaris tercetak berdampingan. Pada baris yang terbelah: sel A
+        menyeberang ke halaman berikut (LRPB di tengah teks), lalu sel B kembali
+        ke puncak baris di halaman lama — dan awal sel B ikut diberi LRPB,
+        padahal tidak ada halaman baru. Elemen sesudah baris terbelah (baris
+        berikut / paragraf sesudah tabel) juga kerap diawali LRPB padahal masih
+        di halaman ekor baris itu. Menjumlah semua LRPB "lead" di tabel (aturan
+        lama) menghitung perpindahan mundur itu sebagai halaman baru.
+
+        Maka dihitung per baris:
+        - baris mulai di halaman baru bila sel pertamanya diawali LRPB, kecuali
+          tepat sesudah baris terbelah (LRPB itu artefak tadi);
+        - baris menyeberang sebanyak LRPB di TENGAH isi sel — ambil sel yang
+          terbanyak, bukan dijumlah, karena sel sebaris berjalan paralel.
+
+        `after_split_row` membawa status baris terakhir elemen sebelumnya, dan
+        nilai kembaliannya diteruskan ke elemen sesudah tabel.
+        """
+        lrpb_tag = qn("w:lastRenderedPageBreak")
+        t_tag = qn("w:t")
+        content_tags = (qn("w:drawing"), qn("w:pict"))
+        breaks = 0
+        rows = etree._Element.xpath(
+            tbl_el, "./w:tr | ./w:sdt/w:sdtContent/w:tr", namespaces=NSMAP
+        )
+        for tr in rows:
+            starts_new_page = False
+            span = 0
+            cells = etree._Element.xpath(
+                tr, "./w:tc | ./w:sdt/w:sdtContent/w:tc", namespaces=NSMAP
+            )
+            for ci, tc in enumerate(cells):
+                seen_content = False
+                mid = 0
+                for el in tc.iter(lrpb_tag, t_tag, *content_tags):
+                    if el.tag == lrpb_tag:
+                        if seen_content:
+                            mid += 1
+                        elif ci == 0:
+                            starts_new_page = True
+                    elif el.tag != t_tag or (el.text or "").strip():
+                        seen_content = True
+                span = max(span, mid)
+            if starts_new_page and not after_split_row:
+                breaks += 1
+            breaks += span
+            after_split_row = span > 0
+        return breaks, after_split_row
+
+    def _forces_page_break_before(self, p_el: etree._Element) -> bool:
+        """True bila paragraf memaksa halaman baru sebelum teksnya: w:br page
+        sebelum teks pertama, atau pageBreakBefore (langsung/diwarisi style)."""
+        br_tag, t_tag = qn("w:br"), qn("w:t")
+        for el in p_el.iter(br_tag, t_tag):
+            if el.tag == t_tag:
+                if (el.text or "").strip():
+                    break
+            elif el.get(qn("w:type")) == "page":
+                return True
+
+        def _on(flag: etree._Element) -> bool:
+            val = flag.get(qn("w:val"))
+            return val is None or val.lower() in ("1", "true", "on")
+
+        flag = p_el.find("w:pPr/w:pageBreakBefore", namespaces=NSMAP)
+        if flag is not None:
+            return _on(flag)
+        style = p_el.find("w:pPr/w:pStyle", namespaces=NSMAP)
+        style_id = style.get(qn("w:val")) if style is not None else None
+        styles_el = self.doc.styles.element
+        if style_id is None:
+            default = styles_el.find(
+                "w:style[@w:type='paragraph'][@w:default='1']", namespaces=NSMAP
+            )
+            style_id = default.get(qn("w:styleId")) if default is not None else None
+        for _ in range(20):  # rantai basedOn; batasi agar siklus tidak menggantung
+            if style_id is None:
+                break
+            st = styles_el.find(f"w:style[@w:styleId='{style_id}']", namespaces=NSMAP)
+            if st is None:
+                break
+            flag = st.find("w:pPr/w:pageBreakBefore", namespaces=NSMAP)
+            if flag is not None:
+                return _on(flag)
+            based = st.find("w:basedOn", namespaces=NSMAP)
+            style_id = based.get(qn("w:val")) if based is not None else None
+        return False
 
     def _delta_pages_after_paragraph_element(self, p_el: etree._Element) -> int:
         """
@@ -500,13 +1101,17 @@ class DocxParser:
         for para in self.paragraphs:
             if headings_only and not para.is_heading:
                 continue
-            text = para.text.strip()
-            cmp_text = text if case_sensitive else text.upper()
+            # Label penomoran otomatis ("BAB 1.") ikut dicoba, di samping teks
+            # ketikan — lihat ParagraphInfo.heading_texts.
+            cmp_texts = [
+                t.strip() if case_sensitive else t.strip().upper()
+                for t in para.heading_texts
+            ]
             for name in section_names:
                 if result[name] is not None:
                     continue  # sudah ketemu yang pertama
                 cmp_name = name if case_sensitive else name.upper()
-                if cmp_text.startswith(cmp_name):
+                if any(t.startswith(cmp_name) for t in cmp_texts):
                     result[name] = para.index
 
         # Pass 2 (fallback): jika headings_only=True dan ada section belum ketemu,
@@ -514,17 +1119,19 @@ class DocxParser:
         if headings_only and any(v is None for v in result.values()):
             missing = {k for k, v in result.items() if v is None}
             for para in self.paragraphs:
-                text = para.text.strip()
-                if not text:
+                if not para.text.strip():
                     continue
-                if self._looks_like_toc_entry(text):
+                if self._looks_like_toc_entry(para.text.strip()):
                     continue
-                if not self._looks_like_heading_fallback(text, para=para):
+                variants = [t.strip() for t in para.heading_texts]
+                if not any(
+                    self._looks_like_heading_fallback(t, para=para) for t in variants
+                ):
                     continue
-                cmp_text = text if case_sensitive else text.upper()
+                cmp_texts = [t if case_sensitive else t.upper() for t in variants]
                 for name in list(missing):
                     cmp_name = name if case_sensitive else name.upper()
-                    if cmp_text.startswith(cmp_name):
+                    if any(t.startswith(cmp_name) for t in cmp_texts):
                         result[name] = para.index
                         missing.remove(name)
                         if not missing:
@@ -647,11 +1254,35 @@ class DocxParser:
     # ------------------------------------------------------------------------
 
     def _extract_paragraphs(self) -> list[ParagraphInfo]:
+        labels = self._build_list_labels()
         result: list[ParagraphInfo] = []
         for idx, para in enumerate(self.doc.paragraphs):
             info = self._paragraph_to_info(idx, para)
+            info.list_label = labels.get(para._element)
             result.append(info)
         return result
+
+    def _build_list_labels(self) -> dict[etree._Element, str]:
+        """Label nomor otomatis per elemen <w:p>, dirakit dalam urutan dokumen.
+
+        Semua paragraf body ikut dicacah — termasuk yang di dalam tabel dan
+        content control — karena Word juga mencacahnya. Paragraf di dalam kotak
+        teks dilewati: posisinya di alur dokumen tidak pasti.
+        """
+        try:
+            labeler = _ListLabeler(self.doc.styles.element, self.numbering_xml)
+            labels: dict[etree._Element, str] = {}
+            txbx = qn("w:txbxContent")
+            for p in self.doc.element.body.iter(qn("w:p")):
+                if next(p.iterancestors(txbx), None) is not None:
+                    continue
+                label = labeler.label_for(p)
+                if label:
+                    labels[p] = label
+            return labels
+        except Exception as e:
+            self.warnings.append(f"Gagal membaca penomoran otomatis: {e}")
+            return {}
 
     def _build_page_estimates(self) -> list[int]:
         """Estimasi halaman fisik per paragraf body (index sejajar self.paragraphs).
@@ -667,17 +1298,34 @@ class DocxParser:
         use_lrpb = self._document_has_lrpb()
         page = 1
         estimates: list[int] = []
+        after_split_row = False  # elemen sebelumnya tabel dgn baris akhir terbelah
         for child in self.doc.element.body:
             if child.tag == qn("w:p"):
                 if use_lrpb:
                     lead, rest = self._split_lrpb_around_text(child)
+                    if (
+                        after_split_row
+                        and lead
+                        and not self._forces_page_break_before(child)
+                    ):
+                        # Artefak baris terbelah (lihat _table_lrpb_breaks):
+                        # paragraf ini masih di halaman ekor baris tsb.
+                        lead -= 1
                     page += lead
                     estimates.append(page)
                     page += rest
                 else:
                     estimates.append(page)
                     page += self._element_break_delta(child)
+                after_split_row = False
+            elif use_lrpb and child.tag == qn("w:tbl"):
+                delta, after_split_row = self._table_lrpb_breaks(
+                    child, after_split_row
+                )
+                page += delta
             else:
+                if child.tag == qn("w:sdt"):
+                    after_split_row = False
                 # tabel / sdt / elemen body lain: tidak masuk self.paragraphs,
                 # tapi break di dalamnya tetap menggeser halaman paragraf berikutnya.
                 page += self._element_break_delta(child)
@@ -899,12 +1547,49 @@ class DocxParser:
         memberi DXA sebagai string, jadi konversi tinggal int().
         """
         result: list[SectionInfo] = []
-        for idx, sect in enumerate(self.doc.sections):
-            sect_pr = sect._sectPr
+        for idx, sect_pr in enumerate(self._iter_sect_pr()):
             info = SectionInfo(index=idx)
             self._populate_section_from_xml(info, sect_pr)
             result.append(info)
+        # Warisan header/footer: section yang tidak mendeklarasikan referensi
+        # sendiri memakai milik section sebelumnya, per tipe (ECMA-376
+        # §17.10.1). Tanpa ini, dokumen yang menaruh nomor halaman sekali di
+        # section pertama terbaca seolah section berikutnya tak bernomor.
+        inherited_header: dict[str, str] = {}
+        inherited_footer: dict[str, str] = {}
+        for info in result:
+            inherited_header.update(info.header_refs)
+            inherited_footer.update(info.footer_refs)
+            info.header_refs = dict(inherited_header)
+            info.footer_refs = dict(inherited_footer)
         return result
+
+    def _iter_sect_pr(self) -> list[etree._Element]:
+        """Semua <w:sectPr> di document.xml, urut dokumen.
+
+        TIDAK memakai python-docx `doc.sections`: wrapper itu hanya
+        mengenumerasi sectPr pada paragraf tingkat-body dan sectPr penutup body,
+        sehingga section break yang bersarang di dalam content control
+        (<w:sdt>) hilang. Dokumen dengan Daftar Isi otomatis kerap menaruh
+        section break di situ — beserta header berisi nomor halamannya —
+        dan section itu jadi tak terlihat.
+
+        <w:sectPrChange> (rekaman revisi) memuat salinan sectPr LAMA; itu bukan
+        section sungguhan dan harus dilewati.
+        """
+        doc_xml = self.document_xml
+        if doc_xml is None:
+            return []
+        body = doc_xml.find(qn("w:body"))
+        if body is None:
+            return []
+        out: list[etree._Element] = []
+        for el in body.iter(qn("w:sectPr")):
+            parent = el.getparent()
+            if parent is not None and parent.tag == qn("w:sectPrChange"):
+                continue
+            out.append(el)
+        return out
 
     def _populate_section_from_xml(
         self, info: SectionInfo, sect_pr: Optional[etree._Element]

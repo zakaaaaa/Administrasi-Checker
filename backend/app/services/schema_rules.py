@@ -943,6 +943,22 @@ def get_pkm_ai_proposal_rules() -> SchemaRules:
     )
 
 
+def get_pkm_scientific_article_rules() -> SchemaRules:
+    """
+    Aturan artikel ilmiah luaran wajib skema pendanaan 2026
+    (KC, K, KI, PI, PM, RE, RSH) — bukan PKM-AI.
+
+    Sama dengan PKM-AI kecuali TANPA section LAMPIRAN. Panduan PKM-RE 2026
+    hlm. 18 (A. Susunan Artikel Ilmiah): "Artikel ilmiah ditulis hanya bagian
+    inti saja, tanpa daftar isi dan lampiran" — bagian inti berakhir di
+    Daftar Pustaka. schema_code tetap "AI" karena PhysicalSheetCounter memakai
+    kode itu untuk batas 8–15 halaman dan deteksi awal naskah artikel.
+    """
+    rules = get_pkm_ai_proposal_rules()
+    rules.sections = [s for s in rules.sections if s.name != "LAMPIRAN"]
+    return rules
+
+
 # ============================================================================
 # HARDCODED RULES — PKM-GFT Proposal 2026
 # ============================================================================

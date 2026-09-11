@@ -12,6 +12,8 @@ B. LARANGAN STRICT (Daftar Pustaka):
 
 C. Pengecekan keseimbangan sitasi (anti-referensi-bodong):
    1. In-text → DP: tiap sitasi (Author, Year) di body teks WAJIB ada di DP
+      Pengecualian: nama penulis seluruhnya kapital yang tidak ditemukan
+      di DP tidak menghasilkan temuan sumber hilang. Beda tahun tetap dicek.
    2. DP → In-text: tiap entry DP WAJIB pernah dirujuk di body teks
    - Jika tidak cocok persis tapi ada penulis DP + tahun sama dengan ejaan mirip
      (jarak Levenshtein kecil), beri petunjuk "diduga typo".
@@ -45,11 +47,18 @@ from lxml import etree
 
 from app.services.docx_parser import DocxParser, NSMAP
 from app.services.schema_rules import SchemaRules
+# Batas awal LAMPIRAN dipakai bersama FormatChecker & PhysicalSheetCounter.
+from app.services.structure_checker import find_lampiran_start
 
 
 # ============================================================================
 # Pattern regex
 # ============================================================================
+
+# Batas pengenalan sitasi in-text sesuai kebijakan laporan: inklusif dan tetap,
+# terpisah dari tahun acuan untuk kemutakhiran referensi di Daftar Pustaka.
+_INTEXT_YEAR_MIN = 2000
+_INTEXT_YEAR_MAX = 2026
 
 # Pola sitasi in-text (format Harvard benar):
 #   (Author, 2020)
@@ -79,6 +88,63 @@ _NO_COMMA_BLOCKLIST = frozenset([
     "BAB", "CHAPTER", "HALAMAN", "PAGE", "GRAFIK", "DIAGRAM",
     "BAGAN", "PETA", "FOTO", "LIHAT", "SEE",
 ])
+
+# Nama bulan — bukan nama penulis. Laporan kemajuan penuh keterangan jadwal
+# yang bentuknya persis sitasi Harvard: "Tahap Monitoring ... (Agustus 2026)".
+# Tanpa filter ini keterangan waktu divonis sitasi tanpa koma, lalu ikut
+# dicari di Daftar Pustaka dan dilaporkan sebagai sitasi tak bersumber.
+_MONTH_NAMES = frozenset([
+    # Indonesia
+    "JANUARI", "FEBRUARI", "MARET", "APRIL", "MEI", "JUNI",
+    "JULI", "AGUSTUS", "SEPTEMBER", "OKTOBER", "NOVEMBER", "DESEMBER",
+    # Inggris
+    "JANUARY", "FEBRUARY", "MARCH", "MAY", "JUNE",
+    "JULY", "AUGUST", "OCTOBER", "DECEMBER",
+    # Singkatan lazim
+    "JAN", "FEB", "MAR", "APR", "JUN", "JUL", "AGU", "AGT", "AUG",
+    "SEP", "SEPT", "OKT", "OCT", "NOV", "DES", "DEC",
+])
+
+
+def _is_month_label(author_part: str) -> bool:
+    """True kalau "penulis" ini sebenarnya keterangan bulan.
+
+    Menangkap satu bulan ("Agustus") maupun rentang yang dipisah tanda hubung
+    atau en dash ("Juli-Agustus", "September–Oktober").
+    """
+    tokens = re.split(r"[\s\-\u2010-\u2015/]+", author_part.strip())
+    tokens = [t for t in tokens if t]
+    return bool(tokens) and all(t.upper() in _MONTH_NAMES for t in tokens)
+
+
+# Sitasi majemuk: beberapa sumber dalam satu kurung, dipisah titik koma —
+#   (Hu et al., 2025; Tan dan Roswiyani, 2026)
+# Tanpa dipecah, regex sitasi tunggal menelan seluruh isi kurung dan
+# mengawinkan penulis pertama dengan tahun terakhir ("Hu, 2026"), sehingga
+# sumber yang sebenarnya ada di Daftar Pustaka divonis tak bersumber.
+_MULTI_CITATION_RE = re.compile(r"\(([^()]*;[^()]*)\)")
+_YEAR_TOKEN_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}[a-z]?(?!\d)")
+_SPACE_VARIANTS_RE = re.compile(r"[\u00a0\u2007\u2009\u202f]")
+
+
+def _split_multi_citations(text: str) -> str:
+    """Pecah "(A, 2020; B, 2021)" menjadi "(A, 2020) (B, 2021)".
+
+    Hanya kurung yang memuat minimal dua angka tahun yang dipecah, supaya
+    "(lihat Tabel 1; Gambar 2)" tidak berubah. Tiap potongan lalu dinilai
+    oleh aturan sitasi tunggal seperti biasa. Spasi tak-putus dinormalkan
+    ("Sehgal\\xa0et al.") agar potongan dikenali seperti sitasi biasa.
+    """
+    text = _SPACE_VARIANTS_RE.sub(" ", text)
+
+    def _repl(m: re.Match) -> str:
+        inner = m.group(1)
+        if len(_YEAR_TOKEN_RE.findall(inner)) < 2:
+            return m.group(0)
+        pieces = [p.strip() for p in inner.split(";")]
+        return " ".join(f"({p})" for p in pieces if p)
+
+    return _MULTI_CITATION_RE.sub(_repl, text)
 
 # Tahun di awal/dalam entry DP (Indonesia: setelah nama+titik)
 # Format yang umum di sample real:
@@ -118,6 +184,57 @@ def _levenshtein(a: str, b: str) -> int:
             row[j] = min(row[j] + 1, row[j - 1] + 1, prev + cost)
             prev = cur
     return row[-1]
+
+
+# Kata sambung yang lazim dilompati singkatan instansi ("Kemenparekraf" =
+# Kemen-par-e-kraf, "dan" tidak menyumbang huruf), dan kualifikasi negara yang
+# boleh tidak ikut disingkat ("Kementrian ... Republik Indonesia").
+_ACRONYM_SKIPPABLE = frozenset({"dan", "and", "&", "of", "the", "untuk"})
+_ACRONYM_TRAILING = frozenset({"republik", "indonesia", "ri"})
+_AUTHOR_TOKEN_RE = re.compile(r"[a-z0-9]+|&")
+
+
+def _acronym_author_match(cite_author: str, dp_author: str) -> bool:
+    """True kalau sitasi memakai singkatan instansi dari penulis DP.
+
+    "Bappeda Kota Malang" cocok dengan "Badan Perencanaan Pembangunan Daerah
+    Kota Malang": token sitasi yang sama persis menghabiskan satu kata DP,
+    token lain dibaca sebagai singkatan yang disusun dari AWALAN beberapa kata
+    DP berurutan (ba+p+pe+da). Singkatan wajib mencakup minimal dua kata —
+    pencocokan satu kata sudah ditangani aturan awalan. Semua kata DP harus
+    habis terpakai, kecuali kualifikasi negara di ujung.
+    """
+    cite = _AUTHOR_TOKEN_RE.findall(cite_author.lower())
+    dp = _AUTHOR_TOKEN_RE.findall(dp_author.lower())
+    if not cite or len(dp) < 2:
+        return False
+
+    def spell(tok: str, pos: int, j: int, words: int) -> list[int]:
+        """Posisi DP sesudah `tok[pos:]` habis dieja dari kata dp[j:]."""
+        if pos == len(tok):
+            return [j] if words >= 2 else []
+        if j == len(dp):
+            return []
+        out: list[int] = []
+        word = dp[j]
+        if word in _ACRONYM_SKIPPABLE:
+            out += spell(tok, pos, j + 1, words)
+        k = 0
+        while k < len(word) and pos + k < len(tok) and word[k] == tok[pos + k]:
+            k += 1
+            out += spell(tok, pos + k, j + 1, words + 1)
+        return out
+
+    def match(i: int, j: int) -> bool:
+        if i == len(cite):
+            return all(w in _ACRONYM_TRAILING for w in dp[j:])
+        if j < len(dp) and cite[i] == dp[j] and match(i + 1, j + 1):
+            return True
+        if len(cite[i]) < 2:
+            return False
+        return any(match(i + 1, nj) for nj in set(spell(cite[i], 0, j, 0)))
+
+    return match(0, 0)
 
 
 def _dp_has_et_al(text: str) -> bool:
@@ -401,7 +518,17 @@ class ReferenceValidator:
         if dp_start is None:
             return [], None, dp_end
 
-        # Kalau LAMPIRAN tidak ada, ambil sampai akhir
+        # headings_only melewatkan judul lampiran yang ditulis sebagai paragraf
+        # biasa ("Lampiran 1. Penggunaan Dana", tanpa style heading). Tanpa
+        # batas ini seluruh isi lampiran — puluhan halaman bukti kegiatan —
+        # ikut dibaca sebagai entri Daftar Pustaka. Pakai pencari bersama yang
+        # sama dengan FormatChecker & PhysicalSheetCounter.
+        if dp_end is None:
+            dp_end = find_lampiran_start(
+                self.parser.paragraphs, after_idx=dp_start + 1, pustaka_idx=dp_start
+            )
+
+        # Kalau LAMPIRAN benar-benar tidak ada, ambil sampai akhir
         if dp_end is None:
             dp_end = len(self.parser.paragraphs)
 
@@ -660,11 +787,15 @@ class ReferenceValidator:
     def _extract_in_text_citations(self) -> list[InTextCitation]:
         """
         Scan body teks dari BAB 1 sampai sebelum DAFTAR PUSTAKA.
+        Hanya tahun 2000–2026 (inklusif) yang masuk pemeriksaan sitasi.
 
         Dua pass:
         1. Pattern benar: (Author, Year)
         2. Pattern salah (tanpa koma): (Author Year) → has_format_error=True
            Tetap dimasukkan ke list agar balance check tidak salah "bodong".
+
+        Sitasi majemuk "(A, 2020; B, 2021)" dipecah dulu per sumber
+        (lihat _split_multi_citations) sebelum kedua pass dijalankan.
         """
         boundaries = self.parser.find_section_boundaries(
             ["BAB 1", "DAFTAR PUSTAKA"], headings_only=True
@@ -683,16 +814,21 @@ class ReferenceValidator:
             text = self.parser.paragraphs[i].text
             if not text.strip():
                 continue
+            text = _split_multi_citations(text)
 
             # Pass 1: format benar (dengan koma)
             matched_spans: set[tuple[int, int]] = set()
             for m in _INTEXT_CITATION_RE.finditer(text):
                 author_part = m.group(1).strip()
+                if _is_month_label(author_part):
+                    continue
                 year_str = m.group(2)
                 year_int_str = re.sub(r"[a-z]", "", year_str)
                 try:
                     year = int(year_int_str)
                 except ValueError:
+                    continue
+                if not (_INTEXT_YEAR_MIN <= year <= _INTEXT_YEAR_MAX):
                     continue
                 first_author = self._extract_first_author_from_citation(author_part)
                 if not first_author:
@@ -718,11 +854,15 @@ class ReferenceValidator:
                 first_word = author_part.split()[0].upper()
                 if first_word in _NO_COMMA_BLOCKLIST:
                     continue
+                if _is_month_label(author_part):
+                    continue
                 year_str = m.group(2)
                 year_int_str = re.sub(r"[a-z]", "", year_str)
                 try:
                     year = int(year_int_str)
                 except ValueError:
+                    continue
+                if not (_INTEXT_YEAR_MIN <= year <= _INTEXT_YEAR_MAX):
                     continue
                 first_author = self._extract_first_author_from_citation(author_part)
                 if not first_author:
@@ -781,6 +921,8 @@ class ReferenceValidator:
 
         Pencocokan: berdasarkan (author_first.lower(), year).
         Toleransi: cek substring author (untuk handle "Mustika" vs "Muatika")
+        Nama seluruhnya kapital (mis. BPS/WHO) dikecualikan dari temuan
+        author tidak ditemukan; sitasi dan pengecekan beda tahun tetap ada.
         """
         # Build sets
         dp_keys: set[tuple[str, int]] = set()
@@ -806,9 +948,16 @@ class ReferenceValidator:
                 continue
             # Coba match toleran: cek apakah ada entry DP dengan author yang
             # PREFIX-cocok (mis. "Smith" vs "Smithson")
-            partial = self._fuzzy_author_match(c.author.lower(), dp_authors_lower.keys())
-            if partial:
-                dp_years = {e.year for e in dp_authors_lower[partial] if e.year}
+            # Semua kandidat, bukan yang pertama saja: "Kemenparekraf" cocok
+            # awalan dengan "Kementrian Koperasi ..." (2021) DAN "Kementrian
+            # Pariwisata ..." (2020). Berhenti di kandidat pertama membuat
+            # sitasi yang sumbernya ada divonis beda tahun.
+            partials = self._fuzzy_author_matches(c.author.lower(), dp_authors_lower.keys())
+            if partials:
+                partial = partials[0]
+                dp_years = {
+                    e.year for cand in partials for e in dp_authors_lower[cand] if e.year
+                }
                 if c.year not in dp_years:
                     if key in seen_intext_findings:
                         continue
@@ -827,6 +976,11 @@ class ReferenceValidator:
                     )
                 continue
             else:
+                # Kebijakan pelaporan: nama penulis seluruhnya kapital,
+                # mis. BPS, WHO, PPATK, tidak memunculkan temuan author hilang.
+                # Diterapkan setelah pencocokan agar beda tahun tetap dicek.
+                if c.author.isupper():
+                    continue
                 if key in seen_intext_findings:
                     continue
                 seen_intext_findings.add(key)
@@ -902,6 +1056,15 @@ class ReferenceValidator:
             if best is None or d < best[1]:
                 best = (e.author_first, d)
         return best
+
+    @classmethod
+    def _fuzzy_author_matches(cls, target: str, candidates) -> list[str]:
+        """Semua candidate yang mirip target (aturan _fuzzy_author_match atau
+        singkatan instansi), urut kemunculan."""
+        return [
+            c for c in candidates
+            if cls._fuzzy_author_match(target, [c]) or _acronym_author_match(target, c)
+        ]
 
     @staticmethod
     def _fuzzy_author_match(target: str, candidates) -> Optional[str]:

@@ -259,15 +259,40 @@ def _looks_like_toc_line(text: str, para=None) -> bool:
     return DocxParser._detect_toc_entry(text, None)[0]
 
 
+# Judul lampiran bernomor: "Lampiran 1. Penggunaan Dana", "Lampiran 2.1 ...".
+# Banyak dokumen langsung masuk ke sini tanpa halaman pemisah "LAMPIRAN", dan
+# menulisnya sebagai paragraf biasa — tanpa style heading, tanpa bold, huruf
+# campuran. Pola ini cukup khas untuk dikenali, asalkan bukan entri Daftar
+# Lampiran (dibedakan lewat ParagraphInfo.is_toc_entry).
+_LAMPIRAN_NUMBERED_RE = re.compile(r"^\s*LAMPIRAN\s*\d", re.IGNORECASE)
+# Judul lampiran yang berdiri sendiri, tanpa embel-embel.
+_LAMPIRAN_EXACT_RE = re.compile(r"^\s*LAMPIRAN(?:-LAMPIRAN)?\s*$", re.IGNORECASE)
+_MAX_LAMPIRAN_HEADING_CHARS = 80
+
+
+def _looks_like_numbered_lampiran(text: str, para=None) -> bool:
+    """Judul lampiran bernomor yang ditulis sebagai paragraf biasa."""
+    t = text.strip()
+    if not t or len(t) > _MAX_LAMPIRAN_HEADING_CHARS:
+        return False
+    if not _LAMPIRAN_NUMBERED_RE.match(t):
+        return False
+    # Entri Daftar Lampiran teksnya nyaris identik — dibedakan dari style Word.
+    return not (para is not None and getattr(para, "is_toc_entry", False))
+
+
 def _looks_like_heading_candidate(text: str, para=None) -> bool:
     """
     Kandidat judul section saat style Heading tidak konsisten.
-    Termasuk: pola BAB N, mayoritas uppercase, atau paragraf pendek all-bold.
+    Termasuk: pola BAB N, judul lampiran bernomor, mayoritas uppercase,
+    atau paragraf pendek all-bold.
     """
     t = text.strip()
     if not t:
         return False
     if re.match(r"^BAB\s+[IVXLCM0-9]+(?:[.\s]|$)", t, flags=re.IGNORECASE):
+        return True
+    if _looks_like_numbered_lampiran(t, para):
         return True
     letters = [c for c in t if c.isalpha()]
     if not letters:
@@ -281,6 +306,59 @@ def _looks_like_heading_candidate(text: str, para=None) -> bool:
         if text_runs and all(r.bold is True for r in text_runs):
             return True
     return False
+
+
+def find_lampiran_start(
+    paragraphs,
+    *,
+    after_idx: Optional[int] = None,
+    pustaka_idx: Optional[int] = None,
+) -> Optional[int]:
+    """Index paragraf tempat bagian LAMPIRAN dimulai, atau None.
+
+    SATU sumber kebenaran untuk seluruh modul — sebelumnya format_checker,
+    physical_sheet_counter, dan structure_checker punya aturan sendiri-sendiri
+    yang berbeda kualitas. Batas ini menentukan banyak hal sekaligus: sampai
+    mana format diperiksa, sampai mana halaman inti dihitung, dan apakah
+    section LAMPIRAN dianggap ada.
+
+    Tiga bentuk diterima:
+    (a) teks paragrafnya PERSIS "LAMPIRAN" / "LAMPIRAN-LAMPIRAN" — konklusif
+        apa pun gayanya, tidak perlu style heading maupun huruf besar
+    (b) judul "LAMPIRAN ..." yang tampak heading — lewat
+        _looks_like_heading_candidate
+    (c) judul lampiran bernomor "Lampiran 1. ..." yang ditulis sebagai paragraf
+        biasa tanpa style heading
+
+    Bentuk (b) hanya dicari SETELAH Daftar Pustaka (kalau ketemu) supaya
+    kalimat isi yang kebetulan menyebut "Lampiran 1" tidak dikira judul.
+    Entri Daftar Lampiran juga tidak pernah cocok karena is_toc_entry-nya True.
+    """
+    floor_idx = after_idx
+    for para in paragraphs:
+        idx = para.index
+        if floor_idx is not None and idx < floor_idx:
+            continue
+        text = para.text.strip()
+        if not text or getattr(para, "is_toc_entry", False):
+            continue
+        if not re.match(r"^\s*LAMPIRAN\b", text, flags=re.IGNORECASE):
+            continue
+        # (a) teksnya persis nama section — cukup kuat tanpa syarat lain.
+        if _LAMPIRAN_EXACT_RE.match(text):
+            return idx
+        if para.is_heading or _looks_like_heading_candidate(text, para=para):
+            # Judul bernomor tanpa style: butuh konfirmasi posisi (sesudah
+            # Daftar Pustaka) supaya tidak menabrak kalimat isi.
+            if (
+                _looks_like_numbered_lampiran(text, para)
+                and not para.is_heading
+                and pustaka_idx is not None
+                and idx < pustaka_idx
+            ):
+                continue
+            return idx
+    return None
 
 
 # ============================================================================
@@ -382,11 +460,14 @@ class StructureChecker:
             # Skip baris daftar isi yang sering false-positive.
             if _looks_like_toc_line(text, para=para):
                 continue
+            # Judul seperti tercetak ("BAB 1. PENDAHULUAN", dengan "BAB 1." dari
+            # penomoran otomatis Word) dicoba dulu, lalu teks ketikan saja.
+            variants = [t.strip() for t in para.heading_texts]
             # is_heading = style Heading/Title atau outlineLvl → deklarasi Word.
             # Selain itu hanya lolos lewat heuristik bentuk → bukti lemah.
             if para.is_heading:
                 evidence = "style"
-            elif _looks_like_heading_candidate(text, para=para):
+            elif any(_looks_like_heading_candidate(t, para=para) for t in variants):
                 evidence = "shape"
             else:
                 continue
@@ -395,9 +476,14 @@ class StructureChecker:
 
             # Cek terhadap semua rule
             for rule in self.rules.sections:
-                quality = _heading_match_quality(text, rule)
-                if quality is None:
+                matches = [
+                    (q, v) for v in variants
+                    if (q := _heading_match_quality(v, rule)) is not None
+                ]
+                if not matches:
                     continue
+                # 'exact' mengalahkan 'prefix'; kalau seri, versi tercetak.
+                quality, text = min(matches, key=lambda m: m[0] != "exact")
 
                 # Required: ambil kemunculan pertama saja
                 if rule.required and rule.name in already_matched_required:

@@ -16,6 +16,7 @@ from app.services.docx_parser import DocxParser
 from app.services.schema_rules import (
     get_pkm_kc_proposal_rules,
     get_pkm_ai_proposal_rules,
+    get_pkm_scientific_article_rules,
     get_pkm_vgk_proposal_rules,
     get_pkm_re_proposal_rules,
     get_pkm_rsh_proposal_rules,
@@ -272,7 +273,7 @@ def run_all_checks(req: CheckRequest) -> dict[str, Any]:
     elif key == ("PKM", "PROPOSAL", "PKM-PM"):
         return _run_pkm_pm(parser)
     elif req.competition == "PKM" and req.report_type == "SCIENTIFIC_ARTICLE" and req.schema_code in _SCIENTIFIC_ARTICLE_SCHEMAS:
-        return _run_pkm_ai(parser)
+        return _run_pkm_ai(parser, with_lampiran=req.schema_code == "PKM-AI")
     elif (
         req.competition == "PKM"
         and req.report_type in ("PROGRESS_REPORT", "FINAL_REPORT")
@@ -586,8 +587,12 @@ def _run_pkm_vgk(parser: DocxParser) -> dict[str, Any]:
 # ============================================================================
 
 
-def _run_pkm_ai(parser: DocxParser) -> dict[str, Any]:
-    schema = get_pkm_ai_proposal_rules()
+def _run_pkm_ai(parser: DocxParser, *, with_lampiran: bool = True) -> dict[str, Any]:
+    """Runner artikel ilmiah. with_lampiran=False untuk artikel luaran skema
+    pendanaan (bukan PKM-AI): panduan menulis artikel tanpa lampiran, jadi
+    section LAMPIRAN tidak diwajibkan dan modul berbasis lampiran (7–8) dilewati.
+    """
+    schema = get_pkm_ai_proposal_rules() if with_lampiran else get_pkm_scientific_article_rules()
     results: dict[str, Any] = {}
     statuses: list[str] = []
 
@@ -668,6 +673,13 @@ def _run_pkm_ai(parser: DocxParser) -> dict[str, Any]:
     except Exception as e:
         results["reference"] = _module_error_payload(e)
         statuses.append("error")
+
+    # Artikel skema pendanaan: tanpa lampiran → tanpa lampiran, biodata,
+    # surat pernyataan, tanda tangan, dan uji similaritas (semuanya dibaca
+    # dari halaman lampiran).
+    if not with_lampiran:
+        results["overall_status"] = _aggregate_status(statuses)
+        return results
 
     # 7. Lampiran PKM-AI (5 item, tanpa Daftar Lampiran)
     lampiran_index = LampiranOcrIndex(parser)

@@ -8,7 +8,7 @@ Cara jalankan:
 import unittest
 from pathlib import Path
 
-from app.services.docx_parser import DocxParser
+from app.services.docx_parser import DocxParser, SectionInfo
 from app.services.page_numbering_checker import (
     PageNumberingChecker,
     PageNumberingRules,
@@ -27,6 +27,8 @@ SAMPLE_DIR = Path(__file__).parent / "sample_docs"
 DUMMY_FILE = SAMPLE_DIR / "dummy_pkm_kc.docx"
 REAL_FILE = SAMPLE_DIR / "A410170082.docx"
 LAPKEM_RE_FILE = SAMPLE_DIR / "lapkem_pkm_re.docx"
+LAPKEM_PM_FILE = SAMPLE_DIR / "lapkem_pkm_pm.docx"
+LAPKEM_RSH_NUM_FILE = SAMPLE_DIR / "lapkem_pkm_rsh_numbering.docx"
 
 
 # ============================================================================
@@ -363,6 +365,210 @@ class TestLapkemReRealDoc(unittest.TestCase):
 
     def test_status_is_pass(self):
         self.assertEqual(self.result.status, "pass")
+
+
+
+# ============================================================================
+# Petak section harus selaras dengan enumerasi parser
+# ============================================================================
+#
+# _compute_section_paragraph_ranges() dan DocxParser._iter_sect_pr() harus
+# melihat urutan sectPr yang SAMA. Kalau salah satu melewatkan section break
+# yang bersarang di <w:sdt>, indeksnya bergeser dan zona tiap section salah
+# petak — nomor halaman bagian inti dibaca dari header bagian depan.
+# ============================================================================
+
+
+class TestSectionRangesAlignWithParser(unittest.TestCase):
+    """Jumlah petak tidak boleh melebihi jumlah section yang dikenal parser."""
+
+    SAMPLES = [
+        ("dummy", DUMMY_FILE),
+        ("real", REAL_FILE),
+        ("lapkem_re", LAPKEM_RE_FILE),
+    ]
+
+    def test_ranges_indices_are_valid_sections(self):
+        for label, path in self.SAMPLES:
+            if not path.exists():
+                continue
+            with self.subTest(sample=label):
+                parser = DocxParser(path)
+                checker = PageNumberingChecker(
+                    parser, get_pkm_laporan_kemajuan_rules("KC")
+                )
+                ranges = checker._compute_section_paragraph_ranges()
+                n = len(parser.sections)
+                self.assertTrue(
+                    all(0 <= idx < n for idx in ranges),
+                    f"indeks petak di luar jangkauan section: "
+                    f"petak={sorted(ranges)} jumlah_section={n}",
+                )
+
+    def test_every_section_analysed(self):
+        """Tiap section parser wajib punya baris analisis."""
+        for label, path in self.SAMPLES:
+            if not path.exists():
+                continue
+            with self.subTest(sample=label):
+                parser = DocxParser(path)
+                result = PageNumberingChecker(
+                    parser, get_pkm_laporan_kemajuan_rules("KC")
+                ).check()
+                self.assertEqual(
+                    [a.section_index for a in result.sections_analysis],
+                    [s.index for s in parser.sections],
+                )
+
+
+
+# ============================================================================
+# Nomor halaman dobel (header DAN footer sama-sama mencetak)
+# ============================================================================
+#
+# Aturan PKM menentukan SATU posisi per zona. Kalau header dan footer
+# sama-sama memuat nomor, satu halaman mencetak nomornya dua kali — lazim
+# terjadi saat penulis menambah header bernomor untuk bagian inti sementara
+# footer bagian depan ikut terwarisi.
+#
+# Dulu lolos tanpa temuan: checker memilih salah satu sumber (header lebih
+# diprioritaskan), melihat posisinya cocok aturan, lalu menyatakan pass.
+# ============================================================================
+
+
+class TestDuplicatePageNumber(unittest.TestCase):
+    def _analysis(self, *, header_renders, footer_renders):
+        """Jalankan _analyze_section dengan header/footer palsu."""
+        checker = PageNumberingChecker.__new__(PageNumberingChecker)
+        checker.rules = get_pkm_page_numbering_rules()
+
+        def fake_pick(part, kind):
+            renders = header_renders if kind == "header" else footer_renders
+            if renders is None:
+                return None
+            return HeaderFooterAnalysis(
+                part_name=f"word/{kind}1.xml", kind=kind,
+                has_page_field=True, alignment="right",
+                font_name="Times New Roman", font_size_pt=12.0,
+                renders_text=renders,
+            )
+
+        checker._analyze_header_footer = fake_pick
+        checker._get_rid_to_part_map = lambda: {"rId1": "word/header1.xml",
+                                                "rId2": "word/footer1.xml"}
+        checker.parser = type("P", (), {"even_and_odd_headers": False})()
+        sec = SectionInfo(index=0)
+        sec.header_refs = {"default": "rId1"} if header_renders is not None else {}
+        sec.footer_refs = {"default": "rId2"} if footer_renders is not None else {}
+        sec.page_num_format = "decimal"
+        return checker._analyze_section(sec, "core_matter")
+
+    def test_both_rendering_is_duplicate(self):
+        a = self._analysis(header_renders=True, footer_renders=True)
+        self.assertTrue(a.has_duplicate_page_number)
+
+    def test_header_only_is_not_duplicate(self):
+        a = self._analysis(header_renders=True, footer_renders=None)
+        self.assertFalse(a.has_duplicate_page_number)
+
+    def test_footer_only_is_not_duplicate(self):
+        a = self._analysis(header_renders=None, footer_renders=True)
+        self.assertFalse(a.has_duplicate_page_number)
+
+    def test_empty_leftover_field_is_not_duplicate(self):
+        """Field kosong sisa editan bukan nomor halaman kedua."""
+        a = self._analysis(header_renders=True, footer_renders=False)
+        self.assertFalse(a.has_duplicate_page_number)
+
+    def test_duplicate_produces_finding(self):
+        checker = PageNumberingChecker.__new__(PageNumberingChecker)
+        checker.rules = get_pkm_page_numbering_rules()
+        analysis = SectionPageNumberingAnalysis(
+            section_index=4, zone="core_matter",
+            has_header_with_page=True, has_footer_with_page=True,
+            actual_position="top", actual_numeral_type="arabic",
+            actual_alignment="right", actual_font_name="Times New Roman",
+            actual_font_size_pt=12.0, has_duplicate_page_number=True,
+        )
+        findings = checker._validate_zone(
+            [analysis], "core_matter", checker.rules.core_matter
+        )
+        aspects = [f.aspect for f in findings]
+        self.assertIn("duplicate", aspects)
+        dup = next(f for f in findings if f.aspect == "duplicate")
+        self.assertEqual(dup.severity, "fail")
+        self.assertIn("2 nomor halaman dalam 1 halaman", dup.message)
+
+
+    def test_message_carries_physical_page_range(self):
+        """Rentang halaman fisik wajib ada DI DALAM kalimat, bukan cuma prefiks.
+
+        Frontend mengelompokkan temuan per halaman dan hanya membaca angka
+        PERTAMA dari prefiks lokasi ("Halaman ~5-17" → 5). Kalau rentangnya
+        tidak dibawa di kalimat, reviewer tidak tahu masalahnya sampai hlm 17.
+        """
+        if not LAPKEM_PM_FILE.exists():
+            self.skipTest(f"Sampel {LAPKEM_PM_FILE.name} tidak tersedia.")
+        parser = DocxParser(LAPKEM_PM_FILE)
+        result = PageNumberingChecker(
+            parser, get_pkm_laporan_kemajuan_rules("PM")
+        ).check()
+        dup = [
+            m for m in result.messages
+            if "2 nomor halaman dalam 1 halaman" in m.text
+        ]
+        self.assertEqual(len(dup), 1)
+        self.assertRegex(dup[0].text, r"pada halaman fisik \d+(-\d+)?")
+
+
+
+# ============================================================================
+# Angka ter-cache memutus header vs footer yang sama-sama bernomor
+# ============================================================================
+#
+# Dokumen PKM-RSH: section halaman 2-4 (romawi) mendeklarasikan header
+# bernomor sendiri DAN mewarisi footer bernomor. Menurut struktur file itu dua
+# nomor; Word mencetak SATU, di bawah (dikonfirmasi lewat screenshot Word).
+#
+# Pemutusnya: angka yang Word simpan di field PAGE saat terakhir mencetak.
+# header3 ber-cache "1" (arab) — tak mungkin dicetak di section romawi.
+# footer2 ber-cache "iv" (romawi) — cocok. Dokumen PM sebaliknya: kedua part
+# ber-cache arab di section arab, jadi dobelnya memang asli dan harus tetap
+# terdeteksi.
+# ============================================================================
+
+
+class TestCachedNumeralTiebreak(unittest.TestCase):
+    def test_rsh_front_matter_not_duplicate(self):
+        """REGRESI: RSH hal. 2-4 tidak boleh divonis dobel maupun 'di atas'."""
+        if not LAPKEM_RSH_NUM_FILE.exists():
+            self.skipTest("sampel lapkem_pkm_rsh_numbering.docx tidak tersedia")
+        result = PageNumberingChecker(
+            DocxParser(LAPKEM_RSH_NUM_FILE), get_pkm_laporan_kemajuan_rules("RSH")
+        ).check()
+        self.assertEqual(result.status, "pass", [m.text for m in result.messages])
+        sec1 = next(a for a in result.sections_analysis if a.section_index == 1)
+        self.assertEqual(sec1.actual_position, "bottom")
+        self.assertFalse(sec1.has_duplicate_page_number)
+
+    def test_pm_real_duplicate_still_detected(self):
+        """Tiebreak hanya melepas part yang bertentangan — dobel asli tetap kena."""
+        if not LAPKEM_PM_FILE.exists():
+            self.skipTest("sampel lapkem_pkm_pm.docx tidak tersedia")
+        result = PageNumberingChecker(
+            DocxParser(LAPKEM_PM_FILE), get_pkm_laporan_kemajuan_rules("PM")
+        ).check()
+        self.assertTrue(
+            any(a.has_duplicate_page_number for a in result.sections_analysis)
+        )
+
+    def test_numeral_kind_helpers(self):
+        from app.services.page_numbering_checker import _section_numeral_kind
+
+        self.assertEqual(_section_numeral_kind("lowerRoman"), "roman")
+        self.assertEqual(_section_numeral_kind("upperRoman"), "roman")
+        self.assertEqual(_section_numeral_kind("decimal"), "arabic")
+        self.assertEqual(_section_numeral_kind(None), "arabic")
 
 
 

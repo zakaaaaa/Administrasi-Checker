@@ -17,6 +17,7 @@ from app.services.schema_rules import (
 )
 from app.services.structure_checker import (
     StructureChecker,
+    find_lampiran_start,
     _heading_matches_rule,
     _normalize,
 )
@@ -395,6 +396,26 @@ class TestForbiddenFrontMatterScope(unittest.TestCase):
         self.assertEqual(len(forbidden), 1)
         self.assertEqual(forbidden[0].severity, "fail")
 
+    def test_scientific_article_without_lampiran(self):
+        """Artikel skema pendanaan (panduan: tanpa lampiran) tidak menagih LAMPIRAN;
+        PKM-AI tetap menagihnya."""
+        from app.services.schema_rules import (
+            get_pkm_ai_proposal_rules,
+            get_pkm_scientific_article_rules,
+        )
+
+        parser = _fake_parser([
+            (0, "Pendahuluan"), (10, "Metode"), (20, "Hasil dan Pembahasan"),
+            (30, "Kesimpulan"), (40, "Ucapan Terimakasih"), (50, "Kontribusi Penulis"),
+            (60, "Daftar Pustaka"),
+        ])
+        article = StructureChecker(parser, get_pkm_scientific_article_rules()).check()
+        self.assertEqual(article.status, "pass")
+        self.assertEqual(article.missing_required, [])
+
+        ai = StructureChecker(parser, get_pkm_ai_proposal_rules()).check()
+        self.assertEqual([m.rule_name for m in ai.missing_required], ["LAMPIRAN"])
+
 
 class TestLapkemRealDoc(unittest.TestCase):
     """Dokumen laporan kemajuan PKM-KC asli yang memicu false positive RINGKASAN."""
@@ -570,6 +591,120 @@ class TestHeadingMatchQuality(unittest.TestCase):
         self.assertEqual(
             _heading_match_quality("BAB 1. PENDAHULUAN ......... 5", rule), "exact"
         )
+
+
+
+# ============================================================================
+# Test: batas awal LAMPIRAN — dipakai bersama lima modul
+# ============================================================================
+#
+# find_lampiran_start() menentukan sampai mana dokumen dianggap "bagian inti".
+# Batas ini dipakai FormatChecker, PhysicalSheetCounter, ReferenceValidator,
+# LampiranChecker, dan StructureChecker. Kalau meleset, satu akar masalah
+# merembet jadi false positive di lima modul sekaligus — persis yang terjadi
+# pada Laporan Kemajuan PKM-RSH: isi lampiran (halaman 14-69) ikut diperiksa
+# formatnya, dihitung sebagai halaman inti (73 dari batas 10), dan dibaca
+# sebagai entri Daftar Pustaka (304 entri, 293 temuan).
+#
+# Penyebabnya: dokumen langsung masuk ke "Lampiran 1. Penggunaan Dana" tanpa
+# halaman pemisah "LAMPIRAN". Judul itu ditulis sebagai paragraf biasa — style
+# Normal, huruf campuran, tidak bold — sehingga semua modul melewatkannya.
+# ============================================================================
+
+
+class TestFindLampiranStart(unittest.TestCase):
+    def _paras(self, rows):
+        """rows: (index, teks, is_heading, is_toc_entry)"""
+        from app.services.docx_parser import ParagraphInfo
+
+        return [
+            ParagraphInfo(
+                index=i, text=t, is_heading=h, is_toc_entry=toc,
+                toc_evidence="style" if toc else None,
+            )
+            for i, t, h, toc in rows
+        ]
+
+    def test_numbered_lampiran_without_style_is_found(self):
+        """REGRESI PKM-RSH: 'Lampiran 1. ...' tanpa style heading & tanpa bold."""
+        paras = self._paras([
+            (10, "BAB 1. PENDAHULUAN", True, False),
+            (20, "DAFTAR PUSTAKA", True, False),
+            (30, "Lampiran 1. Penggunaan Dana", False, False),
+            (31, "Lampiran 2. Bukti-bukti Pendukung Kegiatan", False, False),
+        ])
+        self.assertEqual(
+            find_lampiran_start(paras, after_idx=10, pustaka_idx=20), 30
+        )
+
+    def test_daftar_lampiran_entries_are_not_mistaken(self):
+        """Entri Daftar Lampiran teksnya nyaris identik — dibedakan dari style Word."""
+        paras = self._paras([
+            (4, "DAFTAR LAMPIRAN", True, False),
+            (5, "Lampiran 1. Penggunaan Dana\t11", False, True),   # entri ToC
+            (6, "Lampiran 2. Bukti Pendukung\t13", False, True),   # entri ToC
+            (10, "BAB 1. PENDAHULUAN", True, False),
+            (20, "DAFTAR PUSTAKA", True, False),
+            (30, "Lampiran 1. Penggunaan Dana", False, False),      # yang asli
+        ])
+        self.assertEqual(
+            find_lampiran_start(paras, after_idx=10, pustaka_idx=20), 30
+        )
+
+    def test_numbered_lampiran_before_daftar_pustaka_is_ignored(self):
+        """Kalimat isi yang menyebut 'Lampiran 1' tidak boleh dikira judul."""
+        paras = self._paras([
+            (10, "BAB 1. PENDAHULUAN", True, False),
+            (15, "Lampiran 1 memuat rincian anggaran", False, False),
+            (20, "DAFTAR PUSTAKA", True, False),
+            (30, "Lampiran 1. Penggunaan Dana", False, False),
+        ])
+        self.assertEqual(
+            find_lampiran_start(paras, after_idx=10, pustaka_idx=20), 30
+        )
+
+    def test_exact_lampiran_text_accepted_in_any_style(self):
+        """Teks persis 'LAMPIRAN' konklusif — huruf kecil & tanpa style pun sah."""
+        for teks in ("LAMPIRAN", "Lampiran", "lampiran", "LAMPIRAN-LAMPIRAN"):
+            with self.subTest(teks=teks):
+                paras = self._paras([
+                    (10, "BAB 1. PENDAHULUAN", True, False),
+                    (30, teks, False, False),
+                ])
+                self.assertEqual(find_lampiran_start(paras, after_idx=10), 30)
+
+    def test_styled_lampiran_heading_accepted(self):
+        paras = self._paras([
+            (10, "BAB 1. PENDAHULUAN", True, False),
+            (30, "LAMPIRAN 1. PENGGUNAAN DANA", True, False),
+        ])
+        self.assertEqual(find_lampiran_start(paras, after_idx=10), 30)
+
+    def test_returns_none_when_no_lampiran(self):
+        paras = self._paras([
+            (10, "BAB 1. PENDAHULUAN", True, False),
+            (20, "DAFTAR PUSTAKA", True, False),
+        ])
+        self.assertIsNone(find_lampiran_start(paras, after_idx=10, pustaka_idx=20))
+
+    def test_shared_by_all_modules(self):
+        """Batas ini wajib dipakai bersama — bukan tiap modul punya aturan sendiri."""
+        import inspect
+
+        from app.services import (
+            format_checker, lampiran_checker, physical_sheet_counter,
+            reference_validator,
+        )
+
+        for mod in (
+            format_checker, physical_sheet_counter,
+            reference_validator, lampiran_checker,
+        ):
+            with self.subTest(module=mod.__name__):
+                self.assertIn(
+                    "find_lampiran_start", inspect.getsource(mod),
+                    f"{mod.__name__} tidak memakai pencari batas lampiran bersama",
+                )
 
 
 

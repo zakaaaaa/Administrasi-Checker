@@ -178,11 +178,22 @@ def _set_page_numbering(doc, style: str) -> None:
     _page_field(front.footer, cached="ii")
     core.header.is_linked_to_previous = False
     _page_field(core.header, cached="2")
+    # Zona inti WAJIB memutus warisan footer zona depan. Tanpa ini footer
+    # bernomor milik zona depan ikut terpakai di zona inti, sehingga nomor
+    # halaman tercetak dua kali (atas dan bawah) — dokumen jadi tidak valid.
+    # Di Word ini setara: masuk ke footer bagian inti, matikan "Link to
+    # Previous", lalu kosongkan isinya.
+    core.footer.is_linked_to_previous = False
 
     if style == "plain":
         return
 
     if style == "titlepg_live":
+        # Zona inti juga harus memutus warisan footer halaman-pertama milik
+        # zona depan — kalau tidak, halaman pertama zona inti mencetak nomor
+        # di header (miliknya) DAN footer (warisan) sekaligus.
+        core.different_first_page_header_footer = True
+        core.first_page_footer.is_linked_to_previous = False
         for sec, container_attr, cached in (
             (front, "first_page_footer", "i"),
             (core, "first_page_header", "1"),

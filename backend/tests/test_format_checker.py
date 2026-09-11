@@ -459,3 +459,57 @@ class TestSectionColumnParsing(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# ============================================================================
+# Contoh temuan harus mewakili SEMUA lokasi, bukan N pertama
+# ============================================================================
+#
+# Pelanggaran yang merata di seluruh dokumen — mis. spasi 1.0 di semua halaman
+# inti — dulu hanya tampil dari satu-dua halaman awal, karena pemotongan
+# mengambil N temuan pertama. Reviewer menyimpulkan halaman lain bersih.
+# Baris ringkasannya memang menyebut jumlah penuh, tapi baris itu justru
+# disaring frontend sehingga tidak pernah terlihat.
+
+
+def _issue(loc):
+    from app.services.format_checker import FormatIssue
+
+    return FormatIssue(
+        check_name="line_spacing", severity="fail", location=loc,
+        issue="Line spacing bukan 1.15.",
+    )
+
+
+def _sampler():
+    from app.services.format_checker import FormatChecker
+
+    return FormatChecker.__new__(FormatChecker)
+
+
+def test_sampling_covers_every_location():
+    """REGRESI: 59 temuan di 8 halaman — semua halaman wajib terwakili."""
+    checker = _sampler()
+    issues = [
+        _issue(f"Halaman ~{page}")
+        for page, count in
+        [(5, 4), (6, 20), (8, 2), (9, 18), (10, 5), (11, 4), (12, 4), (13, 2)]
+        for _ in range(count)
+    ]
+    shown = checker._sample_issues(issues)
+    assert len(shown) == checker.MAX_ISSUES_PER_CATEGORY
+    assert {i.location for i in shown} == {i.location for i in issues}
+
+
+def test_sampling_keeps_document_order():
+    checker = _sampler()
+    issues = [_issue(f"Halaman ~{p}") for p in range(1, 60)]
+    shown = checker._sample_issues(issues)
+    order = [issues.index(i) for i in shown]
+    assert order == sorted(order)
+
+
+def test_sampling_returns_all_when_under_limit():
+    checker = _sampler()
+    issues = [_issue("Halaman ~5"), _issue("Halaman ~6")]
+    assert checker._sample_issues(issues) == issues

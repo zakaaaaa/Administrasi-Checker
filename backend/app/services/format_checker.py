@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from app.services.docx_parser import DocxParser, dxa_to_cm
+# Batas awal LAMPIRAN dipakai bersama tiga modul — satu sumber kebenaran.
+from app.services.structure_checker import find_lampiran_start
 from app.services.schema_rules import SchemaRules
 from app.services.style_resolver import StyleResolver
 
@@ -466,7 +468,10 @@ class FormatChecker:
     """
 
     # Limit: berapa banyak issue per kategori yang di-report (avoid spam)
-    MAX_ISSUES_PER_CATEGORY = 10
+    # Batas detail per kategori. Bukan sekadar 10 pertama: pengambilannya
+    # menyebar per lokasi (lihat _sample_issues) supaya tiap halaman yang
+    # bermasalah terwakili.
+    MAX_ISSUES_PER_CATEGORY = 25
 
     def __init__(
         self,
@@ -482,23 +487,82 @@ class FormatChecker:
         self._pdf_sheet_texts = pdf_sheet_texts  # teks PDF per lembar untuk lokasi akurat
 
     _LAMPIRAN_RE = re.compile(r"^\s*LAMPIRAN\b", re.IGNORECASE)
+    _PUSTAKA_RE = re.compile(
+        r"^\s*(DAFTAR\s+PUSTAKA|DAFTAR\s+RUJUKAN|REFERENSI|REFERENCES|BIBLIOGRAFI)\b",
+        re.IGNORECASE,
+    )
+
+    def _sample_issues(self, issues: list) -> list:
+        """Ambil contoh temuan yang MEWAKILI SEMUA lokasi, bukan 10 pertama.
+
+        Pemotongan lama mengambil N temuan pertama. Untuk pelanggaran yang
+        merata di seluruh dokumen — mis. spasi 1.0 di semua halaman inti —
+        semua yang tampil jadi berasal dari satu-dua halaman awal, dan reviewer
+        menyimpulkan halaman lain bersih. Padahal baris ringkasannya menyebut
+        jumlah penuh, dan baris itu justru disaring frontend.
+
+        Strategi: satu temuan per lokasi dulu (urut dokumen), sisa kuota diisi
+        temuan berikutnya. Dengan begitu tiap halaman bermasalah pasti muncul
+        minimal sekali selama jumlah lokasinya masih di bawah kuota.
+        """
+        limit = self.MAX_ISSUES_PER_CATEGORY
+        if len(issues) <= limit:
+            return list(issues)
+
+        seen_locations: set[str] = set()
+        primary: list = []
+        rest: list = []
+        for issue in issues:
+            if issue.location not in seen_locations:
+                seen_locations.add(issue.location)
+                primary.append(issue)
+            else:
+                rest.append(issue)
+
+        shown = primary[:limit]
+        if len(shown) < limit:
+            shown.extend(rest[: limit - len(shown)])
+        # Kembalikan ke urutan dokumen supaya terbaca runtut.
+        order = {id(i): n for n, i in enumerate(issues)}
+        return sorted(shown, key=lambda i: order[id(i)])
 
     def _find_lampiran_para_index(self, after_idx: Optional[int] = None) -> Optional[int]:
-        """Return index paragraf pertama yang merupakan heading LAMPIRAN, atau None.
+        """Index paragraf tempat LAMPIRAN dimulai — batas akhir pengecekan format.
 
-        Hanya mencari SETELAH after_idx (biasanya Bab 1) sehingga entri
-        "Lampiran 1. ..." di Daftar Lampiran (halaman 2-3) tidak di-false-positive.
+        Memakai find_lampiran_start() bersama supaya batasnya sama persis dengan
+        yang dipakai PhysicalSheetCounter dan StructureChecker. Versi lama di
+        sini punya aturannya sendiri dan melewatkan judul lampiran yang ditulis
+        sebagai paragraf biasa ("Lampiran 1. Penggunaan Dana", tanpa style
+        heading dan tanpa bold) — akibatnya seluruh isi lampiran ikut diperiksa
+        formatnya.
+        """
+        return find_lampiran_start(
+            self.parser.paragraphs,
+            after_idx=after_idx,
+            pustaka_idx=self._find_daftar_pustaka_para_index(after_idx=after_idx),
+        )
 
-        Tiga kriteria diterima sebagai heading LAMPIRAN:
-        (a) pakai Heading style
-        (b) teks pendek (≤60 char) all-caps  — mis. "LAMPIRAN 1"
-        (c) teks pendek (≤80 char) + semua run bold — heading non-style umum PKM
+    def _find_daftar_pustaka_para_index(
+        self, after_idx: Optional[int] = None
+    ) -> Optional[int]:
+        """Return index paragraf heading DAFTAR PUSTAKA, atau None.
+
+        Dipakai HANYA oleh pengecekan kata asing. Judul artikel, nama jurnal,
+        dan nama penerbit di daftar pustaka ditulis dalam bahasa aslinya dan
+        tidak dimiringkan per kata — memindainya dengan kamus Inggris membuat
+        hampir seluruh entri ter-flag (uji: 14 dari 16 token satu entri jurnal).
+
+        Kriteria heading sama dengan _find_lampiran_para_index, plus entri
+        Daftar Isi ("DAFTAR PUSTAKA........12") dibuang lewat is_toc_entry
+        supaya batasnya tidak jatuh di halaman awal.
         """
         for para in self.parser.paragraphs:
             if after_idx is not None and para.index < after_idx:
                 continue
+            if para.is_toc_entry:
+                continue
             text = para.text.strip()
-            if not text or not self._LAMPIRAN_RE.match(text):
+            if not text or not self._PUSTAKA_RE.match(text):
                 continue
             if para.is_heading:
                 return para.index
@@ -659,11 +723,15 @@ class FormatChecker:
             else:
                 # Append summary, lalu detail issue (limit)
                 count = len(sec.issues)
-                shown = sec.issues[: self.MAX_ISSUES_PER_CATEGORY]
+                shown = self._sample_issues(sec.issues)
                 more = count - len(shown)
                 summary = f"{name}: {count} pelanggaran terdeteksi"
                 if more > 0:
-                    summary += f" (menampilkan {len(shown)} dari {count})"
+                    pages = len({i.location for i in sec.issues})
+                    summary += (
+                        f" (menampilkan {len(shown)} dari {count}, "
+                        f"tersebar di {pages} lokasi)"
+                    )
                 result.messages.append(
                     CheckMessage(level=sec.status, text=summary)
                 )
@@ -1120,73 +1188,340 @@ class FormatChecker:
     # Sub-check: foreign words italic
     # ------------------------------------------------------------------------
 
-    def _check_foreign_words_italic(self, lampiran_idx: Optional[int] = None, start_para_idx: Optional[int] = None) -> FormatCheckSection:
-        """
-        Untuk tiap kata/frasa asing di FOREIGN_WORDS yang muncul di body teks,
-        cek apakah run yang memuatnya italic. Kalau tidak → warning.
+    # Token = deretan huruf Latin. Tanda hubung sengaja jadi pemisah: kamus
+    # tidak memuat entri bertanda hubung, jadi "e-commerce" dinilai sebagai
+    # "e" + "commerce".
+    _WORD_RE = re.compile(r"[A-Za-z]+")
 
-        Pendekatan sederhana (Phase 1):
-        - Gabung text run dalam satu paragraf
-        - Cari pola foreign word (case-insensitive, word boundary)
-        - Cek run yang overlap dengan posisi match: harus italic minimal salah satu
+    # Sitasi dalam kurung yang memuat tahun: "(Smith, 2020)", "(WHO, 2021)".
+    # Nama penulis di dalamnya bukan kata asing yang wajib miring.
+    _CITATION_RE = re.compile(r"\([^)]*\b(?:19|20)\d{2}[^)]*\)")
 
-        Catatan: cara yang lebih rigorous butuh map char-to-run; untuk Phase 1
-        cukup cek apakah ADA run italic di paragraf yang memuat kata asing.
-        """
-        sec = FormatCheckSection(name="foreign_words_italic", status="pass")
-        # Compile regex untuk semua kata asing sekaligus
-        patterns = [
-            (word, re.compile(r"\b" + re.escape(word) + r"\b", re.IGNORECASE))
-            for word in FOREIGN_WORDS
-        ]
+    # "Wang et al. (2021)", "Sari dkk." — penanda nama penulis di luar kurung.
+    _ETAL_RE = re.compile(r"\b[A-Z][a-z]+\s+(?:et\s+al|dkk)\b\.?")
 
+    # Sitasi naratif Harvard: "Anderson and Krathwohl (2001)", "Hidayati,
+    # Notosudjono, and Sunaryo (2023)". Penghubung "and"/"&" di antara nama
+    # penulis sama statusnya dengan isi sitasi berkurung — bukan kata asing.
+    _NARRATIVE_CITATION_RE = re.compile(
+        r"\b[A-Z][A-Za-z'’-]+(?:,\s+[A-Z][A-Za-z'’-]+)*,?\s+(?:and|&)\s+"
+        r"[A-Z][A-Za-z'’-]+\s*\(\s*(?:19|20)\d{2}[a-z]?\s*\)"
+    )
+
+    # URL, nama domain, dan email. Tanpa ini "Sumber: Dikemas.com" dan
+    # "id.yougov.com" menyumbang kata "com" ke daftar pelanggaran.
+    _URL_RE = re.compile(
+        r"(?:https?://|www\.)\S+"
+        r"|\b[\w-]+(?:\.[\w-]+)*\.(?:com|net|org|edu|gov|mil|int|io|co|id|ac|sch"
+        r"|web|info|biz|tv|me|app|dev|xyz|online|site)\b(?:/\S*)?"
+        r"|\b[\w.+-]+@[\w-]+\.\w+\b",
+        re.IGNORECASE,
+    )
+
+    # Angka Romawi — dipakai menomori halaman depan dan butir daftar.
+    # Sengaja hanya dibuang kalau BERDIRI SENDIRI (lihat _is_standalone_roman):
+    # pola ini juga cocok dengan kata Inggris biasa seperti "mix", "did", "dim".
+    _ROMAN_RE = re.compile(
+        r"^(?=[ivxlcdm])m*(?:c[md]|d?c{0,3})(?:x[cl]|l?x{0,3})(?:i[xv]|v?i{0,3})$",
+        re.IGNORECASE,
+    )
+
+    # Karakter yang mengakhiri kalimat. Kata berkapital sesudahnya wajar.
+    _SENTENCE_END = ".!?:"
+
+    def _foreign_word_dictionary(self):
+        """Kamus Inggris dari Supabase, dengan FOREIGN_WORDS sebagai cadangan."""
+        from app.services.english_dictionary import get_english_dictionary
+
+        return get_english_dictionary(fallback=FOREIGN_WORDS)
+
+    def _scan_paragraphs(self, lampiran_idx, start_para_idx, pustaka_idx):
+        """Paragraf yang masuk wilayah pindai kata asing."""
+        stops = [i for i in (lampiran_idx, pustaka_idx) if i is not None]
+        stop_idx = min(stops) if stops else None
+        out = []
         for para in self.parser.paragraphs:
             if start_para_idx is not None and para.index < start_para_idx:
                 continue
-            if lampiran_idx is not None and para.index >= lampiran_idx:
+            if stop_idx is not None and para.index >= stop_idx:
                 break
-            text = para.text
+            if para.is_heading or para.is_toc_entry:
+                continue
+            out.append(para)
+        return out
+
+    @staticmethod
+    def _run_text_and_map(para) -> tuple[str, list[int]]:
+        """Gabungan teks run + peta posisi karakter → index run.
+
+        Sengaja TIDAK memakai para.text: python-docx memasukkan teks hyperlink
+        ke .text tapi tidak ke .runs, sehingga offset-nya bergeser dan kata bisa
+        dicocokkan ke run yang salah. Dengan menggabung sendiri dari .runs,
+        peta ini dijamin sinkron dengan index yang dipakai StyleResolver.
+        """
+        parts: list[str] = []
+        owner: list[int] = []
+        for ri, run in enumerate(para.runs):
+            t = run.text or ""
+            parts.append(t)
+            owner.extend([ri] * len(t))
+        return "".join(parts), owner
+
+    def _curated_spans(self, text: str) -> list[tuple[int, int]]:
+        """Rentang karakter yang cocok dengan daftar kurasi FOREIGN_WORDS.
+
+        Lapis 1 dari tiga lapis penyaring nama diri: istilah di daftar kurasi
+        SELALU divonis, apa pun kapitalisasinya. Ini yang membuat "Machine
+        Learning" berkapital di tengah kalimat tetap tertangkap, sementara
+        "Smith" — yang tidak ada di daftar — diserahkan ke lapis berikutnya.
+        """
+        spans = []
+        for pat in self._curated_patterns():
+            for m in pat.finditer(text):
+                spans.append((m.start(), m.end()))
+        return spans
+
+    @classmethod
+    def _curated_patterns(cls):
+        """Regex daftar kurasi, dikompilasi sekali lalu di-cache di kelas."""
+        cached = cls.__dict__.get("_CURATED_PATTERNS")
+        if cached is None:
+            # Entri terpanjang dulu supaya "machine learning" menang atas "machine".
+            entries = sorted(FOREIGN_WORDS, key=len, reverse=True)
+            # Dipecah beberapa regex; satu alternation 500+ entri lambat dikompilasi.
+            cached = []
+            for i in range(0, len(entries), 100):
+                chunk = entries[i:i + 100]
+                cached.append(
+                    re.compile(
+                        r"\b(?:" + "|".join(re.escape(e) for e in chunk) + r")\b",
+                        re.IGNORECASE,
+                    )
+                )
+            cls._CURATED_PATTERNS = cached
+        return cached
+
+    def _lowercase_vocabulary(self, paragraphs) -> set[str]:
+        """Kata yang pernah muncul huruf kecil semua di wilayah pindai.
+
+        Lapis 2 penyaring nama diri. Nama orang dan institusi hampir tidak
+        pernah ditulis huruf kecil; kata biasa sering. Jadi kalau dokumen
+        menulis "Framework" di satu tempat dan "framework" di tempat lain,
+        yang berkapital itu bukan nama diri — tetap divonis.
+        """
+        seen = set()
+        for para in paragraphs:
+            for m in self._WORD_RE.finditer(para.text or ""):
+                w = m.group(0)
+                if w.islower() and len(w) >= 3:
+                    seen.add(w)
+        return seen
+
+    def _skip_spans(self, text: str) -> list[tuple[int, int]]:
+        """Rentang yang tidak ikut dipindai: sitasi, nama penulis, URL/domain."""
+        spans = [(m.start(), m.end()) for m in self._CITATION_RE.finditer(text)]
+        spans += [(m.start(), m.end()) for m in self._ETAL_RE.finditer(text)]
+        spans += [(m.start(), m.end()) for m in self._NARRATIVE_CITATION_RE.finditer(text)]
+        spans += [(m.start(), m.end()) for m in self._URL_RE.finditer(text)]
+        return spans
+
+    def _is_standalone_roman(self, text: str, word: str, start: int, end: int) -> bool:
+        """True kalau kata ini angka Romawi yang berdiri sendiri, bukan kata Inggris.
+
+        Dua bentuk yang dibuang: paragraf yang isinya hanya angka itu (nomor
+        halaman depan "iii" yang diketik sebagai teks body), dan penanda butir
+        di awal paragraf ("iii. Tahap pelaksanaan"). Angka Romawi di tengah
+        kalimat tidak dibuang supaya "mix" dan "did" tetap terdeteksi.
+        """
+        if not self._ROMAN_RE.match(word):
+            return False
+        if text.strip() == word:
+            return True
+        return start == len(text) - len(text.lstrip()) and text[end:end + 1] in ".)"
+
+    @staticmethod
+    def _in_spans(pos: int, end: int, spans) -> bool:
+        return any(s <= pos and end <= e for s, e in spans)
+
+    def _is_sentence_start(self, text: str, pos: int) -> bool:
+        """True kalau posisi ini awal kalimat (atau awal paragraf/butir)."""
+        i = pos - 1
+        while i >= 0 and text[i] in " \t\n\r\"'“”‘’([{-–—•*":
+            i -= 1
+        return i < 0 or text[i] in self._SENTENCE_END
+
+    @staticmethod
+    def _summarize_words(words: list[str], limit: int = 5) -> str:
+        """Ringkas daftar kata untuk satu baris laporan."""
+        shown = ", ".join(words[:limit])
+        if len(words) > limit:
+            shown += f", +{len(words) - limit} lainnya"
+        return shown
+
+    def _run_is_italic(self, para_index: int, run_index: int, run, memo=None) -> bool:
+        """Italic efektif: properti run langsung, atau warisan character/paragraph style.
+
+        `memo` mewajibkan tiap run diresolusi sekali saja. Tanpa itu, run yang
+        memuat beberapa kata asing diresolusi berulang — dan sekali resolusi
+        berarti satu findall() atas seluruh body XML (StyleResolver tidak punya
+        cache sendiri). Pada dokumen 400 paragraf berbahasa Inggris penuh,
+        panggilan resolver turun dari ~22.800 menjadi ~2.000.
+        """
+        if run.italic is True:
+            return True
+        if memo is None:
+            return self.resolver.resolve_run_italic(para_index, run_index) is True
+        key = (para_index, run_index)
+        if key not in memo:
+            memo[key] = self.resolver.resolve_run_italic(para_index, run_index) is True
+        return memo[key]
+
+    def _check_foreign_words_italic(
+        self,
+        lampiran_idx: Optional[int] = None,
+        start_para_idx: Optional[int] = None,
+    ) -> FormatCheckSection:
+        """
+        Vonis per kata: setiap kata Inggris di body teks harus dicetak miring.
+
+        Sumber daftar kata adalah tabel `dictionary_english` di Supabase
+        (361.423 kata, sudah bebas lema KBBI — lihat english_dictionary.py).
+        FOREIGN_WORDS dipakai kalau DB tidak bisa dihubungi, sekaligus sebagai
+        daftar istilah yang selalu divonis (lapis 1 di bawah).
+
+        Nama orang dan institusi bukan kata asing yang wajib miring, padahal
+        kamus penuh ikut memuatnya ("smith", "brown", "health", "organization").
+        Penyaringnya tiga lapis, dievaluasi berurutan:
+
+          1. Ada di daftar kurasi FOREIGN_WORDS → selalu divonis, apa pun
+             kapitalisasinya. "Machine Learning" di tengah kalimat tetap kena.
+          2. Kata yang sama pernah muncul huruf kecil di dokumen ini → bukan
+             nama diri, divonis. Menangkap "Framework" yang di tempat lain
+             ditulis "framework".
+          3. Sisanya: berkapital dan bukan awal kalimat → dianggap nama diri,
+             dilewati. Ini yang menyelamatkan "Smith" dan "World Health
+             Organization".
+
+        Yang masih lolos: istilah Inggris yang hanya muncul sekali, berkapital
+        di tengah kalimat, dan belum ada di daftar kurasi. Menambah entri ke
+        FOREIGN_WORDS mempersempit celah ini.
+
+        Selain itu dilewati: DAFTAR PUSTAKA dan sesudahnya (judul artikel
+        berbahasa Inggris bukan pelanggaran), sitasi berkurung tahun, heading,
+        entri Daftar Isi, dan akronim huruf besar semua (WHO, API, JSON).
+        """
+        sec = FormatCheckSection(name="foreign_words_italic", status="pass")
+
+        dictionary = self._foreign_word_dictionary()
+        pustaka_idx = self._find_daftar_pustaka_para_index(after_idx=start_para_idx)
+        paragraphs = self._scan_paragraphs(lampiran_idx, start_para_idx, pustaka_idx)
+        lowercase_vocab = self._lowercase_vocabulary(paragraphs)
+
+        flagged_total = 0
+
+        for para in paragraphs:
+            text, owner = self._run_text_and_map(para)
             if not text.strip():
                 continue
-            # Skip heading & ToC entries
-            if para.is_heading:
-                continue
-            # Cari kata asing
-            matched_words = []
-            for word, pat in patterns:
-                if pat.search(text):
-                    matched_words.append(word)
-            if not matched_words:
+
+            curated = self._curated_spans(text)
+            skips = self._skip_spans(text)
+            italic_memo: dict[tuple[int, int], bool] = {}
+            offenders: list[str] = []   # sama sekali tidak miring
+            partial: list[str] = []     # miring sebagian, ada run yang tertinggal
+
+            for m in self._WORD_RE.finditer(text):
+                word = m.group(0)
+                start, end = m.start(), m.end()
+                lower = word.lower()
+
+                if len(word) < 3 or self._in_spans(start, end, skips):
+                    continue
+
+                if self._is_standalone_roman(text, word, start, end):
+                    continue
+
+                # Akronim (WHO, API, JSON, HTTPS) lazim ditulis tegak. Dicek
+                # SEBELUM daftar kurasi karena beberapa entri kurasi memang
+                # akronim ("json", "xml", "ssl") — tanpa urutan ini "JSON"
+                # ter-flag padahal penulisannya sudah benar.
+                if word.isupper():
+                    continue
+
+                is_curated = self._in_spans(start, end, curated)
+
+                if not is_curated:
+                    if lower not in dictionary.words:
+                        continue
+                    if word[0].isupper() and not self._is_sentence_start(text, start):
+                        # Lapis 2 lalu lapis 3.
+                        if lower not in lowercase_vocab:
+                            continue
+
+                # Semua run yang menampung kata ini harus italic. Satu kata bisa
+                # terpecah beberapa run — Word memecahnya saat pengetikan diedit,
+                # dan pemiringan yang menyusul kerap tidak ikut ke potongan
+                # terakhir. Kasus nyata: "texts" = run "text" (miring) + "s"
+                # (tegak), yang di layar nyaris tidak terlihat.
+                run_ids = {owner[i] for i in range(start, end) if i < len(owner)}
+                run_ids = {ri for ri in run_ids if ri < len(para.runs)}
+                if not run_ids:
+                    continue
+                italic_flags = [
+                    self._run_is_italic(para.index, ri, para.runs[ri], italic_memo)
+                    for ri in run_ids
+                ]
+                if all(italic_flags):
+                    continue
+
+                # Dibedakan supaya sarannya bisa ditindaklanjuti: "belum
+                # dimiringkan" perlu tindakan lain dari "miring tapi ada huruf
+                # yang tertinggal tegak".
+                bucket = offenders if not any(italic_flags) else partial
+                if word not in bucket:
+                    bucket.append(word)
+
+            if not offenders and not partial:
                 continue
 
-            # Cek apakah ada run yang EFEKTIF italic. Selain properti langsung run
-            # (r.italic), italic juga bisa berasal dari character style (w:rStyle)
-            # atau paragraph style — resolve lewat StyleResolver supaya kata asing
-            # yang dimiringkan via style (mis. ditulis bold+italic) tidak salah
-            # dianggap "belum italic".
-            has_italic_run = any(
-                (r.italic is True)
-                or (self.resolver.resolve_run_italic(para.index, ri) is True)
-                for ri, r in enumerate(para.runs)
-            )
-            # Heuristik kasar: kalau seluruh paragraf tidak ada run italic
-            # padahal mengandung kata asing → flag warning.
-            if not has_italic_run:
+            flagged_total += len(offenders) + len(partial)
+            if offenders:
                 sec.issues.append(
                     FormatIssue(
                         check_name="foreign_words_italic",
                         severity="fail",
                         location=self._format_para_location(para.index),
                         issue=(
-                            f"Kesalahan penulisan kata asing tidak dicetak miring "
-                            f"\"{', '.join(matched_words[:3])}\""
+                            "Kata asing tidak dicetak miring: "
+                            f"\"{self._summarize_words(offenders)}\""
                         ),
                         found="tidak italic",
                         expected="italic",
                     )
                 )
+            if partial:
+                sec.issues.append(
+                    FormatIssue(
+                        check_name="foreign_words_italic",
+                        severity="fail",
+                        location=self._format_para_location(para.index),
+                        issue=(
+                            "Kata asing miring sebagian, ada huruf yang masih "
+                            f"tegak: \"{self._summarize_words(partial)}\""
+                        ),
+                        found="italic sebagian",
+                        expected="italic penuh",
+                    )
+                )
 
         if sec.issues:
             sec.status = "fail"
-        sec.detail = {"violations_count": len(sec.issues)}
+        sec.detail = {
+            "violations_count": len(sec.issues),
+            "flagged_words_count": flagged_total,
+            "dictionary_source": dictionary.source,
+            "dictionary_size": len(dictionary.words),
+        }
+        if dictionary.is_fallback:
+            sec.detail["dictionary_error"] = dictionary.error
         return sec

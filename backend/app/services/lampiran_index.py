@@ -28,7 +28,6 @@ import re
 import zipfile
 from dataclasses import dataclass, field
 from typing import Optional
-from xml.etree import ElementTree as ET
 
 from app.services.docx_parser import DocxParser
 from app.services.biodata_date_checker import (
@@ -77,8 +76,9 @@ class LampiranOcrIndex:
         try:
             with zipfile.ZipFile(str(self.parser.file_path), "r") as zf:
                 self._rel_map = _load_image_rels(zf)
-                with zf.open("word/document.xml") as f:
-                    body = ET.parse(f).getroot().find(f"{{{_W_NS}}}body")
+            # Body hasil normalisasi parser — hitungan <w:p> harus sejajar
+            # dengan parser.paragraphs.
+            body = self.parser.document_xml.find(f"{{{_W_NS}}}body")
         except Exception:
             self._para_rids = {}
             self._rel_map = self._rel_map or {}

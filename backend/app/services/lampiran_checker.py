@@ -17,7 +17,8 @@ Strategi 3-stage:
 Pesan output (tiga jenis):
     (a) "DAFTAR LAMPIRAN tidak ditemukan"
     (b) 'Tidak ditemukan Lampiran N "<label>" pada halaman lampiran'
-    (c) 'Kesalahan kelengkapan Daftar Lampiran, tidak ditemukan "<label>"'
+    (c) 'Kesalahan kelengkapan Daftar Lampiran: "<label>" ada di badan
+        lampiran, tetapi tidak dicantumkan pada halaman Daftar Lampiran'
 
 Aturan kombinasi:
     - Kalau Daftar Lampiran tidak ada → hanya (a). Tidak enumerasi (b)/(c).
@@ -33,6 +34,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from app.services.docx_parser import DocxParser
+# Batas awal LAMPIRAN dipakai bersama empat modul lain.
+from app.services.structure_checker import find_lampiran_start
 
 
 # =============================================================================
@@ -376,9 +379,17 @@ class LampiranChecker:
 
         missing_in_body: list[tuple[int, str]] = []
         missing_in_daftar_only: list[tuple[int, str]] = []
+        body_paras = self._lampiran_body_paragraphs(body_start)
 
         for num, keywords, label in self.required:
             in_body_text = _anchored_keywords_match(keywords, body_text_corpus)
+            # Judul kelompok tanpa nomor ("Bukti Pendukung kegiatan") yang
+            # membawahi beberapa "Lampiran N" — hanya dicari bila tidak ada
+            # "Lampiran N" yang judulnya memuat kata kunci.
+            group_nums: Optional[list[str]] = None
+            if not in_body_text:
+                group_nums = _group_title_lampiran_numbers(keywords, body_paras)
+                in_body_text = group_nums is not None
             in_body = in_body_text
             if not in_body:
                 ocr_text = body_ocr_text()
@@ -392,8 +403,12 @@ class LampiranChecker:
                     )
 
             # Cross-check Daftar Lampiran hanya kalau skema mewajibkannya.
+            # Judul kelompok lazimnya tidak masuk Daftar Lampiran (daftar
+            # otomatis Word hanya memuat caption "Lampiran N") — cukup bila
+            # lampiran bernomor di bawahnya tercantum.
             in_daftar = (
                 _anchored_keywords_match(keywords, daftar_corpus)
+                or _any_lampiran_number_listed(group_nums, daftar_corpus)
                 if self.require_daftar
                 else True
             )
@@ -422,7 +437,16 @@ class LampiranChecker:
         for num, label in missing_in_daftar_only:
             result.messages.append(CheckMessage(
                 level="fail",
-                text=f'Kesalahan kelengkapan Daftar Lampiran, tidak ditemukan "{label}"',
+                # Awalan "Kesalahan kelengkapan Daftar Lampiran" dipertahankan
+                # karena frontend memakainya untuk pass-through. Sisanya
+                # diperjelas: reviewer sempat membaca pesan lama sebagai
+                # "lampirannya tidak ada", padahal lampirannya ADA — yang
+                # kurang justru daftarnya di halaman depan.
+                text=(
+                    f'Kesalahan kelengkapan Daftar Lampiran: "{label}" ada di '
+                    f'badan lampiran, tetapi tidak dicantumkan pada halaman '
+                    f'Daftar Lampiran'
+                ),
             ))
         if funding_letter_missing:
             result.messages.append(CheckMessage(
@@ -457,18 +481,25 @@ class LampiranChecker:
         return None
 
     def _find_lampiran_section_start(self) -> Optional[int]:
-        for p in self.parser.paragraphs:
-            t = p.text.strip()
-            if not _LAMPIRAN_SECTION_RE.match(t):
-                continue
-            # Terima jika heading style ATAU seluruh hurufnya uppercase
-            # (kasus "LAMPIRAN-LAMPIRAN" dengan style Body Text).
-            if p.is_heading:
-                return p.index
-            letters = [c for c in t if c.isalpha()]
-            if letters and sum(1 for c in letters if c.isupper()) / len(letters) >= 0.9:
-                return p.index
-        return None
+        """Awal bagian lampiran, memakai pencari bersama.
+
+        Versi lama hanya menerima heading ber-style atau teks ≥90% huruf besar,
+        sehingga dokumen yang langsung masuk ke "Lampiran 1. Penggunaan Dana"
+        dianggap tidak punya lampiran sama sekali — padahal isinya ada.
+        """
+        pustaka_idx = next(
+            (
+                p.index
+                for p in self.parser.paragraphs
+                if p.text.strip().upper().startswith("DAFTAR PUSTAKA")
+                and not getattr(p, "is_toc_entry", False)
+                and p.is_heading
+            ),
+            None,
+        )
+        return find_lampiran_start(
+            self.parser.paragraphs, pustaka_idx=pustaka_idx
+        )
 
     # -------------------------------------------------------------------------
     # Helpers: korpus teks
@@ -560,10 +591,66 @@ class LampiranChecker:
                 parts.append(p.text)
         return " ".join(parts)
 
+    def _lampiran_body_paragraphs(self, start_idx: Optional[int]) -> list:
+        """Paragraf sesudah heading LAMPIRAN (heading-nya sendiri tidak ikut)."""
+        if start_idx is None:
+            return []
+        return [p for p in self.parser.paragraphs if p.index > start_idx]
+
 
 # =============================================================================
 # Helpers: matching kata kunci
 # =============================================================================
+
+# Judul kelompok lampiran: baris pendek tanpa nomor yang membawahi beberapa
+# "Lampiran N", mis.
+#     Bukti Pendukung kegiatan
+#     Lampiran 1. Sosial Media
+#     Lampiran 2. Bukti Perekaman Sinyal EEG
+# Panduan hanya menyebut judulnya ("Bukti-Bukti Pendukung Kegiatan"), tidak
+# mewajibkan satu nomor lampiran. Batas panjang menjaga kalimat isi lampiran
+# yang kebetulan menyebut kata kunci tidak dikira judul.
+_MAX_GROUP_TITLE_CHARS = 80
+_LAMPIRAN_N_START_RE = re.compile(r"^\s*lampiran\s+(\d+|[IVXLC]+)\b", re.IGNORECASE)
+
+
+def _is_group_title(p) -> bool:
+    t = p.text.strip()
+    return (
+        bool(t)
+        and len(t) <= _MAX_GROUP_TITLE_CHARS
+        and not _LAMPIRAN_N_START_RE.match(t)
+        and not _LAMPIRAN_SECTION_RE.match(t)
+        and not getattr(p, "is_toc_entry", False)
+    )
+
+
+def _group_title_lampiran_numbers(keywords: list[str], paragraphs: list) -> Optional[list[str]]:
+    """Nomor "Lampiran N" di bawah judul kelompok yang memuat semua kata kunci.
+
+    None = tidak ada judul kelompok seperti itu. List (boleh kosong) = ada;
+    isinya nomor lampiran sampai judul kelompok berikutnya yang ber-style sama.
+    """
+    for i, p in enumerate(paragraphs):
+        if not (_is_group_title(p) and all(kw in p.text.lower() for kw in keywords)):
+            continue
+        nums: list[str] = []
+        for q in paragraphs[i + 1:]:
+            m = _LAMPIRAN_N_START_RE.match(q.text)
+            if m:
+                nums.append(m.group(1).lower())
+            elif _is_group_title(q) and getattr(q, "style_name", None) == getattr(p, "style_name", None):
+                break
+        return nums
+    return None
+
+
+def _any_lampiran_number_listed(nums: Optional[list[str]], daftar_corpus: str) -> bool:
+    """Ada "Lampiran N" dari `nums` yang tercantum di Daftar Lampiran?"""
+    if not nums or not daftar_corpus:
+        return False
+    listed = {m.group(1).lower() for m in _LAMPIRAN_N_RE.finditer(daftar_corpus)}
+    return any(n in listed for n in nums)
 
 
 def _anchored_keywords_match(keywords: list[str], corpus: str) -> bool:

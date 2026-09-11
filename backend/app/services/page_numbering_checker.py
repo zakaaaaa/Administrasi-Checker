@@ -73,6 +73,45 @@ def _q(tag: str) -> str:
     return f"{{{W_NS}}}{tag}"
 
 
+def _section_numeral_kind(page_num_format: Optional[str]) -> str:
+    """'roman' untuk lowerRoman/upperRoman, selain itu 'arabic' (default Word)."""
+    return "roman" if (page_num_format or "").lower().endswith("roman") else "arabic"
+
+
+def _cached_page_kind(parser, part_name: Optional[str]) -> Optional[str]:
+    """Jenis angka ter-cache di field PAGE sebuah header/footer: 'roman' |
+    'arabic' | None (tak ada cache / tak terbaca).
+
+    Word menyimpan hasil render terakhir field PAGE sebagai <w:t> di antara
+    fldChar 'separate' dan 'end'. Nilai itu memberi tahu di zona penomoran
+    mana part tersebut terakhir dicetak.
+    """
+    reader = getattr(parser, "read_raw_part", None)
+    if not part_name or not callable(reader):
+        return None  # tak bisa dibaca → "tidak diketahui" → tidak melepas apa pun
+    try:
+        raw = reader(part_name)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    text = raw.decode("utf-8", "replace")
+    m = _re.search(
+        r"instrText[^>]*>\s*PAGE\b.*?fldCharType=\"separate\".*?<w:t[^>]*>([^<]*)</w:t>",
+        text, _re.S,
+    )
+    if not m:
+        m = _re.search(r"fldSimple[^>]*PAGE[^>]*>.*?<w:t[^>]*>([^<]*)</w:t>", text, _re.S)
+    if not m:
+        return None
+    val = m.group(1).strip()
+    if val.isdigit():
+        return "arabic"
+    if val and _ROMAN_RE.match(val):
+        return "roman"
+    return None
+
+
 # ============================================================================
 # Aturan zona
 # ============================================================================
@@ -158,6 +197,10 @@ class SectionPageNumberingAnalysis:
     actual_font_size_pt: Optional[float] = None
     header_part: Optional[str] = None
     footer_part: Optional[str] = None
+    # True kalau header DAN footer sama-sama benar-benar merender nomor halaman.
+    # Aturan PKM menentukan SATU posisi per zona, jadi dua-duanya terisi berarti
+    # nomor halaman tercetak dobel di halaman yang sama.
+    has_duplicate_page_number: bool = False
 
 
 # ============================================================================
@@ -203,6 +246,7 @@ class PageNumberingResult:
                     "has_header_with_page": s.has_header_with_page,
                     "has_footer_with_page": s.has_footer_with_page,
                     "actual_position": s.actual_position,
+                    "has_duplicate_page_number": s.has_duplicate_page_number,
                     "actual_numeral_type": s.actual_numeral_type,
                     "actual_alignment": s.actual_alignment,
                     "actual_font_name": s.actual_font_name,
@@ -369,10 +413,19 @@ class PageNumberingChecker:
         """
         Hitung paragraph range (start_inclusive, end_inclusive) untuk tiap section.
 
-        Strategi: walk body element children secara berurutan. Section pindah
-        ke section berikutnya saat ketemu <w:p> dengan <w:pPr><w:sectPr>
-        (section break) — paragraf itu adalah TERAKHIR dari section saat ini.
-        Section terakhir punya <w:sectPr> langsung di body.
+        Strategi: walk anak <w:body> secara berurutan. Section pindah ke
+        berikutnya saat ketemu <w:p> dengan <w:pPr><w:sectPr> (section break) —
+        paragraf itu adalah TERAKHIR dari section saat ini. Section terakhir
+        punya <w:sectPr> langsung di body.
+
+        Content control (<w:sdt>) ikut ditelusuri isinya: section break bisa
+        bersarang di sana (lazim pada dokumen ber-Daftar Isi otomatis), dan
+        DocxParser._iter_sect_pr() menghitungnya sebagai section. Kalau di sini
+        dilewati, indeks section di sini bergeser dari indeks di parser dan
+        zona tiap section jadi salah petak.
+
+        Paragraf DI DALAM sdt/tabel TIDAK menambah para_idx, karena
+        parser.paragraphs hanya memuat <w:p> anak-langsung body.
 
         Return: {section_index: (first_para_idx, last_para_idx)}.
         """
@@ -382,33 +435,40 @@ class PageNumberingChecker:
             return {}
 
         ranges: dict[int, tuple[int, int]] = {}
-        para_idx = -1
-        section_idx = 0
-        section_first_para = 0
+        state = {"para_idx": -1, "section_idx": 0, "section_first_para": 0}
 
-        for child in body:
-            tag = child.tag
-            if tag == _q("p"):
-                para_idx += 1
-                # Apakah paragraf ini punya sectPr (= akhir section)
-                ppr = child.find(_q("pPr"))
-                if ppr is not None and ppr.find(_q("sectPr")) is not None:
-                    ranges[section_idx] = (section_first_para, para_idx)
-                    section_idx += 1
-                    section_first_para = para_idx + 1
-            elif tag == _q("tbl"):
-                # Tabel tidak counted sebagai paragraf di parser.paragraphs
-                # (python-docx hanya count <w:p> di body, skip yang di tabel)
-                pass
-            elif tag == _q("sectPr"):
-                # Section break terakhir di akhir body
-                ranges[section_idx] = (section_first_para, para_idx)
-                section_idx += 1
-                section_first_para = para_idx + 1
+        def close_section() -> None:
+            ranges[state["section_idx"]] = (
+                state["section_first_para"], state["para_idx"]
+            )
+            state["section_idx"] += 1
+            state["section_first_para"] = state["para_idx"] + 1
 
-        # Kalau section_idx belum ditutup (jarang, tapi safe)
-        if section_idx not in ranges and section_first_para <= para_idx:
-            ranges[section_idx] = (section_first_para, para_idx)
+        def walk(node, top_level: bool) -> None:
+            for child in node:
+                tag = child.tag
+                if tag == _q("p"):
+                    if top_level:
+                        state["para_idx"] += 1
+                    ppr = child.find(_q("pPr"))
+                    if ppr is not None and ppr.find(_q("sectPr")) is not None:
+                        close_section()
+                elif tag == _q("sdt"):
+                    content = child.find(_q("sdtContent"))
+                    if content is not None:
+                        walk(content, top_level=False)
+                elif tag == _q("sectPr") and top_level:
+                    close_section()
+                # <w:tbl> dilewati: isinya tidak masuk parser.paragraphs
+
+        walk(body, top_level=True)
+
+        # Kalau section terakhir belum ditutup (jarang, tapi safe)
+        if (
+            state["section_idx"] not in ranges
+            and state["section_first_para"] <= state["para_idx"]
+        ):
+            close_section()
 
         return ranges
 
@@ -456,6 +516,31 @@ class PageNumberingChecker:
         hpart, hhf = pick(sec.header_refs, "header")
         fpart, fhf = pick(sec.footer_refs, "footer")
 
+        # Header DAN footer sama-sama bernomor → mana yang benar-benar dicetak
+        # Word di section ini? Header/footer diwariskan antar-section, dan
+        # cara Word menerapkan warisan itu tidak selalu bisa diturunkan dari
+        # struktur file saja (terbukti di dokumen PKM-RSH: struktur bilang dua
+        # nomor, Word mencetak satu). Pemutusnya adalah angka ter-cache di field
+        # PAGE — nilai yang Word simpan saat terakhir mencetak part itu. Part
+        # yang cache-nya ARAB tidak mungkin dicetak di section bernomor ROMAWI,
+        # dan sebaliknya; part seperti itu dilepas dari section ini.
+        #
+        # Hanya MELEPAS, tidak pernah menambah — jadi aturan ini cuma bisa
+        # mengurangi temuan, tidak mungkin menciptakan false positive baru.
+        if (
+            hhf is not None and fhf is not None
+            and hhf.renders_text and fhf.renders_text
+        ):
+            expected = _section_numeral_kind(sec.page_num_format)
+            h_kind = _cached_page_kind(self.parser, hpart)
+            f_kind = _cached_page_kind(self.parser, fpart)
+            h_off = h_kind is not None and h_kind != expected
+            f_off = f_kind is not None and f_kind != expected
+            if h_off and not f_off:
+                hpart, hhf = None, None
+            elif f_off and not h_off:
+                fpart, fhf = None, None
+
         if hhf is not None:
             analysis.has_header_with_page = True
             analysis.header_part = hpart
@@ -477,6 +562,14 @@ class PageNumberingChecker:
             src, pos = hhf, "top"
         elif fhf is not None:
             src, pos = fhf, "bottom"
+
+        # Dobel: dua-duanya HIDUP dan benar-benar merender angka. Syarat
+        # renders_text penting supaya sisa field kosong (leftover) tidak
+        # dihitung sebagai nomor halaman kedua.
+        analysis.has_duplicate_page_number = bool(
+            hhf is not None and hhf.renders_text
+            and fhf is not None and fhf.renders_text
+        )
 
         if src is not None:
             analysis.actual_position = pos
@@ -857,7 +950,33 @@ class PageNumberingChecker:
                 )
             )
 
-        # 2. Position (top/bottom)
+        # 2a. Nomor halaman dobel (header DAN footer sama-sama mencetak nomor)
+        #
+        # Aturan PKM menentukan SATU posisi per zona. Kalau dua-duanya terisi,
+        # satu halaman mencetak nomornya dua kali — lazim terjadi saat penulis
+        # menambah header bernomor untuk bagian inti tapi footer bagian depan
+        # ikut terwarisi. Dulu tidak ketahuan karena checker memilih salah satu
+        # (header diprioritaskan), melihatnya cocok aturan, lalu lolos.
+        if analysis.has_duplicate_page_number:
+            other = "footer (bawah)" if rule.position == "top" else "header (atas)"
+            findings.append(
+                ZoneFinding(
+                    zone=rule.name,
+                    severity="fail",
+                    aspect="duplicate",
+                    expected=f"nomor halaman hanya di {rule.position}",
+                    found="nomor halaman di header DAN footer",
+                    section_index=si,
+                    message=(
+                        f"Terdapat 2 nomor halaman dalam 1 halaman "
+                        f"(di header/atas dan footer/bawah). Sesuai aturan "
+                        f"zona {rule.name} cukup di {rule.position}; hapus "
+                        f"nomor pada {other}."
+                    ),
+                )
+            )
+
+        # 2b. Position (top/bottom)
         if (
             analysis.actual_position is not None
             and analysis.actual_position != rule.position
@@ -973,17 +1092,64 @@ class PageNumberingChecker:
             result.messages.append(CheckMessage(level="pass", text=msg))
             return
 
-        # Fail/warning — list semua finding sebagai message, prefix dengan halaman
+        # Fail/warning — satu message per MASALAH, bukan per section.
+        #
+        # Header/footer diwariskan antar-section, jadi satu file header bermasalah
+        # (mis. nomor halaman 10pt) menghasilkan temuan identik di setiap section
+        # yang mewarisinya — pada dokumen ber-31 section itu 22 baris yang sama
+        # persis. Temuan digabung per (zona, aspek, nilai, part), lalu disebut
+        # rentang halaman terdampaknya.
         para_ranges = self._compute_section_paragraph_ranges()
         estimator = getattr(self.parser, "estimate_physical_page", None)
 
+        def page_of(section_index: Optional[int]) -> Optional[int]:
+            if section_index is None or not callable(estimator):
+                return None
+            range_info = para_ranges.get(section_index)
+            if range_info is None:
+                return None
+            return estimator(range_info[0])
+
+        part_of = {
+            a.section_index: (a.header_part, a.footer_part)
+            for a in result.sections_analysis
+        }
+        grouped: dict[tuple, list] = {}
         for f in result.findings:
-            loc = ""
-            if f.section_index is not None and callable(estimator):
-                range_info = para_ranges.get(f.section_index)
-                if range_info is not None:
-                    page = estimator(range_info[0])
-                    if page is not None:
-                        loc = f"Halaman ~{page}"
-            text = f"[{loc}] {f.message}" if loc else f.message
-            result.messages.append(CheckMessage(level=f.severity, text=text))
+            key = (
+                f.zone, f.severity, f.aspect, f.expected, f.found,
+                part_of.get(f.section_index),
+            )
+            grouped.setdefault(key, []).append(f)
+
+        for group in grouped.values():
+            first = group[0]
+            pages = sorted({p for p in (page_of(f.section_index) for f in group) if p})
+            if not pages:
+                loc = ""
+            elif len(pages) == 1:
+                loc = f"Halaman ~{pages[0]}"
+            else:
+                loc = f"Halaman ~{pages[0]}-{pages[-1]}"
+            message = first.message
+            if first.aspect == "duplicate" and pages:
+                span = (
+                    f"halaman fisik {pages[0]}"
+                    if len(pages) == 1
+                    else f"halaman fisik {pages[0]}-{pages[-1]}"
+                )
+                # Rentang halaman ikut DI DALAM kalimat, bukan hanya di prefiks
+                # lokasi: frontend mengelompokkan per halaman dan hanya membaca
+                # angka pertama dari prefiks, sehingga rentangnya hilang.
+                message = message.replace(
+                    "dalam 1 halaman ", f"dalam 1 halaman pada {span} ", 1
+                )
+            elif len(group) > 1:
+                # Pesan aslinya menyebut satu section ("Section #5 (core_matter): ..").
+                # Nomor section tidak berarti bagi reviewer, dan rentang halamannya
+                # sudah ada di prefiks lokasi — jadi cukup sebut zonanya.
+                message = _re.sub(r"^Section #\d+ \(", "Zona ", message, count=1)
+                message = message.replace("Zona core_matter)", "core_matter", 1)
+                message = message.replace("Zona front_matter)", "front_matter", 1)
+            text = f"[{loc}] {message}" if loc else message
+            result.messages.append(CheckMessage(level=first.severity, text=text))

@@ -46,7 +46,7 @@ from app.services.schema_rules import SchemaRules
 # Satu sumber kebenaran untuk "baris ini entri Daftar Isi". Sinyal utamanya
 # style bawaan Word ('toc 1'..'toc 9') yang dibaca DocxParser; dot/tab leader
 # cuma cadangan untuk Daftar Isi yang diketik manual.
-from app.services.structure_checker import _looks_like_toc_line
+from app.services.structure_checker import _looks_like_toc_line, find_lampiran_start
 
 
 # ============================================================================
@@ -504,7 +504,10 @@ class PhysicalSheetCounter:
             t = para.text.strip()
             if not t:
                 continue
-            if self._CORE_BAB1_RE.match(t) and not _looks_like_toc_line(t, para=para):
+            # "BAB 1." bisa berasal dari penomoran otomatis Word, bukan ketikan.
+            if any(
+                self._CORE_BAB1_RE.match(v.strip()) for v in para.heading_texts
+            ) and not _looks_like_toc_line(t, para=para):
                 bab1 = para.index
                 break
         if bab1 is None and self.rules.schema_code == "AI":
@@ -513,12 +516,24 @@ class PhysicalSheetCounter:
 
         lampiran = None
         if bab1 is not None:
-            for para in paras:
-                if para.index <= bab1:
-                    continue
-                if para.text.strip().lower() == "lampiran":
-                    lampiran = para.index
-                    break
+            # Batas lampiran dipakai bersama dengan FormatChecker. Versi lama di
+            # sini hanya menerima paragraf yang teksnya PERSIS "lampiran",
+            # sehingga dokumen yang langsung masuk ke "Lampiran 1. ..." tanpa
+            # halaman pemisah tidak ketemu batasnya — seluruh lampiran ikut
+            # terhitung sebagai halaman inti.
+            pustaka = next(
+                (
+                    para.index
+                    for para in paras
+                    if para.index > bab1
+                    and para.text.strip().upper().startswith("DAFTAR PUSTAKA")
+                    and not getattr(para, "is_toc_entry", False)
+                ),
+                None,
+            )
+            lampiran = find_lampiran_start(
+                paras, after_idx=bab1 + 1, pustaka_idx=pustaka
+            )
         return bab1, lampiran
 
     def _read_app_pages(self) -> Optional[int]:

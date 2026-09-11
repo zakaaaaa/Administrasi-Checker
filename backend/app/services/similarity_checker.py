@@ -21,7 +21,6 @@ import re
 import zipfile
 from dataclasses import dataclass, field
 from typing import Optional
-from xml.etree import ElementTree as ET
 
 from app.services.docx_parser import DocxParser
 from app.services.similarity_rules import (
@@ -259,9 +258,9 @@ class SimilarityChecker:
 
     def _collect_image_rids_in_range(self, start: int, end: Optional[int]) -> list[str]:
         try:
-            with zipfile.ZipFile(str(self.parser.file_path)) as zf:
-                with zf.open("word/document.xml") as fh:
-                    body = ET.parse(fh).getroot().find(f"{{{_W_NS}}}body")
+            # Body hasil normalisasi parser — hitungan <w:p> harus sejajar
+            # dengan parser.paragraphs.
+            body = self.parser.document_xml.find(f"{{{_W_NS}}}body")
         except Exception:
             return []
         if body is None:
