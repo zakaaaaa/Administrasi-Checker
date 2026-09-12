@@ -269,6 +269,42 @@ class TestForeignWordsDetection(unittest.TestCase):
         self.assertIn("internet of things", FOREIGN_WORDS)
 
 
+# ============================================================================
+# Test: gelar akademik satu-huruf tidak dikira akhir kalimat
+# ============================================================================
+#
+# REGRESI lapangan: "...Apt., M.Farm., selaku tim layanan..." — kata "Farm"
+# (potongan gelar "M.Farm.") kena vonis kata asing sebab _is_sentence_start
+# menganggap titik sesudah "M" sebagai akhir kalimat, sehingga proteksi
+# "kapital di tengah kalimat = nama diri" (lapis 3 foreign-words) tidak
+# berlaku dan "Farm" diperlakukan seolah kata pertama kalimat baru.
+
+
+class TestSentenceStartSkipsSingleLetterAbbreviation(unittest.TestCase):
+    def _checker(self):
+        return FormatChecker.__new__(FormatChecker)
+
+    def test_degree_abbreviation_not_sentence_start(self):
+        text = "Apt., M.Farm., selaku tim layanan sertifikasi BPOM."
+        idx = text.find("Farm")
+        self.assertFalse(self._checker()._is_sentence_start(text, idx))
+
+    def test_another_degree_abbreviation_s_pd(self):
+        text = "Dibimbing oleh Budi, S.Pd., selaku guru pamong."
+        idx = text.find("Pd")
+        self.assertFalse(self._checker()._is_sentence_start(text, idx))
+
+    def test_real_sentence_boundary_still_detected(self):
+        text = "Ini kalimat pertama. Framework baru diperkenalkan."
+        idx = text.find("Framework")
+        self.assertTrue(self._checker()._is_sentence_start(text, idx))
+
+    def test_paragraph_start_still_detected(self):
+        text = "Model ini dilatih menggunakan data uji."
+        idx = 0
+        self.assertTrue(self._checker()._is_sentence_start(text, idx))
+
+
 class TestCaptionParagraphDetection(unittest.TestCase):
     """Caption gambar/tabel dikecualikan dari wajib justify."""
 
@@ -416,6 +452,70 @@ class TestColumnsCheck(unittest.TestCase):
         sec = checker._check_columns()
         self.assertEqual(sec.status, "fail")
         self.assertEqual(len(sec.issues), 2)
+
+
+# ============================================================================
+# Test: section ber-cols>1 tanpa teks mengalir (cuma tabel/data) tidak di-flag
+# ============================================================================
+#
+# REGRESI lapangan (Leily, PKM-RSH artikel ilmiah): section berisi tabel
+# hasil uji statistik (diketik manual pakai TAB, bukan <w:tbl>) mewarisi
+# <w:cols w:num="6"> dari sectPr — dirender LibreOffice tetap 1 kolom
+# normal (diverifikasi visual), tapi tanpa cek ini divonis "memakai 6 kolom
+# seperti jurnal" padahal tak kelihatan sama sekali. Section dengan teks
+# prosa sungguhan (kalimat panjang) di layout kolom ganda tetap harus fail
+# — aturan "1 kolom" itu sendiri TIDAK berubah, cuma false-positive-nya.
+
+
+def _set_section_columns(doc, num: int) -> None:
+    from docx.oxml.ns import qn
+
+    sect_pr = doc.sections[0]._sectPr
+    existing = sect_pr.find(qn("w:cols"))
+    if existing is not None:
+        existing.set(qn("w:num"), str(num))
+    else:
+        cols = sect_pr.makeelement(qn("w:cols"), {qn("w:num"): str(num)})
+        sect_pr.append(cols)
+
+
+class TestColumnsCheckSkipsTableOnlySections(unittest.TestCase):
+    def test_table_like_short_fragments_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = Document()
+            doc.add_paragraph("BAB 1. PENDAHULUAN", style="Heading 1")
+            for row in ["Variabel", "Pre", "Post", "12.42 ± 2.44", "0,627", "t"]:
+                doc.add_paragraph(row)
+            _set_section_columns(doc, 6)
+            path = Path(tmp) / "table_only_columns.docx"
+            doc.save(str(path))
+
+            parser = DocxParser(path)
+            checker = FormatChecker(parser)
+            sec = checker._check_columns()
+            self.assertEqual(sec.status, "pass")
+            self.assertEqual(sec.issues, [])
+
+    def test_real_prose_in_multi_column_still_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = Document()
+            doc.add_paragraph("BAB 1. PENDAHULUAN", style="Heading 1")
+            doc.add_paragraph(
+                "Ini adalah paragraf prosa yang cukup panjang untuk "
+                "mensimulasikan isi body dokumen PKM sungguhan, ditulis "
+                "dalam format dua kolom menyerupai jurnal ilmiah padahal "
+                "seharusnya tidak boleh begitu menurut panduan PKM 2026."
+            )
+            _set_section_columns(doc, 2)
+            path = Path(tmp) / "real_prose_columns.docx"
+            doc.save(str(path))
+
+            parser = DocxParser(path)
+            checker = FormatChecker(parser)
+            sec = checker._check_columns()
+            self.assertEqual(sec.status, "fail")
+            self.assertEqual(len(sec.issues), 1)
+            self.assertEqual(sec.issues[0].found, "2 kolom")
 
 
 # ============================================================================

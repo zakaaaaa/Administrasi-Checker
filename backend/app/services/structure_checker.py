@@ -205,6 +205,7 @@ def _normalize(text: str) -> str:
     Normalisasi teks untuk pencocokan:
     - uppercase
     - hapus dot leader & nomor halaman ToC ('BAB 1 .... 5' → 'BAB 1')
+    - hapus titik opsional sesudah nomor BAB ('BAB 6.' → 'BAB 6')
     - normalisasi spasi multiple → 1
     - strip trailing punctuation
     """
@@ -213,6 +214,14 @@ def _normalize(text: str) -> str:
     # mis. "BAB 1. PENDAHULUAN ............... 1" → "BAB 1. PENDAHULUAN"
     import re
     t = re.sub(r"\s*[\.\s]{4,}\s*\d+\s*$", "", t)
+    # Titik sesudah nomor BAB opsional dan dianggap setara di semua alias
+    # ("BAB 6." == "BAB 6") — kalau tidak dinormalisasi di sini, tiap alias
+    # (termasuk varian ejaan seperti "TAHAP" vs "TAHAPAN") harus dienumerasi
+    # manual dua kali (dengan & tanpa titik). REGRESI lapangan: dokumen
+    # menulis "BAB 6 RENCANA TAHAP BERIKUTNYA" (tanpa titik) sementara alias
+    # varian "TAHAP" cuma didaftar dengan titik ("BAB 6. RENCANA TAHAP
+    # BERIKUTNYA") — section itu divonis hilang padahal ada.
+    t = re.sub(r"^(BAB\s+[IVXLCM0-9]+)\.", r"\1", t)
     # Normalisasi multiple spaces
     t = re.sub(r"\s+", " ", t)
     return t.strip()
@@ -545,11 +554,19 @@ class StructureChecker:
 
     _BAB_NUM_PATTERN = re.compile(r"^BAB\s+([IVXLCM0-9]+)([.\s]|$)", re.IGNORECASE)
     _ROMAN_PATTERN = re.compile(r"^[IVXLCM]+$", re.IGNORECASE)
+    # Khusus BAB 6: titik sesudah nomor bab WAJIB (keputusan produk
+    # 2026-09-12) — beda dari BAB lain yang titiknya opsional (lihat
+    # _normalize). Section tetap TERDETEKSI tanpa titik (tidak dianggap
+    # hilang), tapi formatnya divonis salah. Match kalau langsung ada huruf
+    # sesudah spasi ("BAB 6 RENCANA...") — "BAB 6. RENCANA..." tidak match
+    # karena karakter sesudah "6" adalah titik, bukan spasi.
+    _BAB6_MISSING_PERIOD_RE = re.compile(r"^\s*BAB\s+(?:6|VI)\s+[A-Z]", re.IGNORECASE)
 
     def _check_bab_format(self, found: list[FoundSection]) -> list[FormatViolation]:
         """
         Pastikan judul BAB menggunakan angka Arab (bukan Romawi).
-        Titik setelah nomor bab opsional — "BAB 1." dan "BAB 1 " sama-sama valid.
+        Titik setelah nomor bab opsional — "BAB 1." dan "BAB 1 " sama-sama
+        valid — KECUALI BAB 6, yang titiknya wajib (lihat _BAB6_MISSING_PERIOD_RE).
         Yang tidak diperbolehkan: "BAB I.", "BAB IV.", dsb.
         """
         violations = []
@@ -568,23 +585,40 @@ class StructureChecker:
                 continue
 
             num_str = m.group(1).upper()
-            if not self._ROMAN_PATTERN.match(num_str):
+            if self._ROMAN_PATTERN.match(num_str):
+                violations.append(
+                    FormatViolation(
+                        rule_name=section.rule_name,
+                        matched_text=section.matched_text,
+                        paragraph_index=section.paragraph_index,
+                        expected_format=section.rule_name,
+                        issues=["gunakan angka Arab (bukan angka Romawi)"],
+                        message=(
+                            f"Format judul bab tidak sesuai: '{section.matched_text}' "
+                            f"— gunakan angka Arab (bukan angka Romawi). "
+                            f"Format yang benar: '{section.rule_name}'."
+                        ),
+                    )
+                )
                 continue
 
-            violations.append(
-                FormatViolation(
-                    rule_name=section.rule_name,
-                    matched_text=section.matched_text,
-                    paragraph_index=section.paragraph_index,
-                    expected_format=section.rule_name,
-                    issues=["gunakan angka Arab (bukan angka Romawi)"],
-                    message=(
-                        f"Format judul bab tidak sesuai: '{section.matched_text}' "
-                        f"— gunakan angka Arab (bukan angka Romawi). "
-                        f"Format yang benar: '{section.rule_name}'."
-                    ),
+            if section.rule_name.upper().startswith(
+                "BAB 6."
+            ) and self._BAB6_MISSING_PERIOD_RE.match(section.matched_text.strip()):
+                violations.append(
+                    FormatViolation(
+                        rule_name=section.rule_name,
+                        matched_text=section.matched_text,
+                        paragraph_index=section.paragraph_index,
+                        expected_format=section.rule_name,
+                        issues=["gunakan titik sesudah nomor bab"],
+                        message=(
+                            f"Format judul bab tidak sesuai: '{section.matched_text}' "
+                            f"— gunakan titik sesudah nomor bab (BAB 6.). "
+                            f"Format yang benar: '{section.rule_name}'."
+                        ),
+                    )
                 )
-            )
         return violations
 
     # ------------------------------------------------------------------------

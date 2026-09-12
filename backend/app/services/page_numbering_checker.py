@@ -44,6 +44,9 @@ from app.services.docx_parser import (
     half_points_to_pt,
 )
 from app.services.schema_rules import SchemaRules
+# Batas awal LAMPIRAN dipakai bersama FormatChecker & PhysicalSheetCounter —
+# satu sumber kebenaran untuk "di mana bagian inti berakhir".
+from app.services.structure_checker import find_lampiran_start
 from app.services.style_resolver import StyleResolver
 
 
@@ -370,10 +373,26 @@ class PageNumberingChecker:
             return {sec.index: self.rules.zone_override for sec in self.parser.sections}
 
         boundaries = self.parser.find_section_boundaries(
-            ["DAFTAR ISI", "BAB 1"], headings_only=True
+            ["DAFTAR ISI", "BAB 1", "DAFTAR PUSTAKA"], headings_only=True
         )
         daftar_isi_para = boundaries["DAFTAR ISI"]
         bab1_para = boundaries["BAB 1"]
+        pustaka_para = boundaries["DAFTAR PUSTAKA"]
+
+        # REGRESI lapangan: section yang dimulai DI DALAM Lampiran (mis. section
+        # break baru tepat sesudah heading LAMPIRAN, lazim karena lampiran perlu
+        # orientasi/margin berbeda) ikut dilabeli "core_matter" sebab logic lama
+        # cuma cek "start_para >= bab1_para" tanpa batas atas — akibatnya defect
+        # font/posisi nomor halaman di lampiran (scan bukti, dsb.) dilaporkan
+        # seolah pelanggaran bagian inti, lengkap dengan nomor halaman lampiran
+        # yang membingungkan ("Hal. 15" padahal bagian inti berakhir di hal. 13).
+        lampiran_para = (
+            find_lampiran_start(
+                self.parser.paragraphs, after_idx=bab1_para + 1, pustaka_idx=pustaka_para
+            )
+            if bab1_para is not None
+            else None
+        )
 
         section_para_ranges = self._compute_section_paragraph_ranges()
 
@@ -390,7 +409,11 @@ class PageNumberingChecker:
                 continue
 
             # Ada BAB 1 — pakai logic utama
-            if start_para >= bab1_para:
+            if lampiran_para is not None and start_para >= lampiran_para:
+                # Section ini seluruhnya di dalam LAMPIRAN — aturan penomoran
+                # bagian inti tidak berlaku di sini.
+                zone_map[sec_idx] = "unknown"
+            elif start_para >= bab1_para:
                 # Section dimulai DI ATAS atau SETELAH BAB 1 → bagian inti
                 zone_map[sec_idx] = "core_matter"
             elif end_para >= bab1_para:

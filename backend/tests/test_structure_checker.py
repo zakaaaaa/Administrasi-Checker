@@ -16,6 +16,7 @@ from app.services.schema_rules import (
     get_pkm_laporan_kemajuan_rules,
 )
 from app.services.structure_checker import (
+    FoundSection,
     StructureChecker,
     find_lampiran_start,
     _heading_matches_rule,
@@ -35,17 +36,142 @@ LAPKEM_FILE = SAMPLE_DIR / "lapkem_pkm_kc.docx"
 
 class TestNormalize(unittest.TestCase):
     def test_uppercase_and_strip(self):
-        self.assertEqual(_normalize("  Bab 1. Pendahuluan  "), "BAB 1. PENDAHULUAN")
+        self.assertEqual(_normalize("  Bab 1. Pendahuluan  "), "BAB 1 PENDAHULUAN")
 
     def test_strips_toc_dot_leader(self):
-        """Entri ToC 'BAB 1. PENDAHULUAN ............... 1' → 'BAB 1. PENDAHULUAN'."""
+        """Entri ToC 'BAB 1. PENDAHULUAN ............... 1' → 'BAB 1 PENDAHULUAN'."""
         self.assertEqual(
             _normalize("BAB 1. PENDAHULUAN ............... 1"),
-            "BAB 1. PENDAHULUAN",
+            "BAB 1 PENDAHULUAN",
         )
 
     def test_collapses_multiple_spaces(self):
-        self.assertEqual(_normalize("BAB    1.   PENDAHULUAN"), "BAB 1. PENDAHULUAN")
+        self.assertEqual(_normalize("BAB    1.   PENDAHULUAN"), "BAB 1 PENDAHULUAN")
+
+    def test_optional_period_after_bab_number_is_equivalent(self):
+        """REGRESI lapangan: 'BAB 6 RENCANA TAHAP BERIKUTNYA' (tanpa titik)
+        harus dianggap SAMA dengan alias 'BAB 6. RENCANA TAHAP BERIKUTNYA'
+        (dengan titik) — tanpa ini, alias varian ejaan yang cuma didaftar
+        dengan titik gagal cocok dengan dokumen yang menulis tanpa titik."""
+        self.assertEqual(
+            _normalize("BAB 6 RENCANA TAHAP BERIKUTNYA"),
+            _normalize("BAB 6. RENCANA TAHAP BERIKUTNYA"),
+        )
+        self.assertEqual(
+            _normalize("BAB VI RENCANA TAHAP BERIKUTNYA"),
+            _normalize("BAB VI. RENCANA TAHAP BERIKUTNYA"),
+        )
+
+    def test_period_only_stripped_right_after_bab_number(self):
+        """Titik di tempat lain (bukan langsung sesudah nomor BAB) tidak
+        boleh ikut terbuang — cuma pola 'BAB <angka/romawi>.' di awal teks."""
+        self.assertEqual(
+            _normalize("BAB 1 PENDAHULUAN DAN LATAR BELAKANG."),
+            "BAB 1 PENDAHULUAN DAN LATAR BELAKANG.",
+        )
+
+
+class TestBab6TahapBerikutnyaVariants(unittest.TestCase):
+    """REGRESI lapangan (Laporan Kemajuan DE-GREEN, PKM-K): dokumen menulis
+    'BAB 6 RENCANA TAHAP BERIKUTNYA' — tanpa titik sesudah nomor bab, DAN
+    pakai ejaan 'TAHAP' (bukan 'TAHAPAN'). Rule sudah mengantisipasi varian
+    ejaan itu lewat extra_aliases, tapi cuma dalam bentuk BER-TITIK — combo
+    tanpa titik lolos dari seluruh alias dan section BAB 6 divonis hilang."""
+
+    def _bab6_rule(self, schema_code: str):
+        rules = get_pkm_laporan_kemajuan_rules(schema_code)
+        return next(s for s in rules.sections if s.name.startswith("BAB 6"))
+
+    def test_no_period_tahap_variant_matches(self):
+        rule = self._bab6_rule("K")
+        self.assertTrue(_heading_matches_rule("BAB 6 RENCANA TAHAP BERIKUTNYA", rule))
+
+    def test_no_period_roman_tahap_variant_matches(self):
+        rule = self._bab6_rule("K")
+        self.assertTrue(_heading_matches_rule("BAB VI RENCANA TAHAP BERIKUTNYA", rule))
+
+    def test_canonical_and_period_variants_still_match(self):
+        rule = self._bab6_rule("RE")
+        self.assertTrue(_heading_matches_rule("BAB 6. RENCANA TAHAPAN BERIKUTNYA", rule))
+        self.assertTrue(_heading_matches_rule("BAB 6 RENCANA TAHAPAN BERIKUTNYA", rule))
+        self.assertTrue(_heading_matches_rule("BAB 6. RENCANA TAHAP BERIKUTNYA", rule))
+
+
+class TestBab6PeriodMandatory(unittest.TestCase):
+    """Keputusan produk (2026-09-12): deteksi section BAB 6 tetap longgar
+    soal titik (tidak dianggap hilang), TAPI formatnya divonis salah kalau
+    titiknya tidak ada — beda dari BAB lain yang titiknya tetap opsional
+    tanpa vonis apa pun."""
+
+    def _checker(self):
+        return StructureChecker.__new__(StructureChecker)
+
+    def _section(self, matched_text: str, rule_name: str) -> FoundSection:
+        return FoundSection(
+            rule_name=rule_name,
+            matched_text=matched_text,
+            paragraph_index=0,
+            is_required=True,
+            is_core=True,
+            evidence="style",
+            match_quality="exact",
+        )
+
+    def test_bab6_without_period_flagged(self):
+        checker = self._checker()
+        sec = self._section(
+            "BAB 6 RENCANA TAHAP BERIKUTNYA", "BAB 6. RENCANA TAHAPAN BERIKUTNYA"
+        )
+        violations = checker._check_bab_format([sec])
+        self.assertEqual(len(violations), 1)
+        self.assertIn("titik", violations[0].issues[0])
+
+    def test_bab6_roman_without_period_flags_roman_not_double(self):
+        """Romawi TANPA titik: cek Romawi lebih diprioritaskan, jangan
+        double-flag dengan vonis titik juga."""
+        checker = self._checker()
+        sec = self._section(
+            "BAB VI RENCANA TAHAP BERIKUTNYA", "BAB 6. RENCANA TAHAPAN BERIKUTNYA"
+        )
+        violations = checker._check_bab_format([sec])
+        self.assertEqual(len(violations), 1)
+        self.assertIn("Romawi", violations[0].issues[0])
+
+    def test_bab6_with_period_passes(self):
+        checker = self._checker()
+        sec = self._section(
+            "BAB 6. RENCANA TAHAPAN BERIKUTNYA", "BAB 6. RENCANA TAHAPAN BERIKUTNYA"
+        )
+        violations = checker._check_bab_format([sec])
+        self.assertEqual(violations, [])
+
+    def test_bab6_roman_numeral_still_flagged_as_roman_not_period(self):
+        """Kalau romawi DAN tanpa titik, vonisnya tetap 'angka Romawi'
+        (bukan double-flag) — konsisten dengan urutan cek yang sudah ada."""
+        checker = self._checker()
+        sec = self._section(
+            "BAB VI. RENCANA TAHAPAN BERIKUTNYA", "BAB 6. RENCANA TAHAPAN BERIKUTNYA"
+        )
+        violations = checker._check_bab_format([sec])
+        self.assertEqual(len(violations), 1)
+        self.assertIn("Romawi", violations[0].issues[0])
+
+    def test_other_bab_numbers_without_period_not_flagged(self):
+        """Cakupan sengaja sempit: BAB 1-5 tanpa titik TIDAK divonis —
+        cuma BAB 6 yang wajib titik per keputusan ini."""
+        checker = self._checker()
+        for num, title in [
+            (1, "PENDAHULUAN"),
+            (2, "TARGET LUARAN"),
+            (3, "METODE PELAKSANAAN"),
+            (4, "HASIL YANG DICAPAI"),
+            (5, "POTENSI HASIL"),
+        ]:
+            sec = self._section(
+                f"BAB {num} {title}", f"BAB {num}. {title}"
+            )
+            violations = checker._check_bab_format([sec])
+            self.assertEqual(violations, [], f"BAB {num} seharusnya tidak divonis")
 
 
 class TestHeadingMatching(unittest.TestCase):

@@ -789,6 +789,58 @@ class FormatChecker:
     # Sub-check: columns (1 kolom)
     # ------------------------------------------------------------------------
 
+    # Ambang jumlah kata untuk "teks mengalir sungguhan" (kalimat/paragraf
+    # prosa), dibedakan dari label/data tabel yang diketik manual tanpa
+    # <w:tbl> (mis. dipisah TAB) — potongannya pendek per baris.
+    _PROSE_MIN_WORDS = 15
+
+    def _section_paragraph_ranges(self) -> dict[int, tuple[int, int]]:
+        """Range paragraf (start, end inclusive) tiap section — dipakai
+        _check_columns untuk menilai isi section sebelum memvonis."""
+        W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        try:
+            body = self.parser.document_xml.find(f"{{{W}}}body")
+        except Exception:
+            return {}
+        if body is None:
+            return {}
+        ranges: dict[int, tuple[int, int]] = {}
+        para_idx = -1
+        cur_sec = 0
+        sec_first_para = 0
+        for child in body:
+            if child.tag == f"{{{W}}}p":
+                para_idx += 1
+                ppr = child.find(f"{{{W}}}pPr")
+                if ppr is not None and ppr.find(f"{{{W}}}sectPr") is not None:
+                    ranges[cur_sec] = (sec_first_para, para_idx)
+                    cur_sec += 1
+                    sec_first_para = para_idx + 1
+            elif child.tag == f"{{{W}}}sectPr":
+                ranges[cur_sec] = (sec_first_para, para_idx)
+        if cur_sec not in ranges and sec_first_para <= para_idx:
+            ranges[cur_sec] = (sec_first_para, para_idx)
+        return ranges
+
+    def _section_has_flowing_prose(self, rng: Optional[tuple[int, int]]) -> bool:
+        """True kalau section ini punya setidaknya satu paragraf prosa
+        sungguhan (≥15 kata) — bukan cuma label/data tabel pendek.
+
+        Kalau range tidak diketahui, defaultnya True (tetap divonis seperti
+        semula) — konservatif, tidak diam-diam melewatkan pelanggaran yang
+        genuinely tidak bisa kita periksa lebih jauh.
+        """
+        if rng is None:
+            return True
+        start, end = rng
+        for para in self.parser.paragraphs:
+            if para.index < start or para.index > end:
+                continue
+            text = para.text.strip()
+            if text and len(text.split()) >= self._PROSE_MIN_WORDS:
+                return True
+        return False
+
     def _check_columns(self) -> FormatCheckSection:
         """
         Isi proposal wajib 1 kolom. Format 2 kolom (seperti jurnal) → fail.
@@ -796,12 +848,22 @@ class FormatChecker:
         Jumlah kolom adalah properti section (XML <w:sectPr>/<w:cols w:num>).
         Section tanpa elemen <w:cols> dianggap 1 kolom (default Word), jadi
         tidak di-flag. Section dengan ≥2 kolom di mana pun dalam proposal
-        adalah pelanggaran (PKM tidak pernah memakai layout berkolom).
+        adalah pelanggaran (PKM tidak pernah memakai layout berkolom) —
+        KECUALI section itu tidak punya teks mengalir sungguhan (cuma
+        label/data tabel pendek, umum untuk tabel yang diketik manual pakai
+        TAB alih-alih <w:tbl>). REGRESI lapangan: section berisi tabel data
+        (mis. hasil uji statistik) kadang mewarisi <w:cols w:num="6"> dari
+        sectPr sebelumnya tanpa efek visual apa pun — dirender LibreOffice
+        maupun (diverifikasi) tetap 1 kolom normal — tapi tanpa cek ini
+        divonis "memakai 6 kolom seperti jurnal" padahal tidak kelihatan.
         """
         sec = FormatCheckSection(name="columns", status="pass")
+        ranges = self._section_paragraph_ranges()
         for s in self.parser.sections:
             num = s.num_columns
             if num is None or num <= 1:
+                continue
+            if not self._section_has_flowing_prose(ranges.get(s.index)):
                 continue
             sec.issues.append(
                 FormatIssue(
@@ -1348,7 +1410,19 @@ class FormatChecker:
         i = pos - 1
         while i >= 0 and text[i] in " \t\n\r\"'“”‘’([{-–—•*":
             i -= 1
-        return i < 0 or text[i] in self._SENTENCE_END
+        if i < 0:
+            return True
+        if text[i] not in self._SENTENCE_END:
+            return False
+        # Titik sesudah SATU huruf kapital ("M.", "S.") — gelar akademik
+        # Indonesia ("M.Farm.", "S.Pd.", "S.Farm.") atau inisial nama, bukan
+        # akhir kalimat. REGRESI lapangan: "Apt., M.Farm., selaku ..." bikin
+        # "Farm" kehilangan proteksi nama-diri (dianggap awal kalimat baru)
+        # dan divonis kata asing padahal itu potongan gelar, bukan kata benda
+        # Inggris "farm".
+        if text[i] == "." and i >= 1 and text[i - 1].isupper() and (i < 2 or not text[i - 2].isalnum()):
+            return False
+        return True
 
     @staticmethod
     def _summarize_words(words: list[str], limit: int = 5) -> str:

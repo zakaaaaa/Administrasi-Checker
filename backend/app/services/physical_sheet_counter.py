@@ -304,6 +304,17 @@ class PhysicalSheetCounter:
     # nomor halaman → kemungkinan baris ToC, skip lembar ini.
     _TOC_CONTEXT_RE = re.compile(r"\.{3,}|\s+\d+\s*$", re.MULTILINE)
 
+    # Deteksi "halaman ini kemungkinan Daftar Isi" secara whole-page (dipakai
+    # _locate_core_range, mode fallback PDF LibreOffice). HANYA dot leader
+    # literal ("....."), TIDAK termasuk "baris berakhir angka" — cabang itu
+    # cocok juga untuk tabel anggaran/rekapitulasi dana (tiap baris memang
+    # berakhir nominal Rupiah). REGRESI lapangan: halaman berisi heading
+    # "LAMPIRAN" + tabel "Rincian Penggunaan Dana" (banyak baris berakhir
+    # angka) ke-skip dan dikira Daftar Isi, sehingga LAMPIRAN dianggap mulai
+    # jauh lebih belakang — seluruh Lampiran 1 ikut terhitung sebagai bagian
+    # inti dan dokumen divonis melebihi batas halaman padahal sebenarnya tidak.
+    _TOC_PAGE_RE = re.compile(r"\.{3,}")
+
     def __init__(
         self,
         parser: DocxParser,
@@ -556,6 +567,43 @@ class PhysicalSheetCounter:
             return 0
         return self.parser.estimate_physical_page(paras[-1].index) or 0
 
+    def _has_toc_field_before_page_two(self) -> bool:
+        """True kalau ada TOC field Word asli (SDT docPartGallery 'Table of
+        Contents') di body SEBELUM konten pertama yang jatuh di halaman fisik
+        ke-2.
+
+        Daftar Isi yang di-generate via fitur "Insert Table of Contents" Word
+        (bukan diketik manual) dirender di dalam <w:sdt> — sama sekali tidak
+        masuk self.parser.paragraphs. Tanpa cek ini, dokumen yang Daftar
+        Isi-nya sah dan normal di Word tetap divonis "halaman pertama tidak
+        memuat Daftar Isi" karena teks gabungan paragraf body di halaman 1
+        cuma berisi baris kosong di sekitar field itu.
+        """
+        try:
+            from docx.oxml.ns import qn
+            body = self.parser.doc.element.body
+        except Exception:
+            return False
+        first_page2_idx = next(
+            (
+                p.index for p in self.parser.paragraphs
+                if (self.parser.estimate_physical_page(p.index) or 1) >= 2
+            ),
+            None,
+        )
+        para_counter = -1
+        for child in body:
+            tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if tag == "p":
+                para_counter += 1
+                if first_page2_idx is not None and para_counter >= first_page2_idx:
+                    break
+            elif tag == "sdt":
+                gallery = child.find(".//" + qn("w:docPartGallery"))
+                if gallery is not None and gallery.get(qn("w:val")) == "Table of Contents":
+                    return True
+        return False
+
     def _check_first_page_structure_docx(self) -> list[CheckMessage]:
         """Versi DOCX dari validasi halaman pertama (Daftar Isi / Abstrak),
         memakai gabungan teks paragraf yang diestimasi berada di halaman fisik 1."""
@@ -564,6 +612,7 @@ class PhysicalSheetCounter:
             for para in self.parser.paragraphs
             if self.parser.estimate_physical_page(para.index) == 1
         )
+        has_toc_field = self._has_toc_field_before_page_two()
         msgs: list[CheckMessage] = []
         if self.rules.schema_code == "AI":
             if not self._ABSTRAK_RE.search(page1):
@@ -578,7 +627,11 @@ class PhysicalSheetCounter:
         elif self.rules.report_type_code == "FINAL_REPORT":
             # Laporan akhir diawali RINGKASAN (tanpa nomor halaman) sebelum
             # Daftar Isi — halaman pertama sah memuat salah satunya.
-            if not (self._RINGKASAN_RE.search(page1) or self._DAFTAR_ISI_RE.search(page1)):
+            if not (
+                self._RINGKASAN_RE.search(page1)
+                or self._DAFTAR_ISI_RE.search(page1)
+                or has_toc_field
+            ):
                 msgs.append(CheckMessage(
                     level="fail",
                     text=(
@@ -588,7 +641,7 @@ class PhysicalSheetCounter:
                     ),
                 ))
         else:
-            if not self._DAFTAR_ISI_RE.search(page1):
+            if not self._DAFTAR_ISI_RE.search(page1) and not has_toc_field:
                 msgs.append(CheckMessage(
                     level="fail",
                     text=(
@@ -627,7 +680,7 @@ class PhysicalSheetCounter:
             core_first = None
             for i, text in enumerate(sheet_texts):
                 # Skip lembar yang jelas Daftar Isi: banyak dot leader
-                dot_leader_count = len(self._TOC_CONTEXT_RE.findall(text))
+                dot_leader_count = len(self._TOC_PAGE_RE.findall(text))
                 if dot_leader_count >= 3:
                     continue
                 for pat in self.CORE_START_PATTERNS:
@@ -645,7 +698,7 @@ class PhysicalSheetCounter:
         for i in range(core_first - 1, len(sheet_texts)):
             text = sheet_texts[i]
             # Skip ToC sheets (dot leader ≥3)
-            dot_leader_count = len(self._TOC_CONTEXT_RE.findall(text))
+            dot_leader_count = len(self._TOC_PAGE_RE.findall(text))
             if dot_leader_count >= 3:
                 continue
             for pat in self.LAMPIRAN_START_PATTERNS:

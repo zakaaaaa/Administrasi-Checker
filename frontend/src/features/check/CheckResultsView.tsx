@@ -646,6 +646,26 @@ const SUMMARY_DEFS: SummaryDef[] = [
       items.some((it) => it.module === 'format' && /ukuran huruf tidak 12/i.test(it.masalah)),
   },
   {
+    // Beda dari "ukuran huruf tidak 12" di atas: ini khusus caption
+    // gambar/tabel (aturan PKM-AI, 11pt), sentence-nya tidak match regex di
+    // atas. Tanpa entry ini, temuannya muncul di Detail Kesalahan tapi
+    // hilang dari Ringkasan Utama — kelihatan seperti "kesalahan ngilang".
+    label: 'Kesalahan ukuran huruf keterangan gambar/tabel tidak 11',
+    detect: (items) =>
+      items.some(
+        (it) => it.module === 'format' && /ukuran huruf keterangan gambar\/tabel/i.test(it.masalah),
+      ),
+  },
+  {
+    // Sama seperti di atas: caption line spacing (bukan spasi teks/paragraf
+    // biasa) punya sentence sendiri, perlu entry Ringkasan terpisah.
+    label: 'Kesalahan spasi keterangan gambar/tabel tidak 1',
+    detect: (items) =>
+      items.some(
+        (it) => it.module === 'format' && /spasi keterangan gambar\/tabel/i.test(it.masalah),
+      ),
+  },
+  {
     label: 'Kesalahan margin',
     detect: (items) =>
       items.some((it) => it.module === 'format' && /\bmargin\b/i.test(it.masalah)),

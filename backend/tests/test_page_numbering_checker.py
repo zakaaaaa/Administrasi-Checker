@@ -5,6 +5,7 @@ Cara jalankan:
     python3 -m unittest tests.test_page_numbering_checker -v
 """
 
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -434,6 +435,49 @@ class TestSectionRangesAlignWithParser(unittest.TestCase):
 # Dulu lolos tanpa temuan: checker memilih salah satu sumber (header lebih
 # diprioritaskan), melihat posisinya cocok aturan, lalu menyatakan pass.
 # ============================================================================
+
+
+# ============================================================================
+# Test: section yang mulai DI DALAM Lampiran bukan core_matter
+# ============================================================================
+#
+# REGRESI lapangan (Rania, PKM-RSH Laporan Kemajuan): dokumen punya section
+# break baru tepat sesudah heading LAMPIRAN (lazim karena lampiran perlu
+# orientasi/margin beda). Logic lama cuma cek "section mulai >= BAB 1" tanpa
+# batas atas, jadi section lampiran itu ikut dilabeli core_matter — defect
+# font nomor halaman di lembar lampiran (scan bukti kegiatan) dilaporkan
+# seolah pelanggaran bagian inti, lengkap dengan nomor halaman lampiran yang
+# membingungkan ("Hal. 15" padahal bagian inti cuma sampai hal. 13).
+
+
+def _build_doc_with_lampiran_section_break(path: Path) -> None:
+    from docx import Document
+    from docx.enum.section import WD_SECTION
+
+    doc = Document()
+    doc.add_paragraph("DAFTAR ISI", style="Heading 1")
+    doc.add_paragraph("BAB 1. PENDAHULUAN", style="Heading 1")
+    doc.add_paragraph("Isi bab 1 yang cukup panjang untuk pengujian.")
+    doc.add_paragraph("DAFTAR PUSTAKA", style="Heading 1")
+    doc.add_paragraph("Referensi contoh, 2024.")
+    doc.add_paragraph("LAMPIRAN", style="Heading 1")
+    doc.add_section(WD_SECTION.NEW_PAGE)
+    doc.add_paragraph("Lampiran 1. Bukti kegiatan (scan dokumen).")
+    doc.save(str(path))
+
+
+class TestLampiranSectionExcludedFromCoreMatter(unittest.TestCase):
+    def test_section_starting_in_lampiran_is_not_core_matter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "lampiran_section.docx"
+            _build_doc_with_lampiran_section_break(path)
+            parser = DocxParser(path)
+            checker = PageNumberingChecker(
+                parser, get_pkm_laporan_kemajuan_rules("KC")
+            )
+            zone_map = checker._identify_section_zones()
+            self.assertEqual(zone_map[0], "core_matter")
+            self.assertNotEqual(zone_map[1], "core_matter")
 
 
 class TestDuplicatePageNumber(unittest.TestCase):

@@ -191,6 +191,11 @@ def _levenshtein(a: str, b: str) -> int:
 # boleh tidak ikut disingkat ("Kementrian ... Republik Indonesia").
 _ACRONYM_SKIPPABLE = frozenset({"dan", "and", "&", "of", "the", "untuk"})
 _ACRONYM_TRAILING = frozenset({"republik", "indonesia", "ri"})
+# Sejumlah nama resmi kementerian memakai nama pendek yang tidak membawa
+# suku kata "Kemen", misalnya "Komdigi" = Komunikasi + Digital. Awalan ini
+# boleh dilewati hanya di posisi pertama; kata lembaga lain tetap wajib ikut
+# membentuk singkatan agar pencocokan tidak terlalu longgar.
+_ACRONYM_OPTIONAL_LEADING = frozenset({"kementerian", "kementrian"})
 _AUTHOR_TOKEN_RE = re.compile(r"[a-z0-9]+|&")
 
 
@@ -200,9 +205,11 @@ def _acronym_author_match(cite_author: str, dp_author: str) -> bool:
     "Bappeda Kota Malang" cocok dengan "Badan Perencanaan Pembangunan Daerah
     Kota Malang": token sitasi yang sama persis menghabiskan satu kata DP,
     token lain dibaca sebagai singkatan yang disusun dari AWALAN beberapa kata
-    DP berurutan (ba+p+pe+da). Singkatan wajib mencakup minimal dua kata —
-    pencocokan satu kata sudah ditangani aturan awalan. Semua kata DP harus
-    habis terpakai, kecuali kualifikasi negara di ujung.
+    DP berurutan (ba+p+pe+da). "Komdigi" juga cocok dengan "Kementerian
+    Komunikasi dan Digital" karena kata Kementerian boleh tidak muncul pada
+    nama pendek. Singkatan wajib mencakup minimal dua kata — pencocokan satu
+    kata sudah ditangani aturan awalan. Semua kata DP harus habis terpakai,
+    kecuali awalan kementerian dan kualifikasi negara di ujung.
     """
     cite = _AUTHOR_TOKEN_RE.findall(cite_author.lower())
     dp = _AUTHOR_TOKEN_RE.findall(dp_author.lower())
@@ -234,7 +241,9 @@ def _acronym_author_match(cite_author: str, dp_author: str) -> bool:
             return False
         return any(match(i + 1, nj) for nj in set(spell(cite[i], 0, j, 0)))
 
-    return match(0, 0)
+    if match(0, 0):
+        return True
+    return dp[0] in _ACRONYM_OPTIONAL_LEADING and match(0, 1)
 
 
 def _dp_has_et_al(text: str) -> bool:
@@ -243,6 +252,23 @@ def _dp_has_et_al(text: str) -> bool:
 
 def _dp_has_dkk(text: str) -> bool:
     return bool(_DKK_RE.search(text))
+
+
+def _iter_paragraphs_in_sdt(sdt_el: etree._Element):
+    """Yield semua <w:p> di dalam <w:sdt>, termasuk yang bersarang di w:sdt
+    lain (Mendeley kadang membungkus bibliografi dengan DUA lapis w:sdt:
+    satu untuk seluruh field, satu lagi untuk 'Bibliography' itu sendiri).
+    Tanpa rekursi ini, isi tetap tidak kebaca dan Daftar Pustaka divonis
+    kosong padahal Mendeley sudah mengisinya."""
+    content = sdt_el.find(qn("w:sdtContent"))
+    if content is None:
+        return
+    for child in content:
+        tag = etree.QName(child).localname
+        if tag == "p":
+            yield child
+        elif tag == "sdt":
+            yield from _iter_paragraphs_in_sdt(child)
 
 
 # Data class
@@ -615,12 +641,10 @@ class ReferenceValidator:
                         if not skip_para:
                             out.append((idx, text))
                 elif tag == "sdt":
-                    content = cur.find(qn("w:sdtContent"))
-                    if content is not None:
-                        for inner in content.findall(qn("w:p")):
-                            text = norm(text_from_p(inner))
-                            if text:
-                                out.append((default_idx, text))
+                    for inner in _iter_paragraphs_in_sdt(cur):
+                        text = norm(text_from_p(inner))
+                        if text:
+                            out.append((default_idx, text))
                 cur = cur.getnext()
         except (AttributeError, TypeError):
             return []
@@ -695,10 +719,26 @@ class ReferenceValidator:
         """
         if re.match(r"^\s*(https?://|doi:|Retrieved|Available)", text, re.IGNORECASE):
             return False
-        m = re.match(r"^\s*(\w[\w\s]{0,50}?)[,.(]", text)
+        # "pp. 12–34." — potongan nomor halaman yang terputus dari entry
+        # sebelumnya, jelas bukan awal entry baru.
+        if re.match(r"^\s*pp?\.\s*\d", text, re.IGNORECASE):
+            return False
+        # [^,.(]  (bukan \w\s): potongan lanjutan sering resume di tengah judul
+        # kutipan Harvard ('...Title’, Journal...) — tanda kutip penutup (’)
+        # bukan \w, jadi kalau kelas karakternya dibatasi ke \w\s saja, match
+        # gagal total di posisi itu dan fallback "return True" salah menuding
+        # lanjutan itu entry baru.
+        m = re.match(r"^\s*([^,.(]{1,50}?)[,.(]", text)
         if not m:
             return True
-        prefix_words = m.group(1).strip().split()
+        prefix = m.group(1)
+        # Tanda kutip penutup di awal potongan (mis. "Analysis’, Journal...")
+        # menandakan ini ekor judul artikel yang terpotong paragraf, bukan
+        # nama pengarang entry baru — kata sebelum tanda kutip bisa saja
+        # pendek (<5 kata) dan lolos dari heuristik kata di bawah.
+        if re.search(r"[’”\"]", prefix):
+            return False
+        prefix_words = prefix.strip().split()
         # ≥5 kata sebelum delimiter pertama → kemungkinan judul jurnal/buku (continuation)
         return len(prefix_words) < 5
 

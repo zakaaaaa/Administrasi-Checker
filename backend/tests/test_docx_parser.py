@@ -529,6 +529,50 @@ def _sdt(inner: str, gallery: str = "") -> str:
 _SECT = '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr>'
 
 
+class TestManualTableOfContentsBlock(unittest.TestCase):
+    """Regresi NeuroRehab: beberapa entri Daftar Isi manual kehilangan leader."""
+
+    _PAGE_BREAK = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'
+
+    def test_heading_shaped_gaps_between_manual_entries_are_toc(self):
+        path = _docx_with_body(
+            _p("DAFTAR ISI")
+            + _p("BAB 1. PENDAHULUAN ........................ 1")
+            + _p("BAB 2. TARGET LUARAN")
+            + _p("BAB 3. TAHAP PELAKSANAAN")
+            + _p("BAB 4. HASIL YANG DICAPAI ................. 7")
+            + self._PAGE_BREAK
+            + _p("BAB 1. PENDAHULUAN", "Heading1")
+            + _SECT
+        )
+
+        paragraphs = DocxParser(path).paragraphs
+        by_text = {p.text: p for p in paragraphs if p.text}
+
+        self.assertEqual(by_text["BAB 1. PENDAHULUAN ........................ 1"].toc_evidence, "leader")
+        self.assertEqual(by_text["BAB 2. TARGET LUARAN"].toc_evidence, "manual-block")
+        self.assertEqual(by_text["BAB 3. TAHAP PELAKSANAAN"].toc_evidence, "manual-block")
+        self.assertTrue(by_text["BAB 2. TARGET LUARAN"].is_toc_entry)
+        self.assertFalse(by_text["BAB 2. TARGET LUARAN"].is_heading)
+        self.assertFalse(by_text["BAB 1. PENDAHULUAN"].is_toc_entry)
+        self.assertTrue(by_text["BAB 1. PENDAHULUAN"].is_heading)
+
+    def test_single_leader_is_not_enough_to_infer_manual_block(self):
+        path = _docx_with_body(
+            _p("DAFTAR ISI")
+            + _p("BAB 1. PENDAHULUAN .......... 1")
+            + _p("BAB 2. TARGET LUARAN")
+            + self._PAGE_BREAK
+            + _p("BAB 1. PENDAHULUAN", "Heading1")
+            + _SECT
+        )
+
+        paragraphs = DocxParser(path).paragraphs
+        bab2 = next(p for p in paragraphs if p.text == "BAB 2. TARGET LUARAN")
+        self.assertFalse(bab2.is_toc_entry)
+        self.assertIsNone(bab2.toc_evidence)
+
+
 class TestSectionTrappedInSdt(unittest.TestCase):
     def test_lampiran_inside_bibliography_is_hoisted(self):
         path = _docx_with_body(
@@ -689,6 +733,84 @@ class TestSplitTableRowPageEstimate(unittest.TestCase):
     def test_paragraph_lrpb_without_table_unchanged(self):
         pages = _pages(_lp("Satu") + _lp("|", "Dua") + _lp("tiga", "|", "empat") + _lp("Lima"))
         self.assertEqual(pages, {"Satu": 1, "Dua": 2, "tigaempat": 2, "Lima": 3})
+
+
+# ============================================================================
+# Test: style judul custom yang namanya bukan "Heading N"
+# ============================================================================
+#
+# REGRESI lapangan (PKM-RE Artikel Ilmiah, template Word bawaan
+# penerbit/kampus): section "Pendahuluan"/"Metode"/"Daftar Pustaka" diberi
+# style "Article Heading 1" — bukan style bawaan Word ("Heading 1") dan
+# tanpa outlineLvl. Cek lama (name.startswith("heading")) melewatkannya
+# karena nama dimulai "Article", bukan "Heading", jadi is_heading tetap
+# False dan section itu divonis hilang oleh StructureChecker padahal ada.
+
+
+class TestCustomHeadingStyleName(unittest.TestCase):
+    def test_style_name_containing_heading_word_is_detected(self):
+        from docx import Document
+        from docx.enum.style import WD_STYLE_TYPE
+
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = Document()
+            style = doc.styles.add_style("Article Heading 1", WD_STYLE_TYPE.PARAGRAPH)
+            style.font.bold = True  # bold di STYLE, bukan di run — tidak lolos heuristik bold-per-run
+            doc.add_paragraph("Pendahuluan", style=style)
+            doc.add_paragraph("Teks biasa tidak boleh ikut ke-flag sebagai heading.")
+            path = Path(tmp) / "custom_heading.docx"
+            doc.save(str(path))
+
+            parser = DocxParser(path)
+            heading_p = next(p for p in parser.paragraphs if p.text == "Pendahuluan")
+            body_p = next(p for p in parser.paragraphs if p.text.startswith("Teks biasa"))
+            self.assertTrue(heading_p.is_heading)
+            self.assertFalse(body_p.is_heading)
+
+
+# ============================================================================
+# Test: line_spacing mode "Exactly"/"At least" tidak dibalik jadi EMU mentah
+# ============================================================================
+#
+# REGRESI lapangan (PKM-RSH artikel ilmiah, front matter judul/penulis):
+# python-docx balikin objek Length (EMU) untuk paragraph_format.line_spacing
+# kalau line_spacing_rule-nya EXACTLY/AT_LEAST (bukan MULTIPLE) — float(ls)
+# lama-lama jadi angka mentah ratusan ribu (mis. 144780.0 untuk "Exactly
+# 11.4pt"), lalu dibandingkan checker seolah multiplier ("harus 1.0") dan
+# menghasilkan pesan absurd "spasi baris ditemukan 144780.0".
+
+
+class TestLineSpacingExactModeNotMisread(unittest.TestCase):
+    def test_exact_line_spacing_does_not_leak_raw_emu(self):
+        from docx import Document
+        from docx.enum.text import WD_LINE_SPACING
+        from docx.shared import Pt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = Document()
+            p = doc.add_paragraph("Judul dengan spasi baris tetap.")
+            p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+            p.paragraph_format.line_spacing = Pt(11.4)
+            path = Path(tmp) / "exact_line_spacing.docx"
+            doc.save(str(path))
+
+            parser = DocxParser(path)
+            para = next(pp for pp in parser.paragraphs if pp.text.startswith("Judul"))
+            self.assertIsNone(para.line_spacing)
+
+    def test_multiple_line_spacing_still_read_as_float(self):
+        from docx import Document
+
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = Document()
+            p = doc.add_paragraph("Paragraf spasi 1.5 normal.")
+            p.paragraph_format.line_spacing = 1.5
+            path = Path(tmp) / "multiple_line_spacing.docx"
+            doc.save(str(path))
+
+            parser = DocxParser(path)
+            para = next(pp for pp in parser.paragraphs if pp.text.startswith("Paragraf"))
+            self.assertAlmostEqual(para.line_spacing, 1.5)
 
 
 if __name__ == "__main__":

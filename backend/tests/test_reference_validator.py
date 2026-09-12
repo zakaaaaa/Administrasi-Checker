@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from lxml import etree
 
 from app.services.docx_parser import ParagraphInfo
 from app.services.reference_validator import (
@@ -148,6 +149,125 @@ def test_dp_heading_but_no_entries_explains_gap(schema):
     assert "lampiran" in joined.lower()
     d = r.to_dict()
     assert d["section_detection"]["daftar_pustaka_heading_paragraph_index"] == 2
+
+
+# ============================================================================
+# Referensi terpotong paragraf kosong di tengah judul kutipan
+# ============================================================================
+#
+# REGRESI lapangan (Leily, PKM-RSH artikel ilmiah): satu entry DP terpotong
+# jadi dua paragraf Word oleh baris kosong di tengah judul —
+#   "...Adolescents : A" | (baris kosong) | "Network Analysis’, Journal..."
+# Potongan kedua tidak py tahun dan seharusnya digabung ke entry sebelumnya,
+# tapi heuristik lama menghitung kata sebelum delimiter pertama ("Network
+# Analysis’" → 2 kata) dan menyimpulkan itu entry baru (nama pengarang
+# pendek) — padahal tanda kutip penutup (’) di situ adalah ekor judul
+# artikel, bukan awal nama. Akibatnya DP terpecah jadi entry palsu yang lalu
+# divonis "tahun tidak ditemukan" + "urutan alfabetis salah".
+
+
+def test_split_reference_merged_via_trailing_title_quote(schema):
+    paras = [
+        _heading(0, "DAFTAR PUSTAKA"),
+        _body(
+            1,
+            "Guadix, M.G., Sorrel, M.A. and Martínez, J. (2023) ‘Technology - "
+            "Facilitated Sexual Violence Perpetration and Victimization Among "
+            "Adolescents : A",
+        ),
+        _body(2, "Network Analysis’, Sexuality Research and Social Policy, 20(3), pp. 1000–1012."),
+        _body(3, "Kahalon, R. and Klein, V. (2025) ‘Self-Objectification’, The Journal of Sex Research, 62(9), pp. 1722–1743."),
+        _heading(4, "LAMPIRAN"),
+    ]
+    parser = _fake_parser(paras)
+    r = ReferenceValidator(parser, schema, current_year=2026).check()
+    assert r.total_entries == 2
+    assert "Network Analysis" in r.entries[0].raw_text
+    assert r.entries[0].year == 2023
+    assert r.entries[1].author_first == "Kahalon"
+    joined = " ".join(m.text for m in r.messages)
+    assert "tahun" not in joined.lower() or "tidak ditemukan" not in joined.lower()
+
+
+def test_split_reference_merged_via_page_range_continuation(schema):
+    """Potongan kedua berupa 'pp. 1–12.' (nomor halaman) juga harus digabung."""
+    paras = [
+        _heading(0, "DAFTAR PUSTAKA"),
+        _body(
+            1,
+            "Kang, H. (2021) ‘Sample size determination and power analysis’, "
+            "Journal of Educational Evaluation for Health Professions,",
+        ),
+        _body(2, "pp. 1–12."),
+        _heading(3, "LAMPIRAN"),
+    ]
+    parser = _fake_parser(paras)
+    r = ReferenceValidator(parser, schema, current_year=2026).check()
+    assert r.total_entries == 1
+    assert r.entries[0].raw_text.endswith("pp. 1–12.")
+
+
+# ============================================================================
+# Bibliografi Mendeley berbungkus DUA lapis w:sdt
+# ============================================================================
+#
+# REGRESI lapangan (progress-report PKM-RE): Mendeley terkadang membungkus
+# field bibliografi dengan w:sdt bersarang (field wrapper luar + field
+# "Bibliography" itu sendiri di dalamnya). `_walk_dp_body_siblings_ooxml`
+# hanya mengambil <w:p> anak LANGSUNG dari sdtContent terluar — paragraf
+# yang bersarang satu lapis lebih dalam (di sdtContent milik w:sdt kedua)
+# tidak pernah kebaca. DAFTAR PUSTAKA lalu divonis kosong padahal Mendeley
+# sudah mengisinya.
+
+
+def _build_nested_sdt_bibliography_docx(out_path: Path) -> None:
+    from docx import Document
+
+    doc = Document()
+    doc.add_heading("DAFTAR PUSTAKA", level=1)
+    body = doc.element.body
+    # <w:sdt tag=MENDELEY_BIBLIOGRAPHY><w:sdtContent>
+    #   <w:sdt tag=MENDELEY_BIBLIOGRAPHY><w:sdtContent>
+    #     <w:p>entry 1</w:p>
+    #     <w:p>entry 2</w:p>
+    #   </w:sdtContent></w:sdt>
+    # </w:sdtContent></w:sdt>
+    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    outer_xml = f"""
+    <w:sdt xmlns:w="{ns}">
+      <w:sdtPr><w:tag w:val="MENDELEY_BIBLIOGRAPHY"/></w:sdtPr>
+      <w:sdtContent>
+        <w:sdt>
+          <w:sdtPr><w:tag w:val="MENDELEY_BIBLIOGRAPHY"/></w:sdtPr>
+          <w:sdtContent>
+            <w:p><w:r><w:t>Amin, A. (2022) 'Judul artikel pertama', Jurnal Contoh, 1(1), pp. 1-5.</w:t></w:r></w:p>
+            <w:p><w:r><w:t>Budi, B. (2023) 'Judul artikel kedua', Jurnal Contoh, 2(1), pp. 6-10.</w:t></w:r></w:p>
+          </w:sdtContent>
+        </w:sdt>
+      </w:sdtContent>
+    </w:sdt>
+    """
+    sdt_el = etree.fromstring(outer_xml.encode("utf-8"))
+    # body diakhiri <w:sectPr> — harus tetap jadi elemen terakhir, jadi
+    # sisipkan SEBELUM itu (python-docx add_paragraph melakukan hal sama).
+    from docx.oxml.ns import qn as _qn
+    sect_pr = body.find(_qn("w:sectPr"))
+    sect_pr.addprevious(sdt_el)
+    doc.add_heading("LAMPIRAN", level=1)
+    # add_heading juga menyisipkan sebelum sectPr, jadi urutannya sudah benar:
+    # DAFTAR PUSTAKA, sdt, LAMPIRAN, sectPr.
+    doc.save(str(out_path))
+
+
+def test_nested_sdt_mendeley_bibliography_extracted(tmp_path, schema):
+    from app.services.docx_parser import DocxParser
+
+    out_path = tmp_path / "nested_sdt.docx"
+    _build_nested_sdt_bibliography_docx(out_path)
+    r = ReferenceValidator(DocxParser(out_path), schema, current_year=2026).check()
+    assert r.total_entries == 2
+    assert r.entries[0].author_first == "Amin"
+    assert r.entries[1].author_first == "Budi"
 
 
 NUKI_FIXTURE = Path(r"c:\Users\ac300\Downloads\PKM KC  NUKI OTISTA_evp_KP_030426.docx")
@@ -298,6 +418,9 @@ def test_prefix_match_still_flags_wrong_year(schema):
     ("BPS", "Badan Pusat Statistik"),
     ("Kemenkes RI", "Kementerian Kesehatan Republik Indonesia"),
     ("Kemenkop UKM", "Kementrian Koperasi dan Usaha Kecil dan Menengah Republik Indonesia"),
+    ("Komdigi", "Kementerian Komunikasi dan Digital"),
+    ("komdigi", "Kementerian Komunikasi dan Digital Republik Indonesia"),
+    ("Kominfo", "Kementerian Komunikasi dan Informatika"),
 ])
 def test_acronym_author_match(cite, dp):
     assert _acronym_author_match(cite, dp)
@@ -308,6 +431,7 @@ def test_acronym_author_match(cite, dp):
     ("BPS", "Badan Pusat Statistik Jawa Timur"),
     ("Smith", "Smithson"),
     ("Sari", "Sekarsari"),
+    ("Komdigi", "Kementerian Komunikasi dan Informatika"),
 ])
 def test_acronym_author_mismatch(cite, dp):
     assert not _acronym_author_match(cite, dp)
@@ -325,3 +449,47 @@ def test_acronym_citation_matches_full_institution(schema):
     r = ReferenceValidator(_fake_parser(paras), schema, current_year=2026).check()
     missing = [f for f in r.balance_findings if f.direction == "in_text_not_in_references"]
     assert len(missing) == 1 and "2024" in missing[0].detail
+
+
+def test_komdigi_citation_matches_full_institution(schema):
+    """Nama pendek kementerian boleh menghilangkan awalan 'Kementerian'."""
+    paras = [
+        _heading(0, "BAB 1. PENDAHULUAN"),
+        _body(1, "Transformasi digital meningkat (Komdigi, 2025)."),
+        _heading(2, "DAFTAR PUSTAKA"),
+        _body(
+            3,
+            "Kementerian Komunikasi dan Digital. (2025) Laporan transformasi "
+            "digital nasional tahun 2025.",
+        ),
+    ]
+    result = ReferenceValidator(_fake_parser(paras), schema, current_year=2026).check()
+
+    missing = [
+        finding
+        for finding in result.balance_findings
+        if finding.direction == "in_text_not_in_references"
+    ]
+    assert missing == []
+
+
+def test_komdigi_citation_still_flags_different_year(schema):
+    paras = [
+        _heading(0, "BAB 1. PENDAHULUAN"),
+        _body(1, "Transformasi digital meningkat (Komdigi, 2025)."),
+        _heading(2, "DAFTAR PUSTAKA"),
+        _body(
+            3,
+            "Kementerian Komunikasi dan Digital. (2024) Laporan transformasi "
+            "digital nasional tahun 2024.",
+        ),
+    ]
+    result = ReferenceValidator(_fake_parser(paras), schema, current_year=2026).check()
+
+    missing = [
+        finding
+        for finding in result.balance_findings
+        if finding.direction == "in_text_not_in_references"
+    ]
+    assert len(missing) == 1
+    assert "bukan 2025" in missing[0].detail

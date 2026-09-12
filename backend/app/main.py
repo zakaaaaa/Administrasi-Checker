@@ -601,7 +601,7 @@ def get_server_stats(admin_id: str):
 
 UPLOAD_DIR = Path(__file__).parent.parent / "storage" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-MAX_FILE_SIZE = 35 * 1024 * 1024  # 35 MB — samakan dengan MAX_FILE_MB frontend & nginx
+MAX_FILE_SIZE = 45 * 1024 * 1024  # 45 MB — samakan dengan MAX_FILE_MB frontend & nginx
 
 
 @app.post("/api/check")

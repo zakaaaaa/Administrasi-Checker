@@ -30,6 +30,7 @@ from typing import Iterator, Optional, Union
 from docx import Document
 from docx.document import Document as DocxDocument
 from docx.oxml.ns import qn
+from docx.shared import Length
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 from lxml import etree
@@ -80,7 +81,8 @@ class ParagraphInfo:
     # eksplisit di dalam file, bukan tebakan dari titik-titik & tab.
     is_toc_entry: bool = False
     # Dari mana is_toc_entry disimpulkan: 'style' (otoritatif) | 'leader' (heuristik
-    # cadangan untuk Daftar Isi yang diketik manual) | None.
+    # per baris) | 'manual-block' (baris tanpa leader di dalam blok Daftar Isi
+    # manual yang sudah terkonfirmasi) | None.
     toc_evidence: Optional[str] = None
     # Label penomoran otomatis yang Word cetak di depan teks, mis. "BAB 1." dari
     # <w:lvlText w:val="BAB %1."/>. Sengaja TIDAK digabung ke `text`: label ini
@@ -216,10 +218,22 @@ _TOC_GALLERIES = frozenset({"Table of Contents"})
 _LAMPIRAN_TEXT_RE = re.compile(r"^\s*LAMPIRAN(\s*-\s*LAMPIRAN)?\s*$", re.IGNORECASE)
 
 
+_HEADING_WORD_RE = re.compile(r"\bheading\b", re.IGNORECASE)
+
+
 def _heading_style_ids(styles_root: Optional[etree._Element]) -> set[str]:
     """styleId paragraf yang merupakan judul: nama "Heading N" (nama bawaan,
-    tetap bahasa Inggris walau Word berbahasa lain), punya outlineLvl, atau
-    diturunkan (basedOn) dari style judul."""
+    tetap bahasa Inggris walau Word berbahasa lain) ATAU nama custom yang
+    memuat kata "heading" (mis. template jurnal "Article Heading 1"/"Article
+    Heading 2" — dibuat penulis/publisher, bukan style bawaan Word, dan
+    umumnya tanpa outlineLvl sama sekali), punya outlineLvl, atau diturunkan
+    (basedOn) dari style judul.
+
+    REGRESI lapangan: artikel ilmiah pakai style "Article Heading 1" untuk
+    "Pendahuluan"/"Metode"/dst — cek lama (startswith "heading") melewatkan
+    ini karena nama dimulai "Article", bukan "Heading". Section-section itu
+    lalu divonis hilang padahal ada dan sudah diberi style judul.
+    """
     if styles_root is None:
         return set()
     based_on: dict[str, str] = {}
@@ -233,7 +247,7 @@ def _heading_style_ids(styles_root: Optional[etree._Element]) -> set[str]:
         name_el = st.find("w:name", NSMAP)
         name = (name_el.get(qn("w:val")) or "") if name_el is not None else ""
         lvl = st.find("w:pPr/w:outlineLvl", NSMAP)
-        if name.lower().startswith("heading") or (
+        if _HEADING_WORD_RE.search(name) or (
             lvl is not None and str(lvl.get(qn("w:val"))) not in ("9", "None")
         ):
             heading.add(sid)
@@ -1260,7 +1274,89 @@ class DocxParser:
             info = self._paragraph_to_info(idx, para)
             info.list_label = labels.get(para._element)
             result.append(info)
+        self._mark_manual_toc_block_entries(result, self.doc.paragraphs)
         return result
+
+    def _mark_manual_toc_block_entries(
+        self,
+        paragraphs: list[ParagraphInfo],
+        source_paragraphs,
+    ) -> None:
+        """Tandai baris tanpa leader di dalam blok Daftar Isi manual.
+
+        Daftar Isi yang diketik tangan tidak selalu konsisten. Sebagian baris
+        memakai ``..... 3`` sehingga dikenali oleh :meth:`_detect_toc_entry`,
+        tetapi baris lain kadang hanya berisi ``BAB 3. ...``. Kalau dinilai per
+        baris, judul tanpa leader itu tampak persis seperti heading isi dan
+        StructureChecker mengambilnya sebagai kemunculan BAB yang sebenarnya.
+
+        Konteks blok dipakai secara konservatif:
+
+        * harus diawali judul tersendiri ``DAFTAR ISI``;
+        * sebelum pemisah halaman/section atau heading ber-style berikutnya,
+          harus ada sedikitnya dua baris ber-dot/TAB leader;
+        * hanya rentang dari sesudah judul sampai baris leader terakhir yang
+          diwarisi sebagai entri TOC.
+
+        Dengan syarat tersebut, satu kalimat bertitik di isi dokumen tidak
+        cukup untuk mengubah paragraf lain menjadi entri TOC.
+        """
+        if not paragraphs or len(paragraphs) != len(source_paragraphs):
+            return
+
+        title_indices = [
+            p.index
+            for p in paragraphs
+            if re.sub(r"\s+", " ", p.text.upper().strip()) == "DAFTAR ISI"
+            and not p.is_toc_entry
+        ]
+        for title_idx in title_indices:
+            region_end = len(paragraphs)
+            leader_indices: list[int] = []
+
+            for idx in range(title_idx + 1, len(paragraphs)):
+                info = paragraphs[idx]
+                source = source_paragraphs[idx]
+
+                # Pemisah halaman kosong seperti pada daftar isi manual
+                # NeuroRehab menutup blok sebelum heading front matter lain.
+                has_page_break = bool(
+                    source._element.xpath(
+                        ".//w:br[@w:type='page'] | .//w:lastRenderedPageBreak"
+                    )
+                )
+                has_section_break = source._element.find(
+                    "w:pPr/w:sectPr", namespaces=NSMAP
+                ) is not None
+                if has_page_break or has_section_break:
+                    region_end = idx
+                    break
+
+                # Sesudah sekurangnya satu entri manual, Heading/Title yang
+                # sebenarnya merupakan batas aman walau tidak ada page break.
+                if info.is_heading and leader_indices:
+                    region_end = idx
+                    break
+
+                if info.toc_evidence == "leader":
+                    leader_indices.append(idx)
+
+            leaders_in_region = [i for i in leader_indices if i < region_end]
+            if len(leaders_in_region) < 2:
+                continue
+
+            last_leader = leaders_in_region[-1]
+            for idx in range(title_idx + 1, last_leader + 1):
+                info = paragraphs[idx]
+                if not info.text.strip() or info.is_toc_entry:
+                    continue
+                info.is_toc_entry = True
+                info.toc_evidence = "manual-block"
+                info.is_heading = False
+                info.heading_level = None
+
+            # Hanya blok DAFTAR ISI pertama yang relevan sebagai front matter.
+            break
 
     def _build_list_labels(self) -> dict[etree._Element, str]:
         """Label nomor otomatis per elemen <w:p>, dirakit dalam urutan dokumen.
@@ -1376,7 +1472,17 @@ class DocxParser:
         line_spacing: Optional[float] = None
         try:
             ls = para.paragraph_format.line_spacing
-            if ls is not None:
+            if isinstance(ls, Length):
+                # Mode "Exactly"/"At least" (w:lineRule bukan "auto"): python-docx
+                # balikin Length (EMU), bukan multiplier. Field ini dipakai
+                # checker sebagai multiplier ("1.0", "1.15", dst.) — EMU mentah
+                # (ratusan ribu) lolos tanpa konversi bikin pesan absurd macam
+                # "spasi baris ditemukan 144780.0". Dua unit itu tidak
+                # sepadan (poin tetap vs kelipatan tinggi baris), jadi biarkan
+                # None (tidak dinilai) daripada memvonis salah dari angka yang
+                # salah baca.
+                line_spacing = None
+            elif ls is not None:
                 line_spacing = float(ls)
         except Exception:
             pass
@@ -1410,9 +1516,14 @@ class DocxParser:
         heading_level: Optional[int] = None
         if style_name:
             sn_lower = style_name.lower()
-            if sn_lower.startswith("heading"):
+            # Bukan cuma style bawaan Word "Heading N": template jurnal/kampus
+            # kerap punya style custom yang memuat kata "heading" di posisi
+            # lain, mis. "Article Heading 1" (bukan diawali "Heading"). Tanpa
+            # ini, section itu dibaca sebagai teks biasa dan divonis hilang.
+            if _HEADING_WORD_RE.search(style_name):
                 is_heading = True
-                # Coba ekstrak level dari nama style ("Heading 1" → 1)
+                # Coba ekstrak level dari nama style ("Heading 1" → 1,
+                # "Article Heading 2" → 2)
                 parts = style_name.split()
                 if len(parts) > 1 and parts[-1].isdigit():
                     heading_level = int(parts[-1])

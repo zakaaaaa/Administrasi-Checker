@@ -124,22 +124,61 @@ class PkmAiFormatChecker:
                 break
             yield para
 
+    def _collect_title_paragraphs(self, bab1_idx: Optional[int]) -> list[ParagraphInfo]:
+        """Kumpulkan SEMUA paragraf judul, bukan cuma yang pertama.
+
+        Judul panjang kadang dibungkus penulis jadi >1 paragraf Word (baris
+        pertama style Heading, baris lanjutan diketik manual di paragraf
+        baru) — keduanya tetap ALL CAPS + font ~12pt, beda dari baris
+        penulis/institusi yang 10pt. REGRESI lapangan: tanpa pengumpulan
+        ini, baris lanjutan judul dibaca sebagai baris penulis dan divonis
+        "ukuran font bukan 10pt" + "harus normal, bukan bold" — padahal itu
+        masih judul.
+        """
+        paras: list[ParagraphInfo] = []
+        started = False
+        for para in self._front_matter(bab1_idx):
+            text = para.text.strip()
+            if not text:
+                if started:
+                    break
+                continue
+            if not started:
+                paras.append(para)
+                started = True
+                continue
+            letters = [c for c in text if c.isalpha()]
+            is_all_caps = bool(letters) and all(c.isupper() for c in letters)
+            # Ukuran efektif: override run (paling lazim penulis menyeleksi teks
+            # lalu ubah ukuran) diprioritaskan atas default paragraf/style —
+            # resolve_paragraph_font sendiri TIDAK melihat override run.
+            para_font = self.resolver.resolve_paragraph_font(para.index)
+            text_runs = [r for r in para.runs if r.text.strip()]
+            eff_size = (
+                text_runs[0].font_size_pt
+                if text_runs and text_runs[0].font_size_pt is not None
+                else para_font.size_pt
+            )
+            looks_like_title_size = eff_size is not None and abs(eff_size - 12.0) <= 0.3
+            if is_all_caps and looks_like_title_size:
+                paras.append(para)
+                continue
+            break
+        return paras
+
     # ----------------------------------------------------------------
     # Sub-check: judul
     # ----------------------------------------------------------------
 
     def _check_title(self, bab1_idx: Optional[int]) -> FormatCheckSection:
         """
-        Paragraf non-empty pertama = judul.
-        Aturan: ALL CAPS, maks 20 kata, TNR 12pt, bold.
+        Paragraf non-empty pertama (dan lanjutannya, kalau judul dibungkus
+        >1 paragraf) = judul. Aturan: ALL CAPS, maks 20 kata, TNR 12pt, bold.
         """
         sec = FormatCheckSection(name="title_format", status="pass")
 
-        title_para: Optional[ParagraphInfo] = None
-        for para in self._front_matter(bab1_idx):
-            if para.text.strip():
-                title_para = para
-                break
+        title_paras = self._collect_title_paragraphs(bab1_idx)
+        title_para: Optional[ParagraphInfo] = title_paras[0] if title_paras else None
 
         if title_para is None:
             sec.issues.append(FormatIssue(
@@ -151,7 +190,7 @@ class PkmAiFormatChecker:
             sec.status = "fail"
             return sec
 
-        text = title_para.text.strip()
+        text = " ".join(p.text.strip() for p in title_paras)
 
         # ALL CAPS
         if text != text.upper():
@@ -230,15 +269,14 @@ class PkmAiFormatChecker:
         """
         sec = FormatCheckSection(name="author_font", status="pass")
 
-        title_passed = False
+        title_indices = {p.index for p in self._collect_title_paragraphs(bab1_idx)}
         for para in self._front_matter(bab1_idx):
             text = para.text.strip()
             if not text:
                 continue
 
-            if not title_passed:
-                title_passed = True
-                continue  # skip judul
+            if para.index in title_indices:
+                continue  # skip judul (bisa lebih dari satu paragraf)
 
             if self._ABSTRAK_ID_RE.match(text) or self._ABSTRACT_EN_RE.match(text):
                 break

@@ -9,8 +9,11 @@ test yang butuh konversi akan di-skip (bukan fail).
 """
 
 import shutil
+import tempfile
 import unittest
 from pathlib import Path
+
+from lxml import etree
 
 from app.services.docx_parser import DocxParser
 from app.services.pdf_converter import PdfConverter, PdfConversionError
@@ -220,13 +223,20 @@ class TestCounterOnRealDoc(unittest.TestCase):
         """BAB 1 mulai di sheet #6 berdasarkan inspeksi."""
         self.assertEqual(self.result.core_first_sheet, 6)
 
-    def test_core_count_exceeds_pkm_kc_limit(self):
+    def test_core_count_is_exactly_ten(self):
         """
-        Bagian inti (#6 sampai #27) = 22 lembar — jauh di atas batas 10
-        untuk PKM-KC. Harus FAIL.
+        Bagian inti sungguhan = BAB 1 (#6) s.d. sebelum "Lampiran 1. Biodata..."
+        (#16) = 10 lembar, pas di batas PKM-KC.
+
+        REGRESI: sebelum perbaikan _TOC_PAGE_RE, cabang "baris berakhir angka"
+        pada heuristik skip-ToC ikut ke-trigger oleh halaman Biodata (NIM/no.
+        HP di akhir baris) sehingga "Lampiran 1. Biodata..." (#16) ikut
+        ke-skip saat mencari heading LAMPIRAN. Akibatnya core_last jatuh ke
+        akhir dokumen (#27) dan bagian inti divonis 22 lembar — melebihi
+        batas padahal sebenarnya pas 10 lembar.
         """
-        self.assertGreater(self.result.core_physical_sheets, 10)
-        self.assertEqual(self.result.status, "fail")
+        self.assertEqual(self.result.core_last_sheet, 15)
+        self.assertEqual(self.result.core_physical_sheets, 10)
 
     def test_lampiran_page_jumps_are_not_core_anomalies(self):
         """
@@ -383,6 +393,119 @@ class TestTocEntryNotMistakenForCoreStart(unittest.TestCase):
         c = self._counter([(0, "BAB 1. PENDAHULUAN"), (1, "lampiran")])
         bab1, _ = c._locate_core_paragraphs()
         self.assertEqual(bab1, 0)
+
+
+class TestLocateCoreRangeSkipsOnlyRealToc(unittest.TestCase):
+    """_locate_core_range (mode fallback PDF LibreOffice): halaman berisi
+    tabel angka (anggaran, biodata) tidak boleh disangka Daftar Isi.
+
+    REGRESI lapangan (PKM-KC Laporan Kemajuan): heading LAMPIRAN berbagi
+    halaman dengan tabel "Rincian Penggunaan Dana" — tiap baris tabel
+    berakhir nominal Rupiah. Heuristik lama menghitung baris-berakhir-angka
+    sebagai tanda ToC, jadi halaman itu ke-skip dan LAMPIRAN baru ketemu
+    belasan halaman kemudian — seluruh Lampiran 1 (anggaran, bukti) ikut
+    terhitung bagian inti dan dokumen divonis melebihi batas 10 halaman
+    padahal bagian intinya sendiri pas di batas.
+    """
+
+    def _counter(self):
+        c = PhysicalSheetCounter.__new__(PhysicalSheetCounter)
+        c.rules = get_pkm_kc_proposal_rules()
+        return c
+
+    def test_budget_table_page_not_mistaken_for_toc(self):
+        c = self._counter()
+        sheet_texts = [
+            "DAFTAR ISI\nBAB 1. PENDAHULUAN.......... 1\nBAB 2. TARGET LUARAN...... 2\nLAMPIRAN....... 3",  # 1: ToC asli
+            "1\nBAB 1. PENDAHULUAN\nLatar belakang ...",  # 2: BAB 1 sungguhan
+            (
+                "11\nLAMPIRAN\nLampiran 1. Penggunaan Dana\n"
+                "No Jenis Pengeluaran Sumber Dana Besaran Dana (Rp)\n"
+                "1. Bahan habis pakai Belmawa 6.000.000\n"
+                "Instansi Lain 0\n"
+                "2. Sewa dan jasa Belmawa 500.000\n"
+                "Instansi Lain 0\n"
+                "3. Transportasi lokal Belmawa 50.000\n"
+                "Instansi Lain 0\n"
+            ),  # 3: LAMPIRAN sungguhan — baris "Instansi Lain 0" mirip nomor ToC
+        ]
+        core_first, core_last = c._locate_core_range(sheet_texts)
+        self.assertEqual(core_first, 2)
+        self.assertEqual(core_last, 2)
+
+    def test_genuine_toc_page_with_dot_leaders_still_skipped(self):
+        c = self._counter()
+        sheet_texts = [
+            "DAFTAR ISI\n" + "\n".join(f"Bab {i}...................... {i}" for i in range(1, 6)),
+            "1\nBAB 1. PENDAHULUAN\nLatar belakang ...",
+            "2\nLAMPIRAN\nLampiran 1. ...",
+        ]
+        core_first, _ = c._locate_core_range(sheet_texts)
+        self.assertEqual(core_first, 2)
+
+
+# ============================================================================
+# Test: Daftar Isi via TOC field Word asli (bukan diketik manual)
+# ============================================================================
+#
+# REGRESI lapangan (Bismillah & Rania): Daftar Isi dibuat via fitur Word
+# "Insert Table of Contents" — isinya dirender di dalam <w:sdt>, sama sekali
+# tidak masuk self.parser.paragraphs. Cek lama cuma menggabung teks paragraf
+# body di halaman 1, yang di sekitar field TOC cuma baris kosong, jadi
+# dokumen yang Daftar Isi-nya normal di Word tetap divonis "halaman pertama
+# tidak memuat Daftar Isi".
+
+
+def _build_doc_with_native_toc_field(out_path: Path) -> None:
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    doc = Document()
+    doc.add_paragraph("")
+    doc.add_paragraph("")
+    body = doc.element.body
+    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    toc_xml = f"""
+    <w:sdt xmlns:w="{ns}">
+      <w:sdtPr>
+        <w:docPartObj>
+          <w:docPartGallery w:val="Table of Contents"/>
+        </w:docPartObj>
+      </w:sdtPr>
+      <w:sdtContent>
+        <w:p><w:r><w:t>BAB 1. PENDAHULUAN\t1</w:t></w:r></w:p>
+      </w:sdtContent>
+    </w:sdt>
+    """
+    sdt_el = etree.fromstring(toc_xml.encode("utf-8"))
+    sect_pr = body.find(qn("w:sectPr"))
+    sect_pr.addprevious(sdt_el)
+    doc.add_page_break()
+    doc.add_paragraph("BAB 1. PENDAHULUAN", style="Heading 1")
+    doc.add_paragraph("Isi bab 1 yang cukup panjang untuk pengujian.")
+    doc.add_paragraph("DAFTAR PUSTAKA", style="Heading 1")
+    doc.add_paragraph("Referensi contoh, 2024.")
+    doc.add_paragraph("LAMPIRAN", style="Heading 1")
+    doc.save(str(out_path))
+
+
+class TestNativeTocFieldSatisfiesFirstPageCheck(unittest.TestCase):
+    def test_toc_field_before_page_two_detected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "toc_field.docx"
+            _build_doc_with_native_toc_field(path)
+            parser = DocxParser(path)
+            counter = PhysicalSheetCounter(parser, get_pkm_kc_proposal_rules())
+            self.assertTrue(counter._has_toc_field_before_page_two())
+
+    def test_first_page_structure_passes_with_native_toc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "toc_field.docx"
+            _build_doc_with_native_toc_field(path)
+            parser = DocxParser(path)
+            counter = PhysicalSheetCounter(parser, get_pkm_kc_proposal_rules())
+            msgs = counter._check_first_page_structure_docx()
+            self.assertEqual(msgs, [])
 
 
 class TestLapkemReRealDoc(unittest.TestCase):
