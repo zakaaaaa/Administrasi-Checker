@@ -67,9 +67,26 @@ def test_et_al_word_boundary_not_metal():
     assert _dp_has_et_al("Rahmadi et al (2022) paper") is True
 
 
+def test_et_al_inside_reference_title_is_not_author_violation():
+    """Regresi Egi/Fauzul: et al. setelah tahun berada di judul, bukan author."""
+    entry = (
+        "Fauzul, M.F., Hidayat, K., Ulya, M., Yaskun, M. dan Adhi, M. (2025) "
+        "Analisis berdasarkan penelitian Ayun et al., 2020. Jurnal Contoh."
+    )
+    assert _dp_has_et_al(entry) is False
+
+
 def test_dkk_detected():
     assert _dp_has_dkk("Penulis dkk. 2021.") is True
     assert _dp_has_dkk("No abbreviation here 2021.") is False
+
+
+def test_dkk_inside_reference_title_is_not_author_violation():
+    entry = (
+        "Fauzul, M.F., Hidayat, K. dan Ulya, M. (2025) "
+        "Perbandingan dengan penelitian Santoso dkk., 2023. Jurnal Contoh."
+    )
+    assert _dp_has_dkk(entry) is False
 
 
 def test_intext_et_al_allowed(schema):

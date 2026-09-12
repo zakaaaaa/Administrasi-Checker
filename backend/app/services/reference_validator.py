@@ -247,11 +247,27 @@ def _acronym_author_match(cite_author: str, dp_author: str) -> bool:
 
 
 def _dp_has_et_al(text: str) -> bool:
-    return bool(_ET_AL_RE.search(text))
+    return bool(_ET_AL_RE.search(_dp_author_segment(text)))
 
 
 def _dp_has_dkk(text: str) -> bool:
-    return bool(_DKK_RE.search(text))
+    return bool(_DKK_RE.search(_dp_author_segment(text)))
+
+
+def _dp_author_segment(text: str) -> str:
+    """Bagian nama penulis pada entry DP, sebelum tahun publikasi.
+
+    Larangan ``et al.``/``dkk.`` berlaku untuk daftar nama penulis, bukan
+    untuk judul artikel. Referensi dapat mengutip frasa seperti ``Ayun et al.``
+    di dalam judulnya; memindai seluruh entry membuat nama penulis pertama
+    ikut divonis walau sudah ditulis lengkap.
+
+    Bila tahun tidak ditemukan, pertahankan perilaku lama dan pindai seluruh
+    teks. Entry tersebut akan mendapat temuan tahun terpisah sehingga kita
+    tidak menerka batas penulis dari tanda baca yang sangat bervariasi.
+    """
+    year = _DP_YEAR_RE.search(text)
+    return text[: year.start()] if year is not None else text
 
 
 def _iter_paragraphs_in_sdt(sdt_el: etree._Element):

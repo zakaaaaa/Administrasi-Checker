@@ -179,7 +179,11 @@ function mapToSentence(module: string, masalah: string, schemaCode = 'PKM'): str
       if (/keterangan gambar|keterangan tabel/.test(m)) {
         const snippetMatch = masalah.match(/"([^"]+)"/);
         const snippet = snippetMatch ? ` — "${snippetMatch[1]}"` : '';
-        return `Kesalahan spasi keterangan gambar/tabel bukan 1${snippet}`;
+        const expectedMatch = masalah.match(/bukan\s+(\d+(?:[.,]\d+)?)/i);
+        const expected = (expectedMatch?.[1] ?? '1')
+          .replace(/\.0+$/, '')
+          .replace('.', ',');
+        return `Kesalahan spasi keterangan gambar/tabel bukan ${expected}${snippet}`;
       }
       if (/line spacing|spacing bukan/.test(m))
         return 'Kesalahan spasi teks/paragraf tidak 1,15';
@@ -662,7 +666,18 @@ const SUMMARY_DEFS: SummaryDef[] = [
     label: 'Kesalahan spasi keterangan gambar/tabel tidak 1',
     detect: (items) =>
       items.some(
-        (it) => it.module === 'format' && /spasi keterangan gambar\/tabel/i.test(it.masalah),
+        (it) =>
+          it.module === 'format' &&
+          /spasi keterangan gambar\/tabel (?:bukan|tidak) 1(?:\s|$|—)/i.test(it.masalah),
+      ),
+  },
+  {
+    label: 'Kesalahan spasi keterangan gambar/tabel tidak 1,15',
+    detect: (items) =>
+      items.some(
+        (it) =>
+          it.module === 'format' &&
+          /spasi keterangan gambar\/tabel (?:bukan|tidak) 1,15/i.test(it.masalah),
       ),
   },
   {
