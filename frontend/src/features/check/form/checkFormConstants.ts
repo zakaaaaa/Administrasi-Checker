@@ -54,7 +54,7 @@ export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000
 export const LAST_RESULT_STORAGE_KEY = 'last_check_result_v1';
 export const LAST_RESULT_META_KEY = 'last_check_result_meta_v1';
 // Samakan dengan MAX_FILE_SIZE backend & client_max_body_size nginx.
-export const MAX_FILE_MB = 45;
+export const MAX_FILE_MB = 100;
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
